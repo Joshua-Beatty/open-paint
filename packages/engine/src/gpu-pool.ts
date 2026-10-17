@@ -57,10 +57,22 @@ export function borrowBuffer(
   };
 }
 
-/** Destroys a device's pooled buffers (a released device, tests). */
+/**
+ * Destroys a device's pooled buffers that are not lent out, as when an effect session ends: a
+ * session's buffers fit its own region, and the next one may need other sizes.
+ */
 export function releasePool(device: GPUDevice): void {
-  for (const entry of pools.get(device) ?? []) entry.buffer.destroy();
-  pools.delete(device);
+  const pool = pools.get(device);
+  if (pool === undefined) return;
+  for (const entry of pool.filter((candidate) => !candidate.busy)) {
+    entry.buffer.destroy();
+    pool.splice(pool.indexOf(entry), 1);
+  }
+}
+
+/** The bytes a device's pool holds (tests, diagnostics). */
+export function pooledBytes(device: GPUDevice): number {
+  return (pools.get(device) ?? []).reduce((sum, entry) => sum + entry.buffer.size, 0);
 }
 
 /**

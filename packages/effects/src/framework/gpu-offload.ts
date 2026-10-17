@@ -21,4 +21,10 @@ export interface GpuOffloader {
    * a copy next to the device between runs; the session releases it when it ends.
    */
   release?(input: Surface): void;
+  /**
+   * Resolves once the GPU has reported on every run so far, with whether `binding`'s runs were
+   * free of errors. A run resolves with its pixels before the GPU reports its errors, so a commit
+   * confirms before it records: a failed run is then rendered again on the CPU (WEB-GPU-04).
+   */
+  confirm?(binding: EffectBinding<unknown>): Promise<boolean>;
 }

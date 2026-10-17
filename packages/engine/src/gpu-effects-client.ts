@@ -14,6 +14,7 @@ export interface GpuEffectPort {
   effectRun(job: GpuEffectJob): Promise<GpuEffectOutput>;
   effectCancel(id: number): Promise<void>;
   effectRelease(source: number): Promise<void>;
+  effectConfirm?(effectId: string): Promise<boolean>;
 }
 
 interface SentSource {
@@ -105,6 +106,17 @@ export class EngineGpuOffloader implements GpuOffloader {
       this.#failed.add(effectId);
       throw cause;
     }
+  }
+
+  /**
+   * Whether the GPU reported no error for `binding`'s runs so far. A run returns its pixels before
+   * the GPU reports; an effect with a late error is not tried on the GPU again (WEB-GPU-04).
+   */
+  async confirm(binding: EffectBinding<unknown>): Promise<boolean> {
+    const id = binding.descriptor.id;
+    const confirmed = (await this.#port.effectConfirm?.(id)) ?? true;
+    if (!confirmed) this.#failed.add(id);
+    return confirmed;
   }
 
   release(input: Surface): void {

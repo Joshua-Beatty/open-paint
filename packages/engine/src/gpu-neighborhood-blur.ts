@@ -14,7 +14,7 @@ import {
   surfaceBlurSlope,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
-import { readBack } from "./gpu-pool";
+import { borrowBuffer, readBack } from "./gpu-pool";
 
 /** Pixels per side of one tile. Each tile is one dispatch, so no single submission runs long (WEB-GPU-05). */
 export const NEIGHBORHOOD_TILE_PIXELS = 128;
@@ -143,16 +143,21 @@ export async function runTiledBlur(
 ): Promise<Surface> {
   const { width, height } = input;
   const bytes = width * height * RGBA8_BYTES_PER_PIXEL;
-  const source = device.createBuffer({
-    label: "source",
-    size: bytes,
-    usage: BufferUsage.STORAGE | BufferUsage.COPY_DST,
-  });
-  const output = device.createBuffer({
-    label: "output",
-    size: bytes,
-    usage: BufferUsage.STORAGE | BufferUsage.COPY_SRC,
-  });
+  // The source and output are the same size on every preview of a session: lent from the pool.
+  const lentSource = borrowBuffer(
+    device,
+    "source",
+    bytes,
+    BufferUsage.STORAGE | BufferUsage.COPY_DST,
+  );
+  const lentOutput = borrowBuffer(
+    device,
+    "output",
+    bytes,
+    BufferUsage.STORAGE | BufferUsage.COPY_SRC,
+  );
+  const source = lentSource.buffer;
+  const output = lentOutput.buffer;
   const tiles: { x: number; y: number }[] = [];
   for (let y = 0; y < height; y += NEIGHBORHOOD_TILE_PIXELS) {
     for (let x = 0; x < width; x += NEIGHBORHOOD_TILE_PIXELS) tiles.push({ x, y });
@@ -217,7 +222,9 @@ export async function runTiledBlur(
     const pixels = await readBack(device, encoder, output, bytes);
     return new Surface(width, height, pixels);
   } finally {
-    for (const created of [source, output, params, scanBuffer]) created?.destroy();
+    for (const created of [params, scanBuffer]) created?.destroy();
+    lentSource.release();
+    lentOutput.release();
   }
 }
 

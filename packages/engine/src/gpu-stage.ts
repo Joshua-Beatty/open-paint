@@ -1,7 +1,10 @@
 import { Surface } from "@openpaint/document";
 import { ARTISTIC_PARAMS_BYTES } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
-import { readBack } from "./gpu-pool";
+import { type BorrowedBuffer, borrowBuffer, readBack } from "./gpu-pool";
+
+/** Buffers from this size up are lent from the device's pool rather than created per run. */
+const POOLED_BYTES = 1 << 20;
 
 const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
@@ -48,6 +51,7 @@ export class StageChain {
   readonly encoder: GPUCommandEncoder;
   readonly bytes: number;
   readonly #buffers: GPUBuffer[] = [];
+  readonly #lent: BorrowedBuffer[] = [];
 
   constructor(
     readonly device: GPUDevice,
@@ -63,8 +67,16 @@ export class StageChain {
     return this.buffer(label, this.bytes, BufferUsage.STORAGE | BufferUsage.COPY_SRC);
   }
 
-  /** A buffer freed with the chain. */
+  /**
+   * A buffer freed with the chain. Large ones (images, planes) are lent from the device's pool and
+   * go back to it, so the next preview of the session reuses them (L9).
+   */
   buffer(label: string, size: number, usage: number): GPUBuffer {
+    if (size >= POOLED_BYTES) {
+      const lent = borrowBuffer(this.device, label, size, usage);
+      this.#lent.push(lent);
+      return lent.buffer;
+    }
     const created = this.device.createBuffer({ label, size, usage });
     this.#buffers.push(created);
     return created;
@@ -119,6 +131,7 @@ export class StageChain {
 
   destroy(): void {
     for (const created of this.#buffers.splice(0)) created.destroy();
+    for (const lent of this.#lent.splice(0)) lent.release();
   }
 }
 
