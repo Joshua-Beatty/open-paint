@@ -57,9 +57,15 @@ export function adapterKey(summary: GpuAdapterSummary): string {
   return [summary.vendor, summary.architecture, summary.device, summary.description].join("|");
 }
 
-/** Requests a device with the key limits raised to what the adapter supports. */
+/**
+ * Requests a device with the key limits raised to what the adapter supports, and GPU timestamps
+ * when the adapter has them (the performance class benchmark times with them).
+ */
 export function requestDevice(adapter: GPUAdapter): Promise<GPUDevice> {
   const requiredLimits: Record<string, number> = {};
   for (const name of KEY_LIMITS) requiredLimits[name] = adapter.limits[name];
-  return adapter.requestDevice({ label: "OpenPaint engine", requiredLimits });
+  const requiredFeatures: GPUFeatureName[] = adapter.features.has("timestamp-query")
+    ? ["timestamp-query"]
+    : [];
+  return adapter.requestDevice({ label: "OpenPaint engine", requiredLimits, requiredFeatures });
 }
