@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { expect, type Page, test } from "@playwright/test";
+import { ENGINE_CANVAS } from "./touch-input";
 
 /**
  * Design-review screenshots of the app on touch devices: phone and tablet sizes in both
@@ -47,7 +48,7 @@ for (const size of SIZES) {
       const page = await context.newPage();
       page.setDefaultTimeout(5000);
       await page.goto("/");
-      await expect(page.getByRole("tab")).toHaveCount(1, { timeout: 30_000 });
+      await expect(page.locator(ENGINE_CANVAS)).toBeVisible({ timeout: 30_000 });
       await page.waitForTimeout(1500);
       const name = `${LABEL}-${size.name}-${scheme}`;
       await shot(page, `${name}-window`);
@@ -58,13 +59,15 @@ for (const size of SIZES) {
           if ((await toggle.count()) === 0) return;
           await toggle.click();
           await shot(page, `${name}-panel-${panel.toLowerCase()}`);
-          await page.keyboard.press("Escape");
+          await toggle.click();
         }
       });
       await step("menu", async () => {
         const opener = page.locator("[data-menu-opener]");
-        if ((await opener.count()) > 0) await opener.click();
-        await page.getByRole("button", { name: "Effects", exact: true }).click();
+        if ((await opener.count()) > 0) {
+          await opener.click();
+          await page.getByRole("menuitem", { name: "Effects" }).click();
+        } else await page.getByRole("button", { name: "Effects", exact: true }).click();
         await shot(page, `${name}-menu`);
         await page.getByRole("menuitem", { name: "Blurs" }).click();
         await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
@@ -73,8 +76,21 @@ for (const size of SIZES) {
         await page.getByRole("button", { name: "Cancel" }).click();
       });
       await step("tool options", async () => {
-        await page.getByRole("button", { name: "More options" }).first().click();
+        await page
+          .locator(".app-tool-config")
+          .getByRole("button", { name: "More options" })
+          .click();
         await shot(page, `${name}-tool-more`);
+        await page.keyboard.press("Escape");
+      });
+      await step("settings", async () => {
+        const opener = page.locator("[data-menu-opener]");
+        if ((await opener.count()) > 0) {
+          await opener.click();
+          await page.getByRole("menuitem", { name: /^Settings/ }).click();
+        } else await page.getByRole("button", { name: "Settings" }).click();
+        await expect(page.getByRole("dialog")).toBeVisible();
+        await shot(page, `${name}-settings`);
         await page.keyboard.press("Escape");
       });
       await context.close();
