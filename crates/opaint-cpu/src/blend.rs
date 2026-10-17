@@ -91,9 +91,39 @@ pub fn blend_channel(mode: BlendMode, d: u32, s: u32) -> u32 {
     }
 }
 
+/// `ceil(2^32 / d)` for every divisor `d` in 1..=255 (index 0 unused).
+const RECIPROCALS: [u64; 256] = {
+    let mut table = [0u64; 256];
+    let mut d = 1;
+    while d < 256 {
+        table[d] = (1u64 << 32).div_ceil(d as u64);
+        d += 1;
+    }
+    table
+};
+
+/// `x / d` for `d` in 1..=255 and `x < 2^24`, by multiplying with `RECIPROCALS[d]`. Exact: the
+/// reciprocal's error `e = m·d − 2^32` is below `d`, so `x·e < 2^32` and the floor never moves.
+#[inline]
+fn div_small(x: u32, d: u32) -> u32 {
+    ((u64::from(x) * RECIPROCALS[d as usize]) >> 32) as u32
+}
+
 /// Composites source pixel `s` over destination pixel `d` (DOC-BLD-02 steps 1-6).
 #[inline]
 pub fn composite_pixel(d: [u8; 4], s: [u8; 4], mode: BlendMode, opacity: u8) -> [u8; 4] {
+    composite_pixel_with(d, s, opacity, |dc, sc| blend_channel(mode, dc, sc))
+}
+
+/// `composite_pixel` with the blend function `f` given directly, so a loop over one mode compiles
+/// without the per-channel mode dispatch.
+#[inline(always)]
+fn composite_pixel_with(
+    d: [u8; 4],
+    s: [u8; 4],
+    opacity: u8,
+    f: impl Fn(u32, u32) -> u32,
+) -> [u8; 4] {
     let sa = match opacity {
         0 => return d,
         255 => u32::from(s[3]),
@@ -103,6 +133,10 @@ pub fn composite_pixel(d: [u8; 4], s: [u8; 4], mode: BlendMode, opacity: u8) -> 
         return d;
     }
     let da = u32::from(d[3]);
+    if da == 0 {
+        // Y = J = 0 and Ra = K = Sa', so each channel is (Sc·Sa' + Sa'/2) / Sa' = Sc.
+        return [s[0], s[1], s[2], sa as u8];
+    }
     let y = mul(da, 255 - sa);
     // Ra >= Sa' > 0, so the spec's transparent Ra = 0 case cannot occur past the check above.
     let ra = y + sa;
@@ -112,10 +146,21 @@ pub fn composite_pixel(d: [u8; 4], s: [u8; 4], mode: BlendMode, opacity: u8) -> 
     for c in 0..3 {
         let (dc, sc) = (u32::from(d[c]), u32::from(s[c]));
         // Normal reduces to (Dc·Y + Sc·Sa') / Ra since f = s and K + J = Sa'.
-        let n = dc * y + sc * k + blend_channel(mode, dc, sc) * j;
-        out[c] = ((n + ra / 2) / ra) as u8;
+        let n = dc * y + sc * k + f(dc, sc) * j;
+        out[c] = div_small(n + ra / 2, ra) as u8;
     }
     out
+}
+
+fn composite_mode(
+    dst: &mut [[u8; 4]],
+    src: &[[u8; 4]],
+    opacity: u8,
+    f: impl Fn(u32, u32) -> u32 + Copy,
+) {
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d = composite_pixel_with(*d, *s, opacity, f);
+    }
 }
 
 /// Composites a straight-alpha RGBA8 source buffer over a destination buffer of the same size in
@@ -134,9 +179,20 @@ pub fn composite(dst: &mut [u8], src: &[u8], mode: BlendMode, opacity: u8) {
     }
     let (dst, _) = dst.as_chunks_mut::<4>();
     let (src, _) = src.as_chunks::<4>();
-    for (d, s) in dst.iter_mut().zip(src) {
-        *d = composite_pixel(*d, *s, mode, opacity);
+    // One loop per mode, so the blend function is inlined without a per-channel dispatch.
+    macro_rules! each_mode {
+        ($($mode:ident),*) => {
+            match mode {
+                $(BlendMode::$mode => composite_mode(dst, src, opacity, |d, s| {
+                    blend_channel(BlendMode::$mode, d, s)
+                }),)*
+            }
+        };
     }
+    each_mode!(
+        Normal, Multiply, Additive, ColorBurn, ColorDodge, Reflect, Glow, Overlay, Difference,
+        Negation, Lighten, Darken, Screen, Xor
+    );
 }
 
 #[cfg(test)]
@@ -424,6 +480,51 @@ mod tests {
         let before = dst;
         composite(&mut dst, &src, Multiply, 0);
         assert_eq!(dst, before);
+    }
+
+    #[test]
+    fn reciprocal_division_is_exact_for_every_composite_numerator() {
+        for d in 1..=255u32 {
+            for x in 0..=(255 * 255 + 255) {
+                assert_eq!(div_small(x, d), x / d, "{x} / {d}");
+            }
+        }
+    }
+
+    #[test]
+    fn buffer_loops_match_the_pixel_formula_in_every_mode() {
+        let mut state = 0x2545_f491_u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state & 0xff) as u8
+        };
+        let src: Vec<u8> = (0..4 * 4096).map(|_| next()).collect();
+        let mut base: Vec<u8> = (0..4 * 4096).map(|_| next()).collect();
+        // Some transparent and opaque destinations and sources.
+        for i in (3..base.len()).step_by(20) {
+            base[i] = 0;
+        }
+        for i in (7..base.len()).step_by(28) {
+            base[i] = 255;
+        }
+        for mode in BlendMode::ALL {
+            for opacity in [255, 200, 1] {
+                let mut dst = base.clone();
+                composite(&mut dst, &src, mode, opacity);
+                for p in 0..4096 {
+                    let at = |b: &[u8]| [b[4 * p], b[4 * p + 1], b[4 * p + 2], b[4 * p + 3]];
+                    let d = at(&base);
+                    let s = at(&src);
+                    assert_eq!(
+                        at(&dst),
+                        spec_composite(d, s, mode, opacity),
+                        "{mode:?} D={d:?} S={s:?} O={opacity}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
