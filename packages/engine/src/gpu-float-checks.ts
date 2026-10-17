@@ -107,7 +107,8 @@ function movesOf(kind: MoveKind, origin: { x: number; y: number }): AffineMatrix
   const center = { x: 150.37, y: 100.21 };
   switch (kind) {
     case "rotate":
-      return [about(rotationAboutAffine(center.x, center.y, 0.3))];
+      // Every Nearest Neighbor sample of this turn lies at least 2e-3 px from a pixel edge.
+      return [about(rotationAboutAffine(center.x, center.y, 0.3053))];
     case "shrink":
       return [
         about(
