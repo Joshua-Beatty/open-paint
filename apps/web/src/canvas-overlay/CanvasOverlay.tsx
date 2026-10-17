@@ -27,6 +27,7 @@ import {
   type RulerColors,
 } from "./draw-overlay";
 import {
+  type BrushOutlineShape,
   brushOutline,
   gridLines,
   gridOpacity,
@@ -70,9 +71,12 @@ export function PixelGridOverlay({ store, showGrid }: { store: StatusStore; show
 export function BrushCursorOverlay({
   store,
   diameter,
+  shape = "circle",
 }: {
   store: StatusStore;
   diameter: number | undefined;
+  /** The tip's shape, so a square tip shows a square outline. */
+  shape?: BrushOutlineShape;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const size = useCanvasBacking(ref);
@@ -84,9 +88,9 @@ export function BrushCursorOverlay({
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (diameter === undefined || layout === undefined || pointer === undefined) return;
-    const outline = brushOutline(diameter, layout.zoom, pointer);
+    const outline = brushOutline(diameter, layout.zoom, pointer, shape);
     if (outline !== undefined) paintBrushOutline(ctx, outline);
-  }, [layout, pointer, diameter]);
+  }, [layout, pointer, diameter, shape]);
   return (
     <canvas ref={ref} className="app-canvas-overlay" width={size.width} height={size.height} />
   );

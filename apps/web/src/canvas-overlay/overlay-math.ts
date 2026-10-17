@@ -38,28 +38,42 @@ export interface GridLines {
 /** The smallest brush outline radius in device pixels, so a 1 px tip still shows. */
 const MIN_BRUSH_RADIUS = 1;
 
-/** The brush outline as a circle in device pixels. */
+/** The brush tip's shape (TL-OPT-BRUSH "brush.type"), which the outline follows. */
+export type BrushOutlineShape = "circle" | "square";
+
+/**
+ * The brush outline in device pixels: a circle of `radius`, or an upright square whose half side
+ * is `radius`, centred on the pointer.
+ */
 export interface BrushOutline {
   readonly x: number;
   readonly y: number;
   readonly radius: number;
+  readonly shape: BrushOutlineShape;
+}
+
+/** The outline shape of a stored `tools.brush.type` value: "Square" is a square, else a circle. */
+export function brushOutlineShape(tipType: unknown): BrushOutlineShape {
+  return tipType === "Square" ? "square" : "circle";
 }
 
 /**
- * The brush outline (TL-BRUSH-01): the tip's diameter at the view's zoom, centred on the pointer.
- * `diameter` is in image pixels, and `zoom` is device pixels per image pixel. Undefined when there
- * is no tip to draw.
+ * The brush outline (TL-BRUSH-01): the tip's diameter at the view's zoom, centred on the pointer, in
+ * the tip's shape. `diameter` is in image pixels, and `zoom` is device pixels per image pixel.
+ * Undefined when there is no tip to draw.
  */
 export function brushOutline(
   diameter: number,
   zoom: number,
   pointer: { readonly x: number; readonly y: number },
+  shape: BrushOutlineShape = "circle",
 ): BrushOutline | undefined {
   if (!(diameter > 0) || !(zoom > 0)) return undefined;
   return {
     x: pointer.x,
     y: pointer.y,
     radius: Math.max(MIN_BRUSH_RADIUS, (diameter * zoom) / 2),
+    shape,
   };
 }
 

@@ -50,7 +50,11 @@ import {
   ZoomRectangleOverlay,
 } from "./canvas-overlay/CanvasOverlay";
 import { LineCurveHandlesOverlay } from "./canvas-overlay/LineCurveHandlesOverlay";
-import { RULER_CSS_PIXELS, visibleImageArea } from "./canvas-overlay/overlay-math";
+import {
+  brushOutlineShape,
+  RULER_CSS_PIXELS,
+  visibleImageArea,
+} from "./canvas-overlay/overlay-math";
 import { ShapeHandlesOverlay } from "./canvas-overlay/ShapeHandlesOverlay";
 import { canvasScale } from "./canvas-scale";
 import { ColorsPanel } from "./colors/ColorsPanel";
@@ -578,6 +582,7 @@ export function App({
   }, []);
   const activeTool = resolveActiveTool(TOOL_REGISTRY, useSetting(settings, ACTIVE_TOOL_PATH));
   const brushSize = useSetting(settings, "tools.brush.size");
+  const brushTipShape = brushOutlineShape(useSetting(settings, "tools.brush.type"));
   const brushOutline =
     (activeTool.id === "paintbrush" ||
       activeTool.id === "eraser" ||
@@ -1452,7 +1457,7 @@ export function App({
             antialiased={antialiasedOutline}
             layerPropertiesOpen={layerPropertiesOpen}
           />
-          <BrushCursorOverlay store={statusStore} diameter={brushOutline} />
+          <BrushCursorOverlay store={statusStore} diameter={brushOutline} shape={brushTipShape} />
           <CloneSourceOverlay store={statusStore} />
           <WandHandlesOverlay store={statusStore} />
           <GradientHandlesOverlay store={statusStore} />
