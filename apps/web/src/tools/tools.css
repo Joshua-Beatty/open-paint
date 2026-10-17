@@ -1,0 +1,186 @@
+.tools-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  padding: 4px;
+}
+
+.tool-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* The last tool of an odd count spans both columns (spansRow in ToolsPanel.tsx). */
+.tool-button.is-wide {
+  grid-column: 1 / -1;
+}
+
+.tool-button:hover {
+  border-color: var(--border);
+}
+
+.tool-button[data-selected] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.tool-button[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tool-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tool-icon.is-wide {
+  width: 48px;
+}
+
+.tool-tooltip {
+  max-width: 280px;
+  padding: 4px 8px;
+  border: 1px solid var(--popover-border, var(--border));
+  border-radius: 6px;
+  background: var(--popover-background, var(--panel-background));
+  color: var(--text);
+  box-shadow: var(--popover-shadow, 0 2px 6px rgb(0 0 0 / 0.25));
+  font-size: 12px;
+  white-space: pre-line;
+}
+
+/*
+ * The tool options bar (UI-TB-03): one row of fixed height. Its items never wrap; those that do
+ * not fit go to the More menu at the end of the row (OverflowRow), and Finish stays pinned after it.
+ */
+.tool-options-strip {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 calc(var(--header-inset, 14px) - 8px);
+  overflow: hidden;
+}
+
+.text-options,
+.shape-options {
+  display: contents;
+}
+
+.text-options-sample {
+  max-width: 160px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 14px;
+}
+
+.text-options-note {
+  max-width: 220px;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-muted, var(--text));
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.text-options-font {
+  min-width: 140px;
+}
+
+/* Names in their own faces, large enough to tell apart. Off-screen names are not laid out, so
+   their fonts are fetched only when scrolled into view. */
+.text-options-fonts .prop-option {
+  font-size: 15px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 28px;
+}
+
+.text-options-styles {
+  display: inline-flex;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
+}
+
+.text-options-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.text-options-glyph.is-bold {
+  font-weight: 700;
+}
+
+.text-options-glyph.is-italic {
+  font-style: italic;
+  font-family: Georgia, serif;
+}
+
+.text-options-glyph.is-underline {
+  text-decoration: underline;
+}
+
+.text-options-glyph.is-strikeout {
+  font-size: 12px;
+  text-decoration: line-through;
+}
+
+/* An icon-only options bar button: the swap, font and style buttons. */
+.tool-icon-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius, 6px);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tool-strip-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tool-finish {
+  flex: none;
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--control-radius, 6px);
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}

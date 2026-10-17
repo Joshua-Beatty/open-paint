@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "node_modules/.types",
+    "rootDir": ".",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src", "browser", "playwright.config.ts"],
+  "references": [
+    { "path": "../../packages/codecs" },
+    { "path": "../../packages/document" },
+    { "path": "../../packages/effects" },
+    { "path": "../../packages/engine" }
+  ]
+}

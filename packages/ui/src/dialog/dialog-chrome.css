@@ -1,0 +1,68 @@
+/*
+ * A modal dialog's title bar: the heading, then the close button in the top-right corner. The
+ * button's 28px target overhangs the heading's line box, so the bar is no taller than the heading.
+ */
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.modal-header .modal-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.modal-close {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: -6px -8px -6px 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--control-radius, 6px);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.modal-close[data-hovered]:not([data-disabled]) {
+  background: var(--hover-background);
+}
+
+.modal-close[data-pressed]:not([data-disabled]) {
+  background: var(--pressed-background);
+}
+
+.modal-close[data-disabled] {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.modal-close[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+/* A dialog's footer: its buttons at the end, all in one style, with a gap between them. */
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.modal-close-icon {
+  width: 16px;
+  height: 16px;
+}

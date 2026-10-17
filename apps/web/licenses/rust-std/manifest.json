@@ -1,0 +1,43 @@
+{
+  "$comment": "The parts of the Rust toolchain that rustc links into OpenPaint's WebAssembly kernels (crates/opaint-cpu, wasm32-unknown-unknown): the standard library (core, alloc, std and panic_abort, from the rust-lang/rust repository), compiler_builtins (with its bundled libm), and the two crates.io crates std uses on this target, dlmalloc (its allocator) and hashbrown (its HashMap); their paths are in the .wasm's panic messages. Other std dependencies serve other targets or backtraces, which wasm32-unknown-unknown does not have. The license texts are copied unmodified from rust-lang/rust at the toolchain's commit and from the crates.io packages that its library/Cargo.lock names (checksums match). The toolchain is mise's rust@stable, so a new stable release changes these: the build warns and a unit test fails when rustc's release is not this one. To refresh, read library/Cargo.lock at the new commit and copy the texts again.",
+  "rustc": "1.99.0",
+  "commit": "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4",
+  "components": [
+    {
+      "name": "rust-std",
+      "title": "Rust standard library (core, alloc, std)",
+      "version": "1.99.0",
+      "license": "MIT OR Apache-2.0",
+      "url": "https://github.com/rust-lang/rust",
+      "source": "https://github.com/rust-lang/rust/blob/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/LICENSE-MIT",
+      "licenseFiles": ["rust/LICENSE-MIT"]
+    },
+    {
+      "name": "compiler_builtins",
+      "title": "compiler_builtins",
+      "version": "0.1.160",
+      "license": "MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)",
+      "url": "https://github.com/rust-lang/compiler-builtins",
+      "source": "https://github.com/rust-lang/rust/tree/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/compiler-builtins",
+      "licenseFiles": ["compiler-builtins/LICENSE.txt", "libm/LICENSE.txt"]
+    },
+    {
+      "name": "dlmalloc",
+      "title": "dlmalloc",
+      "version": "0.2.14",
+      "license": "MIT OR Apache-2.0",
+      "url": "https://github.com/alexcrichton/dlmalloc-rs",
+      "source": "https://static.crates.io/crates/dlmalloc/0.2.14/download",
+      "licenseFiles": ["dlmalloc-0.2.14/LICENSE-MIT"]
+    },
+    {
+      "name": "hashbrown",
+      "title": "hashbrown",
+      "version": "0.17.1",
+      "license": "MIT OR Apache-2.0",
+      "url": "https://github.com/rust-lang/hashbrown",
+      "source": "https://static.crates.io/crates/hashbrown/0.17.1/download",
+      "licenseFiles": ["hashbrown-0.17.1/LICENSE-MIT"]
+    }
+  ]
+}

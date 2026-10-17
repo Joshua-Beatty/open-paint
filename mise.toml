@@ -1,0 +1,6 @@
+[tools]
+node = "26"
+pnpm = "10"
+rust = { version = "stable", targets = "wasm32-unknown-unknown", components = "rustfmt,clippy" }
+"github:rustwasm/wasm-pack" = "latest"
+"github:WebAssembly/binaryen" = "latest"

@@ -1,0 +1,213 @@
+{
+  "$comment": "C and C++ libraries compiled into the WebAssembly of the codec packages. Their license texts do not ship in the npm packages, so they are copied here from the upstream repositories at the version each .wasm was built from (the package's codec Makefile at its release commit, checked against the strings in the .wasm). A library is listed when the build ships one of its modules: the Emscripten loader next to the .wasm, as a path inside node_modules. Every codec is built with Emscripten, so each .wasm also holds Emscripten's runtime (its JavaScript loader, embind and its libc parts; MIT OR NCSA, both ask for the notice) and musl libc (MIT), at the Emscripten release each was built with: 2.0.23 for the JPEG XL and WebP codecs (jSquash tools/cpp.dockerfile at the commits that built them), 3.1.57 for AVIF (its codec/package.json), and an unrecorded 3.1 release for lcms-wasm (its loader is from the 3.1 series, whose LICENSE and musl COPYRIGHT texts are the same from 3.1.0 to 3.1.57). The LLVM runtime libraries the compiler links in (compiler-rt, libc++, libc++abi; Apache-2.0 WITH LLVM-exception) are not listed: the exception lifts the notice conditions for portions embedded into object code by compiling, and the LLVM project states that a runtime library the compiler includes needs no attribution. dlmalloc, the default allocator, is public domain.",
+  "libraries": [
+    {
+      "name": "libavif",
+      "title": "libavif",
+      "version": "1.0.1",
+      "license": "BSD-2-Clause",
+      "url": "https://github.com/AOMediaCodec/libavif",
+      "source": "https://github.com/AOMediaCodec/libavif/blob/v1.0.1/LICENSE",
+      "licenseFile": "libavif/LICENSE",
+      "modules": [
+        "@jsquash/avif/codec/dec/avif_dec.js",
+        "@jsquash/avif/codec/enc/avif_enc.js",
+        "@jsquash/avif/codec/enc/avif_enc_mt.js"
+      ]
+    },
+    {
+      "name": "libaom",
+      "title": "AOMedia AV1 Codec (libaom)",
+      "version": "3.7.0",
+      "license": "BSD-2-Clause",
+      "url": "https://aomedia.googlesource.com/aom",
+      "source": "https://aomedia.googlesource.com/aom/+/refs/tags/v3.7.0/LICENSE",
+      "licenseFile": "libaom/LICENSE",
+      "modules": [
+        "@jsquash/avif/codec/dec/avif_dec.js",
+        "@jsquash/avif/codec/enc/avif_enc.js",
+        "@jsquash/avif/codec/enc/avif_enc_mt.js"
+      ]
+    },
+    {
+      "name": "libsharpyuv",
+      "title": "libsharpyuv (libwebp)",
+      "version": "1.3.1+e2c8587",
+      "license": "BSD-3-Clause",
+      "url": "https://chromium.googlesource.com/webm/libwebp",
+      "source": "https://chromium.googlesource.com/webm/libwebp/+/e2c85878f6a33f29948b43d3492d9cdaf801aa54/COPYING",
+      "licenseFile": "libsharpyuv/COPYING",
+      "modules": ["@jsquash/avif/codec/enc/avif_enc.js", "@jsquash/avif/codec/enc/avif_enc_mt.js"]
+    },
+    {
+      "name": "libjxl",
+      "title": "libjxl",
+      "version": "0.7.0-dev+9f54464",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/libjxl/libjxl",
+      "source": "https://github.com/libjxl/libjxl/blob/9f544641ec83f6abd9da598bdd08178ee8a003e0/LICENSE",
+      "licenseFile": "libjxl/LICENSE",
+      "modules": [
+        "@jsquash/jxl/codec/dec/jxl_dec.js",
+        "@jsquash/jxl/codec/enc/jxl_enc.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt_simd.js"
+      ]
+    },
+    {
+      "name": "highway",
+      "title": "Highway",
+      "version": "0.15.0+e69083a",
+      "license": "Apache-2.0",
+      "url": "https://github.com/google/highway",
+      "source": "https://github.com/google/highway/blob/e69083a12a05caf037cabecdf1b248b7579705a5/LICENSE",
+      "licenseFile": "highway/LICENSE",
+      "copyright": "Copyright 2019 Google LLC",
+      "modules": [
+        "@jsquash/jxl/codec/dec/jxl_dec.js",
+        "@jsquash/jxl/codec/enc/jxl_enc.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt_simd.js"
+      ]
+    },
+    {
+      "name": "skcms",
+      "title": "skcms",
+      "version": "git+6437475",
+      "license": "BSD-3-Clause",
+      "url": "https://skia.googlesource.com/skcms",
+      "source": "https://github.com/google/skcms/blob/64374756e03700d649f897dbd98c95e78c30c7da/LICENSE",
+      "licenseFile": "skcms/LICENSE",
+      "copyright": "Copyright (c) 2018 Google Inc. All rights reserved.",
+      "modules": [
+        "@jsquash/jxl/codec/dec/jxl_dec.js",
+        "@jsquash/jxl/codec/enc/jxl_enc.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt_simd.js"
+      ]
+    },
+    {
+      "name": "brotli",
+      "title": "Brotli",
+      "version": "1.0.7+35ef5c5",
+      "license": "MIT",
+      "url": "https://github.com/google/brotli",
+      "source": "https://github.com/google/brotli/blob/35ef5c554d888bef217d449346067de05e269b30/LICENSE",
+      "licenseFile": "brotli/LICENSE",
+      "modules": [
+        "@jsquash/jxl/codec/dec/jxl_dec.js",
+        "@jsquash/jxl/codec/enc/jxl_enc.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt_simd.js"
+      ]
+    },
+    {
+      "name": "libwebp",
+      "title": "libwebp",
+      "version": "1.1.0+d2e245e",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/webmproject/libwebp",
+      "source": "https://github.com/webmproject/libwebp/blob/d2e245ea9e959a5a79e1db0ed2085206947e98f2/COPYING",
+      "licenseFile": "libwebp/COPYING",
+      "modules": [
+        "@jsquash/webp/codec/dec/webp_dec.js",
+        "@jsquash/webp/codec/enc/webp_enc.js",
+        "@jsquash/webp/codec/enc/webp_enc_simd.js"
+      ]
+    },
+    {
+      "name": "Little-CMS",
+      "title": "Little CMS",
+      "version": "2.16+c2a5401",
+      "license": "MIT",
+      "url": "https://github.com/mm2/Little-CMS",
+      "source": "https://github.com/mm2/Little-CMS/blob/c2a54017d73080f97c5cd34a78ff2fb51564aade/LICENSE",
+      "licenseFile": "little-cms/LICENSE",
+      "modules": ["lcms-wasm/dist/lcms.js"]
+    },
+    {
+      "name": "emscripten",
+      "title": "Emscripten runtime",
+      "version": "2.0.23",
+      "license": "MIT OR NCSA",
+      "url": "https://github.com/emscripten-core/emscripten",
+      "source": "https://github.com/emscripten-core/emscripten/blob/2.0.23/LICENSE",
+      "licenseFile": "emscripten/LICENSE",
+      "modules": [
+        "@jsquash/jxl/codec/dec/jxl_dec.js",
+        "@jsquash/jxl/codec/enc/jxl_enc.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt_simd.js",
+        "@jsquash/webp/codec/dec/webp_dec.js",
+        "@jsquash/webp/codec/enc/webp_enc.js",
+        "@jsquash/webp/codec/enc/webp_enc_simd.js"
+      ]
+    },
+    {
+      "name": "emscripten",
+      "title": "Emscripten runtime",
+      "version": "3.1.57",
+      "license": "MIT OR NCSA",
+      "url": "https://github.com/emscripten-core/emscripten",
+      "source": "https://github.com/emscripten-core/emscripten/blob/3.1.57/LICENSE",
+      "licenseFile": "emscripten/LICENSE",
+      "modules": [
+        "@jsquash/avif/codec/dec/avif_dec.js",
+        "@jsquash/avif/codec/enc/avif_enc.js",
+        "@jsquash/avif/codec/enc/avif_enc_mt.js"
+      ]
+    },
+    {
+      "name": "emscripten",
+      "title": "Emscripten runtime",
+      "version": "3.1",
+      "license": "MIT OR NCSA",
+      "url": "https://github.com/emscripten-core/emscripten",
+      "source": "https://github.com/emscripten-core/emscripten/blob/3.1.57/LICENSE",
+      "licenseFile": "emscripten/LICENSE",
+      "modules": ["lcms-wasm/dist/lcms.js"]
+    },
+    {
+      "name": "musl",
+      "title": "musl libc",
+      "version": "1.1.15",
+      "license": "MIT",
+      "url": "https://musl.libc.org",
+      "source": "https://github.com/emscripten-core/emscripten/blob/2.0.23/system/lib/libc/musl/COPYRIGHT",
+      "licenseFile": "musl-1.1.15/COPYRIGHT",
+      "modules": [
+        "@jsquash/jxl/codec/dec/jxl_dec.js",
+        "@jsquash/jxl/codec/enc/jxl_enc.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt.js",
+        "@jsquash/jxl/codec/enc/jxl_enc_mt_simd.js",
+        "@jsquash/webp/codec/dec/webp_dec.js",
+        "@jsquash/webp/codec/enc/webp_enc.js",
+        "@jsquash/webp/codec/enc/webp_enc_simd.js"
+      ]
+    },
+    {
+      "name": "musl",
+      "title": "musl libc",
+      "version": "1.2.5",
+      "license": "MIT",
+      "url": "https://musl.libc.org",
+      "source": "https://github.com/emscripten-core/emscripten/blob/3.1.57/system/lib/libc/musl/COPYRIGHT",
+      "licenseFile": "musl-1.2/COPYRIGHT",
+      "modules": [
+        "@jsquash/avif/codec/dec/avif_dec.js",
+        "@jsquash/avif/codec/enc/avif_enc.js",
+        "@jsquash/avif/codec/enc/avif_enc_mt.js"
+      ]
+    },
+    {
+      "name": "musl",
+      "title": "musl libc",
+      "version": "1.2",
+      "license": "MIT",
+      "url": "https://musl.libc.org",
+      "source": "https://github.com/emscripten-core/emscripten/blob/3.1.57/system/lib/libc/musl/COPYRIGHT",
+      "licenseFile": "musl-1.2/COPYRIGHT",
+      "modules": ["lcms-wasm/dist/lcms.js"]
+    }
+  ]
+}

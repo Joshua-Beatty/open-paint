@@ -1,0 +1,4 @@
+# Upstream font files ship byte for byte (their hashes are in manifest.json).
+*.woff2 binary
+*.otf binary
+*.ttf binary

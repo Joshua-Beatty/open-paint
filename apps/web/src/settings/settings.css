@@ -1,0 +1,101 @@
+/* The Settings dialog (SET-DLG-01). The section list sits left of the page. */
+.settings-dialog {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 360px;
+  max-height: 70vh;
+}
+
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  padding: 4px;
+  outline: none;
+}
+
+.settings-section {
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: default;
+  outline: none;
+}
+
+.settings-section[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-section[data-selected] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  overflow: auto;
+  padding-inline-end: 4px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-note,
+.settings-status {
+  margin: 0;
+  font-size: 0.9em;
+}
+
+.settings-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+}
+
+.settings-confirm h3,
+.settings-storage h3,
+.settings-tool-row h3 {
+  margin: 4px 0;
+  font-size: 1em;
+}
+
+.settings-diagnostics {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.settings-diagnostics th,
+.settings-diagnostics td {
+  padding: 2px 6px;
+  text-align: start;
+  vertical-align: top;
+}
+
+.settings-diagnostics td:first-child {
+  width: 45%;
+}
+
+.settings-diagnostics tbody th {
+  padding-top: 8px;
+  font-weight: 600;
+}
+
+/* SET-DLG-03 "Animations": when off, non-essential UI transitions and animations stop. */
+:root[data-animations="off"] *,
+:root[data-animations="off"] *::before,
+:root[data-animations="off"] *::after {
+  transition: none;
+  animation: none;
+}

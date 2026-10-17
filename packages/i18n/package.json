@@ -1,0 +1,25 @@
+{
+  "name": "@openpaint/i18n",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Message catalogs (English at launch).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react.tsx"
+  },
+  "dependencies": {
+    "intl-messageformat": "12.1.3"
+  },
+  "devDependencies": {
+    "@babel/parser": "^8.0.7",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "peerDependencies": {
+    "react": "19.3.0"
+  }
+}

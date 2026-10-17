@@ -1,0 +1,1950 @@
+:root {
+  --left-sidebar-width: 104px;
+  --right-sidebar-width: 280px;
+  --status-bar-height: 25px;
+  --tool-options-height: 40px;
+  --menu-bar-height: 32px;
+  --common-actions-height: 40px;
+  /* The left edge where the header's content starts: menu titles, icons and options. */
+  --header-inset: 14px;
+  --min-viewport-width: 1024px;
+  --min-viewport-height: 700px;
+  color-scheme: light;
+  --app-background: #e4e4e8;
+  --panel-background: #f5f5f7;
+  --panel-header-background: #e8e8ec;
+  --toolbar-background: linear-gradient(#fbfbfc, #e6e6ea);
+  --canvas-area-background: #cfcfd4;
+  --text: #1d1d21;
+  --text-disabled: #6b6b74;
+  --text-muted: #55555e;
+  --border: #c5c5cc;
+  --accent: #1f6feb;
+  --accent-text: #ffffff;
+  --ruler-background: #ececf0;
+  --ruler-text: #3a3a42;
+  --ruler-tick: #6a6a74;
+  --ruler-selection: rgba(31, 111, 235, 0.25);
+  --ruler-marker: #d93636;
+  /* Form controls: inputs, number fields, combo boxes, drop-downs and their lists. */
+  --control-radius: 6px;
+  --control-background: #ffffff;
+  --control-background-hover: #fafafc;
+  --control-border: #c2c2ca;
+  --control-border-hover: #8e8e99;
+  --control-disabled-background: #ededf1;
+  --control-placeholder: #8a8a94;
+  --focus-ring: color-mix(in srgb, var(--accent) 40%, transparent);
+  --hover-background: rgb(0 0 0 / 0.06);
+  --pressed-background: rgb(0 0 0 / 0.12);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --popover-background: #ffffff;
+  --popover-border: #c9c9d0;
+  --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.14), 0 1px 3px rgb(0 0 0 / 0.1);
+  /* The header surface shared by the menu bar, the common actions and the tool options. */
+  --header-background: #f7f7f9;
+  --header-divider: rgb(0 0 0 / 0.07);
+  --header-separator: rgb(0 0 0 / 0.14);
+}
+
+:root[data-color-scheme="dark"] {
+  --control-background: #1c1c21;
+  --control-background-hover: #202026;
+  --control-border: #45454f;
+  --control-border-hover: #6c6c78;
+  --control-disabled-background: #25252a;
+  --control-placeholder: #7d7d88;
+  --hover-background: rgb(255 255 255 / 0.07);
+  --pressed-background: rgb(255 255 255 / 0.13);
+  --accent-soft: color-mix(in srgb, var(--accent) 20%, transparent);
+  --popover-background: #2c2c33;
+  --popover-border: #474751;
+  --popover-shadow: 0 8px 24px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
+  --header-background: #2a2a30;
+  --header-divider: rgb(255 255 255 / 0.06);
+  --header-separator: rgb(255 255 255 / 0.13);
+  color-scheme: dark;
+  --app-background: #1d1d21;
+  --panel-background: #28282e;
+  --panel-header-background: #222227;
+  --toolbar-background: linear-gradient(#2e2e35, #24242a);
+  --canvas-area-background: #151518;
+  --text: #e8e8ee;
+  --text-disabled: #9a9aa4;
+  --text-muted: #a9a9b3;
+  --border: #3b3b44;
+  --accent: #58a6ff;
+  --accent-text: #0b0b0e;
+  --ruler-background: #2a2a31;
+  --ruler-text: #c8c8d0;
+  --ruler-tick: #8a8a96;
+  --ruler-selection: rgba(88, 166, 255, 0.3);
+  --ruler-marker: #ff6b6b;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* Dialogs, popovers and tooltips render outside the shell, so the app font is set on the body. */
+body {
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) var(--status-bar-height);
+  height: 100%;
+  min-width: var(--min-viewport-width);
+  min-height: var(--min-viewport-height);
+  box-sizing: border-box;
+  background: var(--app-background);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+/*
+ * The header: menu bar, common actions and tool options read as one block. They share one
+ * surface, split by hairlines, and their content starts on one left edge (--header-inset), so
+ * the menu titles, the first toolbar icon and the first tool option line up.
+ */
+.app-menu-bar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: var(--menu-bar-height);
+  padding: 0 calc(var(--header-inset) - 8px);
+  background: var(--header-background);
+  border-bottom: 1px solid var(--header-divider);
+}
+
+.app-tool-options {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--header-background);
+  border-bottom: 1px solid var(--border);
+}
+
+/* The tool options are one row of fixed height, so switching tools never moves the canvas. */
+.app-tool-config {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--tool-options-height);
+  overflow: hidden;
+}
+
+/* The common-actions strip (UI-TB-01): 32px icon buttons in groups split by short dividers. */
+.app-common-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--common-actions-height);
+  padding: 0 calc(var(--header-inset) - 8px);
+  border-bottom: 1px solid var(--header-divider);
+}
+
+.app-common-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.app-common-button[data-hovered]:not([data-disabled]) {
+  background: var(--hover-background);
+}
+
+.app-common-button[data-pressed]:not([data-disabled]) {
+  background: var(--pressed-background);
+}
+
+/* A toggle that is on (pixel grid, rulers): tinted with the accent, the icon in the accent. */
+.app-common-button[data-selected] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.app-common-button[data-selected][data-hovered]:not([data-disabled]) {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.app-common-button[data-disabled] {
+  color: var(--text);
+  opacity: 0.32;
+  cursor: default;
+}
+
+.app-common-button[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.app-common-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-common-separator {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 20px;
+  margin: 0 6px;
+  border: 0;
+  background: var(--header-separator);
+}
+
+.app-image-tabs {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  min-height: 36px;
+  background: var(--panel-header-background);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-image-tab-strip {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  min-height: 36px;
+}
+
+.app-image-tab-scroller {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px 4px 0;
+  overflow: hidden;
+  scroll-behavior: smooth;
+}
+
+.app-image-tab-scroller.is-fade-start {
+  mask-image: linear-gradient(to right, transparent, #000 24px);
+}
+
+.app-image-tab-scroller.is-fade-end {
+  mask-image: linear-gradient(to left, transparent, #000 24px);
+}
+
+.app-image-tab-scroller.is-fade-start.is-fade-end {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent
+  );
+}
+
+.app-image-tab-item {
+  position: relative;
+  flex: 0 0 auto;
+  width: 128px;
+  animation: app-tab-fade-in 0.5s ease-out;
+  transition: transform 0.25s ease;
+}
+
+.app-image-tab-item.is-dragging {
+  z-index: 1;
+  transition: none;
+}
+
+.app-image-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  /* The right end keeps the close button's place, which the dirty badge shares, clear of the title. */
+  padding: 2px 28px 2px 2px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
+  background: var(--panel-header-background);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: default;
+  user-select: none;
+  outline: none;
+}
+
+.app-image-tab.is-active {
+  background: var(--panel-background);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.app-image-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.app-image-tab-thumb {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 26px;
+}
+
+.app-image-tab-title {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The dirty badge (UI-TABS-03) sits in the close button's place, centred where the × is drawn.
+ * It shows while the × is hidden and gives way to it on hover or focus, so the two never overlap.
+ */
+.app-image-tab-dirty {
+  position: absolute;
+  top: 50%;
+  /* Measured inside the tab's 1px border; the × is centred 14px from the item's right edge. */
+  right: 7.5px;
+  width: 11px;
+  height: 11px;
+  margin-top: -5.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: app-tab-fade-in 1s ease-out;
+  transition: opacity 0.25s ease;
+}
+
+.app-image-tab-item:hover .app-image-tab-dirty,
+.app-image-tab-item:has(:focus-visible) .app-image-tab-dirty {
+  opacity: 0;
+  transition-duration: 0.1s;
+}
+
+.app-image-tab-spinner {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: app-tab-spin 0.8s linear infinite;
+}
+
+.app-image-tab-close {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--panel-background);
+  color: var(--text);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.app-image-tab-item:hover .app-image-tab-close,
+.app-image-tab-item:has(:focus-visible) .app-image-tab-close,
+.app-image-tab-item:not(.is-dirty) .app-image-tab-close.is-active {
+  opacity: 1;
+}
+
+.app-image-tab-item:hover .app-image-tab-close {
+  transition-duration: 0.1s;
+}
+
+.app-image-tab-arrow,
+.app-image-tab-list-button {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.app-image-tab-arrow[disabled] {
+  opacity: 0.4;
+}
+
+.app-image-tab-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A fixed slot, so the titles line up; the image inside takes its own aspect ratio. */
+.app-image-tab-list-slot {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 20px;
+}
+
+.app-image-tab-list-thumb {
+  display: block;
+  background: conic-gradient(#ffffff 25%, #cccccc 0 50%, #ffffff 0 75%, #cccccc 0) 0 0 / 8px 8px;
+}
+
+.app-image-tab-menu-anchor {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes app-tab-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes app-tab-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.app-sidebar {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel-background);
+  border-color: var(--border);
+  border-style: solid;
+  border-width: 0;
+}
+
+.app-sidebar-left {
+  grid-column: 1;
+  grid-row: 4;
+  border-right-width: 1px;
+}
+
+.app-sidebar-right {
+  grid-column: 3;
+  grid-row: 4;
+  border-left-width: 1px;
+}
+
+.app-canvas-area {
+  grid-column: 2;
+  grid-row: 4;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--canvas-area-background);
+}
+
+.app-status-bar {
+  grid-column: 1 / -1;
+  grid-row: 5;
+  display: flex;
+  align-items: center;
+  /* The border is inside the row's height, or the bar runs 1px past the window and it scrolls. */
+  box-sizing: border-box;
+  height: var(--status-bar-height);
+  background: var(--panel-background);
+  border-top: 1px solid var(--border);
+}
+
+.app-status-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.app-status-context {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.app-status-text {
+  flex: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-status-separator {
+  flex: none;
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+}
+
+.app-status-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.app-status-progress-bar {
+  position: relative;
+  width: 96px;
+  height: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-background);
+  overflow: hidden;
+}
+
+.app-status-progress-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.app-status-progress-indeterminate {
+  width: 30%;
+  animation: app-status-indeterminate 1.2s linear infinite;
+}
+
+@keyframes app-status-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(333%);
+  }
+}
+
+.app-status-button {
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.app-status-button[data-hovered] {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.app-status-button[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.app-status-button[data-disabled] {
+  opacity: 0.45;
+}
+
+.app-status-zoom {
+  min-width: 48px;
+  text-align: right;
+}
+
+.app-status-zoom-wrap {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 20px;
+}
+
+.app-zoom-entry {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  width: 48px;
+  height: 20px;
+  padding: 0 4px;
+  border: 0;
+  background: var(--panel-background);
+  color: var(--text);
+  font: inherit;
+  outline: 1px solid var(--accent);
+}
+
+.app-zoom-entry-invalid {
+  outline: 2px solid #d93025;
+  animation: app-zoom-shake 0.3s;
+}
+
+@keyframes app-zoom-shake {
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
+
+.app-status-zoom-slider {
+  position: relative;
+  flex: none;
+  width: 120px;
+  height: 16px;
+}
+
+.app-status-slider-track,
+.app-slider-track {
+  position: relative;
+  top: 6px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+/*
+ * React Aria places the thumb at its value with left and centres it there with translate(-50%,
+ * -50%), so top: 50% centres it on the track; an offset or margin here moves it off the track.
+ */
+.app-status-slider-track > div,
+.app-slider-track > div {
+  position: absolute;
+  top: 50%;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--panel-background);
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.app-status-zoom-slider[data-disabled] {
+  opacity: 0.45;
+}
+
+.app-sidebar-column {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.app-panel {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-panel.is-fill {
+  flex: 1 1 auto;
+}
+
+.app-panel-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 4px 0 2px;
+  background: var(--panel-header-background);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.app-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-panel-chevron {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: default;
+}
+
+.app-panel-chevron:hover {
+  background: var(--border);
+}
+
+.app-panel-chevron-icon {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s ease;
+}
+
+.app-panel-chevron-icon.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+.app-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.app-splitter {
+  flex: 0 0 4px;
+  height: 4px;
+  background: var(--border);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.app-splitter:hover,
+.app-splitter:focus-visible {
+  background: var(--accent);
+}
+
+.app-splitter[aria-disabled="true"] {
+  cursor: default;
+  background: var(--border);
+}
+
+.app-splitter-width {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  flex: none;
+  width: 4px;
+  height: auto;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.app-splitter-width:hover,
+.app-splitter-width:focus-visible {
+  background: var(--accent);
+}
+
+.app-splitter-width[aria-disabled="true"] {
+  background: transparent;
+}
+
+.app-tooltip {
+  padding: 4px 8px;
+  background: var(--popover-background);
+  color: var(--text);
+  border: 1px solid var(--popover-border);
+  border-radius: 6px;
+  box-shadow: var(--popover-shadow);
+  font-size: 12px;
+  white-space: pre-line;
+}
+
+/* The Layers panel (UI-FTW-05). The row height matches LAYER_ROW_HEIGHT in layers/layer-list.ts. */
+.app-layers {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.app-layers-empty {
+  margin: 0;
+  padding: 8px;
+  opacity: 0.7;
+}
+
+.app-layers-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  scroll-behavior: smooth;
+}
+
+.app-layer-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  height: 40px;
+  padding: 0 6px 0 4px;
+  border-bottom: 1px solid var(--border);
+  transition: transform 0.25s ease;
+  animation: app-layer-fade-in 0.5s ease;
+}
+
+.app-layer-row[aria-current="true"] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.app-layer-row.is-dragging {
+  z-index: 1;
+  transition: none;
+  background: var(--panel-background);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.3);
+}
+
+.app-layer-visible {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.app-layer-check {
+  width: 12px;
+  height: 12px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+.app-layer-visible[data-selected] .app-layer-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.app-layer-select {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+/* The slot is the largest thumbnail box; the image box inside it takes the image's aspect ratio. */
+.app-layer-thumb {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 26px;
+}
+
+.app-layer-thumb-image,
+.app-image-tab-thumb-image {
+  display: block;
+  flex: 0 0 auto;
+  background: conic-gradient(#ffffff 25%, #cccccc 0 50%, #ffffff 0 75%, #cccccc 0) 0 0 / 8px 8px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.4);
+}
+
+.app-layer-thumb-image img,
+.app-image-tab-thumb-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.app-layer-name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-layer-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border-top: 1px solid var(--border);
+}
+
+/* The icon buttons of the Layers and History toolbars, styled like the common-actions toolbar's. */
+.app-panel-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.app-panel-tool[data-hovered]:not([data-disabled]) {
+  background: var(--hover-background);
+}
+
+.app-panel-tool[data-pressed]:not([data-disabled]) {
+  background: var(--pressed-background);
+}
+
+.app-panel-tool[data-disabled] {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.app-panel-tool[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.app-panel-tool-icon {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes app-layer-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The History panel (UI-FTW-04). The list scrolls with the wheel and keeps the current step in view. */
+.app-history {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.app-history-empty {
+  margin: 0;
+  padding: 8px;
+  opacity: 0.7;
+}
+
+.app-history-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.app-history-row {
+  border-bottom: 1px solid var(--border);
+}
+
+.app-history-row[aria-current="step"] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.app-history-row.is-undone {
+  opacity: 0.45;
+}
+
+.app-history-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.app-history-item:hover {
+  background: var(--border);
+}
+
+.app-history-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.app-history-name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-history-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border-top: 1px solid var(--border);
+}
+
+.layer-properties {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 300px;
+}
+
+.layer-properties-heading {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.layer-properties-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.layer-properties-opacity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The label, then the track, 16px tall so the 4px track and its thumb sit in the middle. */
+.layer-properties-slider {
+  display: grid;
+  flex: 1;
+  grid-template-columns: auto minmax(160px, 1fr);
+  align-items: center;
+  gap: 12px;
+  height: 16px;
+  margin-right: 7px;
+}
+
+.layer-properties-slider .app-slider-track {
+  top: 0;
+}
+
+.image-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 320px;
+}
+
+.image-size-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.image-size-heading {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.image-size-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.image-size-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.image-size-summary p,
+.image-size-memory {
+  margin: 0;
+}
+
+.image-anchor {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.image-anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 18px);
+  grid-template-rows: repeat(3, 18px);
+  gap: 2px;
+}
+
+.image-anchor-grid > * {
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.image-anchor-grid [data-selected] {
+  background: var(--accent);
+}
+
+.app-aux {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* The panel toggles, then a divider before Settings and Help (UI-AUX-01). */
+.app-aux-panels {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  margin-right: 4px;
+  border-right: 1px solid var(--header-separator);
+}
+
+/* A visible panel's toggle: tinted, with an accent bar under its name. */
+.app-aux-panels .app-aux-button[data-selected] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.app-canvas-area:focus {
+  outline: none;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.35);
+}
+
+.modal {
+  max-width: min(480px, 90vw);
+  max-height: 90vh;
+  overflow: auto;
+  background: var(--panel-background);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+}
+
+.modal-dialog {
+  padding: 16px;
+  outline: none;
+}
+
+.modal-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal-wide {
+  max-width: min(720px, 90vw);
+}
+
+.paste-thumbnail {
+  display: block;
+  max-width: 120px;
+  max-height: 120px;
+  margin: 8px 0;
+  border: 1px solid var(--border, #888);
+  image-rendering: pixelated;
+}
+
+.unsaved-heading {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.unsaved-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.unsaved-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 120px;
+  padding: 6px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.unsaved-thumb img {
+  width: 100%;
+  height: 80px;
+  object-fit: contain;
+  background: repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 50% / 12px 12px;
+}
+
+.unsaved-thumb span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unsaved-thumb[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.shortcut-group h3 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.shortcut-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.shortcut-table th,
+.shortcut-table td {
+  padding: 2px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* Menu titles and the aux buttons share one flat button style: a tint on hover and while open. */
+.app-aux-button,
+.app-menu-button {
+  min-width: 26px;
+  height: 26px;
+  margin: 0;
+  padding: 0 8px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: var(--control-radius);
+  font: inherit;
+  cursor: default;
+  outline: none;
+  transition: background-color 0.12s ease;
+}
+
+.app-aux-button[data-hovered],
+.app-menu-button[data-hovered] {
+  background: var(--hover-background);
+}
+
+.app-aux-button[data-pressed],
+.app-menu-button[data-pressed],
+.app-menu-button[aria-expanded="true"],
+.app-aux-button[aria-expanded="true"] {
+  background: var(--pressed-background);
+}
+
+.app-aux-button[data-focus-visible],
+.app-menu-button[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.app-popover {
+  background: var(--popover-background);
+  color: var(--text);
+  border: 1px solid var(--popover-border);
+  border-radius: 8px;
+  box-shadow: var(--popover-shadow);
+}
+
+.app-menu {
+  min-width: 180px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  outline: none;
+}
+
+.app-menu-list {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.app-menu-item {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 24px;
+  padding: 5px 20px 5px 24px;
+  border-radius: 4px;
+  cursor: default;
+  outline: none;
+}
+
+.app-menu-item[data-selected]::before {
+  content: "\2713";
+  position: absolute;
+  left: 8px;
+}
+
+.app-menu-item[data-disabled] {
+  color: var(--text-disabled);
+}
+
+.app-menu-item[data-focused] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.app-menu-group::after {
+  content: "\25B8";
+  margin-left: auto;
+}
+
+.app-menu-label {
+  white-space: nowrap;
+}
+
+.app-menu-shortcut {
+  margin-left: auto;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.app-menu-item[data-focused] .app-menu-shortcut {
+  color: inherit;
+}
+
+.app-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+.app-canvas-frame {
+  --ruler-size: 0px;
+  position: absolute;
+  inset: 0;
+}
+
+.app-viewport {
+  position: absolute;
+  inset: var(--ruler-size) 0 0 var(--ruler-size);
+}
+
+.app-canvas-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* The Magic Wand's busy spinner at the click point while a flood computes (TL-SEL-WAND-01). */
+.app-tool-busy {
+  position: absolute;
+  z-index: 2;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  box-sizing: border-box;
+  border: 2px solid rgba(128, 128, 128, 0.4);
+  border-top-color: #1f6feb;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: app-tab-spin 0.8s linear infinite;
+}
+
+.app-ruler {
+  position: absolute;
+  display: block;
+  background: var(--ruler-background);
+}
+
+.app-ruler-horizontal {
+  top: 0;
+  left: var(--ruler-size);
+  width: calc(100% - var(--ruler-size));
+  height: var(--ruler-size);
+}
+
+.app-ruler-vertical {
+  top: var(--ruler-size);
+  left: 0;
+  width: var(--ruler-size);
+  height: calc(100% - var(--ruler-size));
+}
+
+/* The cursor marker on each ruler; it moves with a transform, so the ruler is not redrawn. */
+.app-ruler-marker {
+  position: absolute;
+  pointer-events: none;
+  background: var(--ruler-marker);
+}
+
+.app-ruler-marker-horizontal {
+  top: 0;
+  left: var(--ruler-size);
+  width: 1px;
+  height: var(--ruler-size);
+}
+
+.app-ruler-marker-vertical {
+  top: var(--ruler-size);
+  left: 0;
+  width: var(--ruler-size);
+  height: 1px;
+}
+
+.app-ruler-corner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--ruler-size);
+  height: var(--ruler-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ruler-background);
+  color: var(--ruler-text);
+  font-size: 10px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-notice {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--panel-background);
+  border: 1px solid var(--border);
+}
+
+.app-shell :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A canvas area in use by the pointer shows no ring when a modifier key is pressed (AppShell). */
+.app-shell .app-canvas-area[data-pointer-focus]:focus-visible {
+  outline: none;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+:root {
+  --color-checkerboard: repeating-conic-gradient(#c8c8c8 0% 25%, #ffffff 0% 50%) 0 0 / 8px 8px;
+}
+
+.colors-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  min-height: 0;
+  font-size: 12px;
+}
+
+.colors-panel.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+.colors-top {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+/* Beside the chips: swap, reset and More on top, the palette's add button and menu below. */
+.colors-controls {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.colors-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The two chips sit side by side without overlapping, so each is its own 30px target (WEB-A11Y-01). */
+.color-pair {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  flex: none;
+}
+
+.color-chip {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  cursor: default;
+}
+
+.color-chip.is-primary {
+  left: 0;
+  top: 0;
+}
+
+.color-chip.is-secondary {
+  right: 0;
+  bottom: 0;
+}
+
+.color-chip[data-selected] {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.color-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-background);
+  color: inherit;
+  cursor: default;
+}
+
+.color-icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+/*
+ * The expanded editor, in two columns so the panel stays short: the wheel with the hex box under
+ * it on the left, and on the right one block per group with a small heading and rows of the same
+ * height (a one-letter label, the track, a spin box). Every height here is fixed, so the expanded
+ * panel's height is known ahead (COLORS_EXPANDED_MIN in shell/panel-layout.ts).
+ */
+.color-editor {
+  --color-field-height: 20px;
+  display: grid;
+  grid-template-columns: clamp(84px, 42%, 116px) minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.color-editor-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  align-self: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.color-editor-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.color-wheel {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.color-wheel-nub {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #000000;
+  pointer-events: none;
+}
+
+.color-wheel-nub.is-other {
+  opacity: 0;
+  transition: opacity 0.225s ease-out;
+}
+
+.color-wheel-nub.is-other.is-shown {
+  opacity: 1;
+  transition: opacity 0.15s ease-in;
+}
+
+/* Rows are 4px apart, so each 20px spin box keeps a 24px target spacing (WCAG 2.5.8). */
+.color-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.color-group-heading {
+  height: 12px;
+  margin: 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.75;
+}
+
+.color-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--color-field-height);
+}
+
+.color-slider {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.color-slider-track {
+  position: relative;
+  height: 10px;
+  margin: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+/* React Aria centres the thumb on its left/top point (translate -50%, -50%). */
+.color-slider-track > div {
+  position: absolute;
+  top: 50%;
+  box-sizing: border-box;
+  width: 8px;
+  height: 16px;
+  background: #ffffff;
+  border: 1px solid #000000;
+  border-radius: 2px;
+}
+
+.color-spin,
+.color-hex {
+  flex: none;
+}
+
+.color-spin input,
+.color-hex input {
+  box-sizing: border-box;
+  width: 36px;
+  height: var(--color-field-height);
+  min-height: 0;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.color-hex {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.color-hex input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  text-align: left;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+/* The picker dialog has no sidebar to take its width from. */
+.color-picker-form .color-editor {
+  width: 340px;
+}
+.colors-palette-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.color-tool-button {
+  height: 24px;
+  min-width: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-background);
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+
+.color-add-button {
+  width: 24px;
+  padding: 0;
+  font-weight: 600;
+}
+
+.color-add-button[data-selected] {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.color-palette-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+/* 16 columns (set inline from PALETTE_COLUMNS) of square swatches that share the panel's width. */
+.color-palette {
+  display: grid;
+  gap: 1px;
+  justify-content: start;
+}
+
+.color-palette-swatch {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1px solid rgb(0 0 0 / 0.35);
+  border-radius: 1px;
+}
+
+/*
+ * Hover and keyboard focus ring a swatch black, white, black: the white ring shows on dark colors
+ * and a black one on light colors, in either scheme. The rings are drawn over the border and in
+ * the gap, so nothing moves; keyboard focus adds the accent ring outside them.
+ */
+.color-palette-swatch:hover,
+.color-palette-swatch:focus-visible {
+  position: relative;
+  z-index: 1;
+  border-color: #ffffff;
+  box-shadow:
+    inset 0 0 0 1px #000000,
+    0 0 0 1px #000000;
+}
+
+.app-shell .color-palette-swatch:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px #000000,
+    0 0 0 1px #000000,
+    0 0 0 3px var(--accent);
+}
+
+.color-palette.is-adding .color-palette-swatch {
+  cursor: copy;
+}
+
+.color-palette.is-adding.is-blink {
+  opacity: 0.4;
+}
+
+.color-more-button {
+  margin-left: auto;
+  flex: none;
+}
+
+.palette-name-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 300px;
+}
+
+.palette-name-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.palette-name-error {
+  color: #c00000;
+}
+
+.palette-name-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.palette-name-list-heading {
+  margin: 0;
+  font-size: 12px;
+}
+
+.palette-name-option {
+  padding: 2px 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.palette-name-option[aria-pressed="true"] {
+  background: var(--panel-header-background);
+}
+
+/* Forced colors: the scheme is fixed and the UI uses the system colors (UI-THEME-01). */
+@media (forced-colors: active) {
+  .app-shell {
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .app-menu-bar,
+  .app-tool-options,
+  .app-image-tabs,
+  .app-sidebar,
+  .app-status-bar,
+  .app-canvas-area {
+    background: Canvas;
+    border-color: CanvasText;
+  }
+
+  .app-panel-header {
+    border-bottom: 1px solid CanvasText;
+  }
+
+  .app-splitter,
+  .app-splitter-width {
+    background: ButtonText;
+  }
+}
+
+/*
+ * Reduced motion (WEB-A11Y-01). Transitions, fades, shakes and smooth scrolling stop. The rule
+ * starts at :root, so the portals (menus, dialogs, popovers) are covered too. Progress
+ * indicators keep turning, slowly, since they show that work is still going on. The doubled
+ * :root raises the specificity above the single-class transitions of the component stylesheets.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root:root *,
+  :root:root *::before,
+  :root:root *::after {
+    transition-duration: 0ms;
+    animation-duration: 0ms;
+    scroll-behavior: auto;
+  }
+
+  :root:root .app-tool-busy,
+  :root:root .app-image-tab-spinner,
+  :root:root .app-status-progress-indeterminate {
+    animation-duration: 2.4s;
+  }
+}

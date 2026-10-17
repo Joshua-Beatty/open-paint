@@ -1,0 +1,162 @@
+/* The Levels dialog (ADJ-LEVELS-UI). Histogram colors blend toward the theme's base color. */
+:root {
+  --levels-blend: black;
+}
+
+[data-color-scheme="dark"] {
+  --levels-blend: white;
+}
+
+.levels-form {
+  display: flex;
+  flex-direction: column;
+  min-width: min(460px, 90vw);
+  gap: 8px;
+}
+
+.levels-body {
+  display: flex;
+  gap: 10px;
+  height: 300px;
+  min-height: 240px;
+}
+
+.levels-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-height: 0;
+}
+
+.levels-histogram-column {
+  flex: 1 1 0;
+  min-width: 90px;
+}
+
+.levels-histogram-wrap {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+}
+
+.levels-histogram {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--levels-background, transparent);
+  border: 1px solid #808080;
+}
+
+.levels-heading {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.levels-input,
+.levels-output {
+  flex: 0 0 auto;
+  height: 100%;
+}
+
+.levels-input {
+  width: 110px;
+}
+
+.levels-output {
+  width: 150px;
+}
+
+.levels-output-row {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  width: 100%;
+  min-height: 0;
+}
+
+.levels-output-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.levels-gradient {
+  position: relative;
+  flex: 1 1 auto;
+  width: 24px;
+  min-height: 120px;
+  border: 1px solid #808080;
+  touch-action: none;
+}
+
+.levels-gradient[data-disabled] {
+  opacity: 0.5;
+}
+
+.levels-nub {
+  position: absolute;
+  left: -8px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid #888;
+  transform: translateY(50%);
+  pointer-events: none;
+}
+
+.levels-nub.is-highlighted {
+  border-left-color: #fff;
+}
+
+.levels-spin-wrap {
+  width: 100%;
+}
+
+.levels-spin {
+  width: 100%;
+}
+
+.levels-spin input {
+  width: 100%;
+  min-height: 24px;
+  box-sizing: border-box;
+  text-align: right;
+}
+
+.levels-swatch {
+  width: 40px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #666;
+  cursor: pointer;
+}
+
+.levels-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.levels-footer-left,
+.levels-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.levels-button {
+  width: 85px;
+}
+
+.levels-channels {
+  display: flex;
+  gap: 8px;
+}

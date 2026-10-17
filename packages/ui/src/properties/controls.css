@@ -1,0 +1,556 @@
+/* The shared field, drop-down and stepper controls of property forms and toolbars. */
+
+.prop-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/*
+ * Sliders, dials and pads are dragged, never selected as text: quick presses one after another
+ * would otherwise select the value written on them as a double click does.
+ */
+:where(
+  .prop-slider,
+  .prop-inline-slider-track,
+  .prop-dial,
+  .prop-pad,
+  .prop-wheel,
+  .react-aria-Slider,
+  .color-slider,
+  .app-status-zoom-slider
+) {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* An icon set's filled outline (filledIcon): filled in the text color, never stroked. */
+svg.icon-filled {
+  fill: currentColor;
+  stroke: none;
+}
+
+.prop-chevron {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
+}
+
+/* A text box with buttons inside its frame: the number fields and the preset combo box. */
+.prop-field {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  height: 28px;
+  overflow: hidden;
+}
+
+.prop-field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+
+/*
+ * The compact slider of a toolbar row (InlineSlider): a field-sized box whose tinted fill and
+ * accent edge show the value's place in its range, with the value written over it.
+ */
+.prop-inline-slider {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: 60px;
+  height: 28px;
+}
+
+.prop-inline-slider-track,
+.prop-inline-slider-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--control-border, ButtonBorder);
+  border-radius: var(--control-radius, 6px);
+  background: var(--control-background, Field);
+  color: var(--text, FieldText);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.prop-inline-slider-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background-image: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--accent, Highlight) 26%, transparent) var(--prop-fill, 0%),
+    transparent var(--prop-fill, 0%)
+  );
+  cursor: ew-resize;
+  touch-action: none;
+  outline: none;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+/* The fill's edge: a thin accent line at the value's place. */
+.prop-inline-slider-track::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: clamp(0px, calc(var(--prop-fill, 0%) - 1px), calc(100% - 2px));
+  width: 2px;
+  background: var(--accent, Highlight);
+  pointer-events: none;
+}
+
+.prop-inline-slider-value {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.prop-inline-slider-track:hover:not([aria-disabled="true"]) {
+  border-color: var(--control-border-hover, Highlight);
+}
+
+.prop-inline-slider-track:focus-visible,
+.prop-inline-slider-input:focus-visible {
+  border-color: var(--accent, Highlight);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring, Highlight);
+}
+
+.prop-inline-slider-track[aria-disabled="true"] {
+  color: var(--text-disabled, GrayText);
+  cursor: default;
+  opacity: 0.7;
+}
+
+.prop-inline-slider-input {
+  min-height: 0;
+  padding: 0 6px;
+  text-align: center;
+}
+
+.prop-field-dropdown {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* Two small stepper buttons stacked at the end of the field. */
+.prop-steppers {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 16px;
+}
+
+.prop-stepper {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.prop-stepper-icon {
+  width: 8px;
+  height: 5px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.prop-select-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  font: inherit;
+  white-space: nowrap;
+}
+
+/* A toolbar drop-down keeps its parts close, so a full row of them fits the options bar. */
+.prop-select-button.is-inline {
+  gap: 4px;
+  max-width: 240px;
+  padding: 0 5px 0 6px;
+}
+
+.prop-select-button.is-inline .prop-select-value {
+  gap: 5px;
+}
+
+/*
+ * The control style shared by every form control of the app: the tool options bar, dialogs,
+ * Settings and the panels. Controls without a class of their own get it through the default
+ * react-aria class names; the rules are wrapped in :where() so a component's own class wins.
+ * The colors come from the theme variables, so Light, Dark and Automatic all apply.
+ */
+
+/* Framed fields: text boxes, the frames of number fields and combo boxes, native selects. */
+:where(
+  input:not(
+    [type="checkbox"],
+    [type="radio"],
+    [type="range"],
+    [type="file"],
+    [type="color"],
+    [type="hidden"],
+    [type="button"],
+    [type="submit"]
+  ),
+  textarea,
+  select,
+  .prop-field,
+  .react-aria-NumberField .react-aria-Group,
+  .react-aria-ComboBox .react-aria-Group
+) {
+  box-sizing: border-box;
+  min-height: 28px;
+  border: 1px solid var(--control-border, #8a8a94);
+  border-radius: var(--control-radius, 6px);
+  background: var(--control-background, Field);
+  color: var(--text, FieldText);
+  font: inherit;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+:where(input, textarea, select) {
+  padding: 0 8px;
+}
+
+:where(textarea) {
+  padding: 6px 8px;
+}
+
+:where(input, textarea)::placeholder {
+  color: var(--control-placeholder, GrayText);
+}
+
+/* A field inside a frame draws no frame of its own; the frame shows hover and focus for it. */
+:where(.prop-field, .react-aria-Group) :where(input) {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+:where(.react-aria-NumberField, .react-aria-ComboBox) .react-aria-Group {
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+:where(.react-aria-NumberField, .react-aria-ComboBox) .react-aria-Group .react-aria-Input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/*
+ * Buttons: the drop-down triggers, and the plain buttons of dialogs and pages. A dialog's default
+ * button (`is-default`, the one Enter presses) looks like the others, with no colour of its own.
+ */
+:where(
+  .prop-select-button,
+  .react-aria-Select > .react-aria-Button,
+  .react-aria-Button,
+  .is-default,
+  .prop-reset,
+  .prop-button,
+  .prop-browse
+) {
+  box-sizing: border-box;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--control-border, ButtonBorder);
+  border-radius: var(--control-radius, 6px);
+  background: var(--control-background, ButtonFace);
+  color: var(--text, ButtonText);
+  font: inherit;
+  cursor: pointer;
+  outline: none;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+:where(.prop-select-button) {
+  padding: 0 6px 0 8px;
+}
+
+/* Buttons inside a field's frame (steppers, the preset list) are flat parts of the frame. */
+:where(.prop-field, .react-aria-Group)
+:where(.react-aria-Button, .prop-stepper, .prop-field-dropdown) {
+  min-height: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted, inherit);
+}
+
+:where(.prop-field) :where(.prop-stepper) {
+  padding: 0;
+}
+
+:where(.prop-field, .react-aria-Group)
+  :where(.react-aria-Button, .prop-stepper, .prop-field-dropdown)[data-hovered] {
+  background: var(--hover-background, transparent);
+  color: var(--text, inherit);
+}
+
+:where(.prop-field, .react-aria-Group)
+  :where(.react-aria-Button, .prop-stepper, .prop-field-dropdown)[data-pressed] {
+  background: var(--pressed-background, transparent);
+}
+
+/* Hover. */
+:where(input, textarea, select):hover:not(:disabled, :focus),
+:where(.prop-field, .react-aria-Group)[data-hovered]:not([data-focus-within], [data-disabled]),
+:where(
+  .prop-select-button,
+  .react-aria-Button,
+  .is-default,
+  .prop-reset,
+  .prop-button,
+  .prop-browse
+)[data-hovered]:not([data-disabled]) {
+  border-color: var(--control-border-hover, Highlight);
+}
+
+:where(
+  .prop-select-button,
+  .react-aria-Button,
+  .is-default,
+  .prop-reset,
+  .prop-button,
+  .prop-browse
+)[data-hovered]:not([data-disabled]) {
+  background: var(--control-background-hover, ButtonFace);
+}
+
+:where(
+  .prop-select-button,
+  .react-aria-Button,
+  .is-default,
+  .prop-reset,
+  .prop-button,
+  .prop-browse
+)[data-pressed]:not([data-disabled]),
+:where(.react-aria-Select)[data-open] > .react-aria-Button,
+:where(.prop-select)[data-open] .prop-select-button {
+  background: var(--pressed-background, ButtonFace);
+}
+
+/* Focus: the accent border and a soft ring, on the frame of a field with parts. */
+:where(input, textarea, select):focus-visible,
+:where(.prop-field, .react-aria-Group)[data-focus-within],
+:where(
+  .prop-select-button,
+  .react-aria-Button,
+  .is-default,
+  .prop-reset,
+  .prop-button,
+  .prop-browse
+)[data-focus-visible] {
+  border-color: var(--accent, Highlight);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring, Highlight);
+}
+
+:where(.prop-field, .react-aria-Group) :where(input):focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+/* Disabled. */
+:where(input, textarea, select):disabled,
+:where(.prop-field, .react-aria-Group)[data-disabled],
+:where(
+  .prop-select-button,
+  .react-aria-Button,
+  .is-default,
+  .prop-reset,
+  .prop-button,
+  .prop-browse
+)[data-disabled] {
+  border-color: var(--control-border, GrayText);
+  background: var(--control-disabled-background, Field);
+  color: var(--text-disabled, GrayText);
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Lists that drop down: a solid panel with a shadow, a bounded height and a scroll bar. */
+:where(.prop-popover, .react-aria-Popover:not(.app-popover, .overflow-menu-popover)) {
+  box-sizing: border-box;
+  min-width: var(--trigger-width);
+  border: 1px solid var(--popover-border, var(--border));
+  border-radius: 8px;
+  background: var(--popover-background, Canvas);
+  color: var(--text, CanvasText);
+  box-shadow: var(--popover-shadow, 0 4px 12px rgb(0 0 0 / 0.25));
+  overflow: auto;
+}
+
+:where(.overflow-menu-popover) {
+  border: 1px solid var(--popover-border, var(--border));
+  border-radius: 8px;
+  background: var(--popover-background, Canvas);
+  color: var(--text, CanvasText);
+  box-shadow: var(--popover-shadow, 0 4px 12px rgb(0 0 0 / 0.25));
+}
+
+:where(.prop-listbox, .react-aria-Popover .react-aria-ListBox) {
+  box-sizing: border-box;
+  max-height: min(320px, var(--available-height, 320px), 60vh);
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  border: 0;
+  background: transparent;
+  list-style: none;
+  outline: none;
+  overscroll-behavior: contain;
+}
+
+:where(.prop-option, .react-aria-ListBoxItem) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 4px;
+  white-space: nowrap;
+  cursor: default;
+  outline: none;
+}
+
+:where(.prop-option, .react-aria-ListBoxItem)[data-focused],
+:where(.prop-option, .react-aria-ListBoxItem)[data-hovered] {
+  background: var(--hover-background, Highlight);
+}
+
+:where(.prop-option, .react-aria-ListBoxItem)[data-selected] {
+  background: var(--accent-soft, Highlight);
+  color: var(--text, HighlightText);
+  font-weight: 600;
+}
+
+:where(.prop-option, .react-aria-ListBoxItem)[data-focus-visible] {
+  box-shadow: inset 0 0 0 2px var(--accent, Highlight);
+}
+
+:where(.prop-option, .react-aria-ListBoxItem)[data-disabled] {
+  color: var(--text-disabled, GrayText);
+}
+
+:where(.prop-listbox-header, .react-aria-ListBox header) {
+  padding: 6px 10px 2px;
+  color: var(--text-muted, inherit);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Checkboxes and radio buttons draw their box or circle before the caption. */
+:where(.react-aria-Checkbox, .prop-radio, .react-aria-Radio) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  cursor: pointer;
+}
+
+:where(.react-aria-Checkbox, .prop-radio, .react-aria-Radio)::before {
+  content: "";
+  flex: none;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--control-border, ButtonBorder);
+  border-radius: 4px;
+  background: var(--control-background, Field) center / 12px 12px no-repeat;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+
+:where(.prop-radio, .react-aria-Radio)::before {
+  border-radius: 50%;
+}
+
+:where(.react-aria-Checkbox, .prop-radio, .react-aria-Radio)[data-hovered]::before {
+  border-color: var(--control-border-hover, Highlight);
+}
+
+:where(.react-aria-Checkbox)[data-selected]::before {
+  border-color: var(--accent, Highlight);
+  background-color: var(--accent, Highlight);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2 5 8.5l4.5-5' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+:where(.prop-radio, .react-aria-Radio)[data-selected]::before {
+  border: 5px solid var(--accent, Highlight);
+  background-color: var(--control-background, Field);
+}
+
+:where(.react-aria-Checkbox, .prop-radio, .react-aria-Radio)[data-focus-visible]::before {
+  box-shadow: 0 0 0 3px var(--focus-ring, Highlight);
+}
+
+:where(.react-aria-Checkbox, .prop-radio, .react-aria-Radio)[data-disabled] {
+  color: var(--text-disabled, GrayText);
+  cursor: default;
+}
+
+:where(.react-aria-Checkbox, .prop-radio, .react-aria-Radio)[data-disabled]::before {
+  opacity: 0.6;
+}

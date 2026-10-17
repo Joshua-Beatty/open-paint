@@ -1,0 +1,33 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+*.tsbuildinfo
+target/
+pkg/
+
+# Test artifacts
+playwright-report/
+test-results/
+tests/golden/**/actual/
+tests/golden/**/diff/
+
+# Environment and editor
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+
+# Local notes
+AGENTS.md
+
+# Benchmark, lag recording and UI review output
+.perf/
+.ui-review/

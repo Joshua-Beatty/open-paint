@@ -1,0 +1,40 @@
+[package]
+name = "opaint-cpu"
+version = "0.0.0"
+edition = "2021"
+description = "OpenPaint CPU reference kernels compiled to WebAssembly."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+avif-serialize = { version = "0.8.9", default-features = false }
+gif = "0.14.2"
+jpeg-encoder = "0.7.1"
+miniz_oxide = "0.9.1"
+oxideav-webp = { version = "0.3.1", default-features = false }
+rav1e = { version = "0.8.1", default-features = false }
+tiff = { version = "0.11.3", default-features = false, features = ["deflate", "lzw"] }
+weezl = "0.1.12"
+wasm-bindgen = "0.2.129"
+jxl-oxide = { version = "0.12.6", default-features = false }
+texture2ddecoder = "0.1.2"
+jpeg-decoder = { version = "0.3.2", default-features = false }
+png = "0.18.1"
+
+[dev-dependencies]
+avif-parse = "2.1.0"
+
+[package.metadata.wasm-pack.profile.release]
+# Match rustc's default wasm32 features plus the +simd128 set in crates/.cargo/config.toml.
+wasm-opt = [
+  "-O3",
+  "--enable-simd",
+  "--enable-bulk-memory",
+  "--enable-nontrapping-float-to-int",
+  "--enable-sign-ext",
+  "--enable-mutable-globals",
+  "--enable-multivalue",
+  "--enable-reference-types",
+]

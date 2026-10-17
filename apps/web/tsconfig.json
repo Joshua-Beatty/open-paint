@@ -1,0 +1,33 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "node_modules/.types",
+    "rootDir": ".",
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "src",
+    "e2e",
+    "bench",
+    "lag",
+    "vite",
+    "vite.config.ts",
+    "vite.config.test.ts",
+    "playwright.config.ts",
+    "playwright.bench.config.ts"
+  ],
+  "references": [
+    { "path": "../../packages/codecs" },
+    { "path": "../../packages/document" },
+    { "path": "../../packages/effects" },
+    { "path": "../../packages/engine" },
+    { "path": "../../packages/extension-api" },
+    { "path": "../../packages/i18n" },
+    { "path": "../../packages/storage" },
+    { "path": "../../packages/properties" },
+    { "path": "../../packages/tools" },
+    { "path": "../../packages/ui" }
+  ]
+}

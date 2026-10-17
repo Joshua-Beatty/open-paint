@@ -1,0 +1,32 @@
+{
+  "name": "openpaint",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.6",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "build": "pnpm build:wasm && tsc -b && pnpm -r build",
+    "build:wasm": "pnpm --filter @openpaint/cpu build:wasm",
+    "dev": "pnpm --filter @openpaint/web dev",
+    "test": "vitest run",
+    "test:rust": "cargo test --manifest-path crates/Cargo.toml",
+    "lint": "biome check .",
+    "lint:rust": "cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings",
+    "format": "biome format --write .",
+    "typecheck": "tsc -b",
+    "verify": "pnpm lint && pnpm lint:rust && pnpm test:rust && pnpm build:wasm && pnpm typecheck && pnpm test",
+    "test:e2e": "pnpm --filter @openpaint/web test:e2e",
+    "bench": "pnpm --filter @openpaint/web bench",
+    "bench:compare": "pnpm --filter @openpaint/web bench:compare",
+    "lag": "pnpm --filter @openpaint/web lag",
+    "test:golden": "pnpm --filter @openpaint/golden test:browser",
+    "golden:update": "pnpm --filter @openpaint/golden update-goldens"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.4"
+  }
+}

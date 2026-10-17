@@ -1,0 +1,85 @@
+/*
+ * A one-row toolbar that never wraps (OverflowRow). Wrappers between the row and its items use
+ * display: contents, so every item is a flex item of the row. Items that do not fit stay in the
+ * layout, clipped and invisible, so their widths can still be measured; the More menu shows them.
+ */
+
+.overflow-row {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+}
+
+.overflow-row-items {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.overflow-row-items [data-strip-item] {
+  flex: none;
+  max-height: 100%;
+}
+
+.overflow-row-items [data-overflowed] {
+  visibility: hidden;
+}
+
+.overflow-row-more {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding-left: 6px;
+}
+
+.overflow-row-more-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius, 6px);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+}
+
+.overflow-row-more-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.overflow-menu-popover {
+  max-width: min(420px, 90vw);
+  max-height: min(70vh, 560px);
+  overflow: auto;
+}
+
+.overflow-menu {
+  padding: 8px;
+  outline: none;
+}
+
+.overflow-menu-items {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.overflow-menu-items [data-strip-item][hidden] {
+  display: none;
+}

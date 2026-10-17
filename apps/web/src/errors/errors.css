@@ -1,0 +1,5 @@
+/* The fatal dialog's details reuse `.error-details` from @openpaint/ui's property-dialog.css. */
+.error-details-toggle {
+  align-self: flex-start;
+  margin: 8px 0;
+}

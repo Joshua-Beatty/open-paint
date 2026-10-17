@@ -1,0 +1,17 @@
+{
+  "name": "@openpaint/cpu",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Rust/WASM CPU reference kernels (wasm-pack output of crates/opaint-cpu).",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./pkg/opaint_cpu.d.ts",
+      "default": "./pkg/opaint_cpu.js"
+    },
+    "./opaint_cpu_bg.wasm": "./pkg/opaint_cpu_bg.wasm"
+  },
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs"
+  }
+}

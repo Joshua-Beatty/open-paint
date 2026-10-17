@@ -1,0 +1,16 @@
+{
+  "name": "@openpaint/storage",
+  "version": "0.0.0",
+  "private": true,
+  "description": "IndexedDB, OPFS, settings, session recovery and file handles.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@openpaint/document": "workspace:*"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5"
+  }
+}

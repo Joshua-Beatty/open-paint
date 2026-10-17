@@ -1,0 +1,10 @@
+{
+  "name": "@openpaint/tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tool runtimes (pointer logic) registered through the extension API.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

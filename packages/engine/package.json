@@ -1,0 +1,19 @@
+{
+  "name": "@openpaint/engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Engine worker: tile store, WebGPU compositor, mip cache and effect graph runner.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./v2-cases": "./src/v2/gpu-cases.ts"
+  },
+  "dependencies": {
+    "@openpaint/cpu": "workspace:*",
+    "@openpaint/document": "workspace:*",
+    "@openpaint/effects": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5"
+  }
+}

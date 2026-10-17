@@ -1,0 +1,25 @@
+/* The print-only view of the flattened image (WEB-PRN-01). It stays hidden on screen. */
+.print-view {
+  display: none;
+}
+
+@media print {
+  body > :not(.print-view) {
+    /* biome-ignore lint/complexity/noImportantStyles: the app's own classes must not keep it on paper */
+    display: none !important;
+  }
+
+  .print-view {
+    display: block;
+  }
+
+  .print-view.is-fit {
+    height: 100vh;
+  }
+
+  .print-view img {
+    display: block;
+    max-width: none;
+    object-fit: contain;
+  }
+}

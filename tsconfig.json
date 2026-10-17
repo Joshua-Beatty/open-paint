@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/extension-api" },
+    { "path": "packages/properties" },
+    { "path": "packages/document" },
+    { "path": "packages/engine" },
+    { "path": "packages/effects" },
+    { "path": "packages/tools" },
+    { "path": "packages/codecs" },
+    { "path": "packages/storage" },
+    { "path": "packages/ui" },
+    { "path": "packages/i18n" },
+    { "path": "apps/web" },
+    { "path": "tests/golden" }
+  ]
+}

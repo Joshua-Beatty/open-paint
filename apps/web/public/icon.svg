@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>OpenPaint</title>
+  <rect width="512" height="512" rx="96" fill="#1f6feb"/>
+  <rect x="112" y="112" width="208" height="208" rx="24" fill="#ffffff" opacity="0.55"/>
+  <rect x="192" y="192" width="208" height="208" rx="24" fill="#ffffff"/>
+</svg>

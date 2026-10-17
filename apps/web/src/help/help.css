@@ -1,0 +1,102 @@
+.about {
+  display: grid;
+  gap: 6px;
+}
+
+.about-banner {
+  justify-self: center;
+  width: 64px;
+  height: 64px;
+}
+
+.about-name {
+  margin: 0;
+  font-size: 1.25em;
+  font-weight: 600;
+}
+
+.about-component-list {
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.open-source-list {
+  display: grid;
+  gap: 8px;
+}
+
+.open-source-heading {
+  margin: 0 0 4px;
+  font-size: 0.95em;
+}
+
+.about-components {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+}
+
+.about-license {
+  padding: 6px 8px;
+}
+
+.about-license p {
+  margin: 0 0 4px;
+}
+
+.about-copyright {
+  white-space: pre-line;
+}
+
+.about-components li + li {
+  border-top: 1px solid var(--border);
+}
+
+.about-component {
+  display: flex;
+  box-sizing: border-box;
+  min-height: 28px;
+  align-items: center;
+  width: 100%;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: start;
+}
+
+.about-license pre {
+  max-height: 14rem;
+  margin: 0;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.help-update-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.help-update-check p {
+  margin: 0;
+}
+
+.app-update-notice,
+.app-install-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-update-notice p,
+.app-install-hint p {
+  margin: 0;
+}
+
+.app-update-actions {
+  display: flex;
+  gap: 8px;
+}

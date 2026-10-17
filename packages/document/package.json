@@ -1,0 +1,18 @@
+{
+  "name": "@openpaint/document",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Document model, layers, blend-mode ids, selection, history and the .opaint format.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@openpaint/cpu": "workspace:*",
+    "@openpaint/i18n": "workspace:*",
+    "clipper2-js": "1.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5"
+  }
+}

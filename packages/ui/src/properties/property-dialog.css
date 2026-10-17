@@ -1,0 +1,561 @@
+/* Generated property dialogs (FX-FW-UI). The dialog frame reuses the app's .modal classes. */
+
+.modal.prop-dialog {
+  width: min(90vw, calc(345px * var(--prop-dialog-scale, 1)));
+}
+
+.modal.prop-dialog.is-resizable {
+  resize: both;
+  overflow: auto;
+  min-width: 280px;
+  min-height: 200px;
+}
+
+.error-details {
+  max-height: 16em;
+  margin: 0 0 8px;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+
+.prop-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prop-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Tabs wrap onto a second line rather than widen the dialog. */
+.prop-tab-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.prop-tabs [role="tab"] {
+  padding: 4px 10px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.prop-tabs [role="tab"][aria-selected="true"] {
+  border-bottom: 2px solid var(--accent);
+  font-weight: 600;
+}
+
+.prop-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.prop-tooltip {
+  max-width: 280px;
+  padding: 4px 8px;
+  border: 1px solid var(--popover-border, var(--border));
+  border-radius: 6px;
+  background: var(--popover-background, var(--panel-background));
+  color: var(--text);
+  box-shadow: var(--popover-shadow, 0 2px 6px rgb(0 0 0 / 0.25));
+  font-size: 12px;
+  white-space: pre-line;
+}
+
+.prop-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A long heading wraps; the header line beside it takes what is left. */
+.prop-heading {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.prop-header-line {
+  flex: 1;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.prop-description,
+.prop-footnote,
+.prop-value-text {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9em;
+}
+
+.prop-footnote {
+  opacity: 0.8;
+}
+
+.prop-body {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prop-reset {
+  margin-left: auto;
+}
+
+/* Buttons and text fields in a property control are 24px targets (WEB-A11Y-01). */
+/* Buttons and fields in a property control are at least 24px targets (WEB-A11Y-01); controls.css
+ * draws them 28px tall. */
+
+.prop-slider-row,
+.prop-axis-row,
+.prop-angle-row,
+.prop-path-row,
+.prop-color-fields {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.prop-axis-letter {
+  width: 1.2em;
+  text-align: center;
+}
+
+.prop-slider {
+  position: relative;
+  flex: 1;
+  height: 16px;
+  min-width: 120px;
+  /* The 24px thumb overhangs the track ends by 12px; the margin keeps it clear of the number box. */
+  margin: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-background);
+  touch-action: none;
+}
+
+/* The thumb is a 24px target (WEB-A11Y-01); the 14px disc is drawn inside it. */
+.prop-slider-thumb {
+  position: absolute;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  outline: none;
+}
+
+.prop-slider-thumb::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--accent-text);
+  box-sizing: border-box;
+}
+
+.prop-slider-thumb:focus-visible::before {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.prop-slider-thumb[aria-disabled="true"]::before {
+  opacity: 0.5;
+}
+
+.prop-slider-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.prop-number {
+  display: inline-flex;
+  width: 96px;
+}
+
+.prop-number .prop-field {
+  width: 100%;
+}
+
+.prop-preset {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.prop-preset .prop-field-input {
+  width: 72px;
+}
+
+.prop-error {
+  color: var(--danger, #c62828);
+  font-size: 0.85em;
+}
+
+.prop-dial {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel-background);
+  touch-action: none;
+  outline: none;
+}
+
+.prop-dial:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.prop-dial-needle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 50%;
+  height: 2px;
+  margin-top: -1px;
+  transform-origin: 0 50%;
+  background: var(--accent);
+}
+
+.prop-pad {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  flex: none;
+  border: 1px solid var(--border);
+  background-color: var(--panel-background);
+  background-size: cover;
+  background-position: center;
+  touch-action: none;
+}
+
+.prop-pad.is-circular {
+  border-radius: 50%;
+  background-image: radial-gradient(
+    circle at 35% 35%,
+    #ffffff,
+    var(--panel-background) 60%,
+    #8a8a94
+  );
+}
+
+.prop-pad-nub {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px #000000;
+  background: var(--accent);
+}
+
+.prop-button,
+.prop-select-button,
+.prop-browse {
+  cursor: pointer;
+}
+
+.prop-select {
+  display: inline-flex;
+}
+
+.prop-listbox.is-multiline [role="option"] {
+  white-space: normal;
+}
+
+.prop-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A choice as a grid of icon buttons (ControlOptions.choiceGrid). Gap tracks set groups apart. */
+.prop-choice-grid {
+  --prop-choice-cell: 32px;
+  --prop-choice-gap: 6px;
+  display: grid;
+  gap: 2px;
+}
+
+.prop-choice-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 1px solid var(--control-border, ButtonBorder);
+  border-radius: var(--control-radius, 6px);
+  background: var(--control-background, ButtonFace);
+  color: var(--text, ButtonText);
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease;
+}
+
+.prop-choice-cell[data-hovered]:not([data-disabled]) {
+  border-color: var(--control-border-hover, Highlight);
+  background: var(--control-background-hover, ButtonFace);
+}
+
+.prop-choice-cell[data-selected] {
+  border-color: var(--accent, Highlight);
+  background: var(--accent-soft, Highlight);
+  color: var(--text, HighlightText);
+}
+
+.prop-choice-cell[data-focus-visible] {
+  box-shadow: 0 0 0 3px var(--focus-ring, Highlight);
+}
+
+.prop-choice-cell[data-disabled] {
+  color: var(--text-disabled, GrayText);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.prop-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.prop-text {
+  flex: 1;
+}
+
+.prop-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.prop-path-row .prop-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.prop-link {
+  color: var(--accent);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The wheel and its fields sit side by side when the dialog is wide enough for both, and the
+ * fields wrap under the wheel when it is not, so a color never widens the dialog.
+ */
+.prop-color {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  width: 100%;
+  min-width: 0;
+}
+
+.prop-wheel {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  flex: none;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, #ffffff, rgba(255, 255, 255, 0) 70%),
+    conic-gradient(from 90deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+  touch-action: none;
+}
+
+.prop-wheel-nub {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px #000000;
+}
+
+.prop-color-fields {
+  flex-direction: column;
+  align-items: stretch;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.prop-swatch {
+  display: block;
+  height: 24px;
+  border: 1px solid var(--border);
+}
+
+.prop-channels {
+  display: flex;
+  gap: 6px;
+}
+
+.prop-channels .prop-number {
+  flex: 1 1 84px;
+  width: auto;
+  min-width: 0;
+}
+
+.prop-dialog-separator {
+  margin: 12px 0 4px;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.prop-dialog-actions {
+  flex-wrap: wrap;
+}
+
+/*
+ * The inline layout (ControlLayout "inline"): one toolbar row. Every control is one 28px item,
+ * named by a short label before it or by an icon and a tooltip; nothing stacks or wraps.
+ */
+.prop-form.is-inline {
+  display: contents;
+}
+
+.prop-control.is-inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  white-space: nowrap;
+}
+
+.prop-control.is-inline .prop-body {
+  flex-wrap: nowrap;
+}
+
+.prop-inline-label {
+  color: var(--text-muted, var(--text));
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.prop-control.is-inline .prop-preset {
+  position: relative;
+  flex: none;
+}
+
+/* A refused entry shows below the box as a callout, so the row keeps its height. */
+.prop-control.is-inline .prop-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 5;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-background);
+  white-space: nowrap;
+}
+
+.prop-control.is-inline .prop-number {
+  width: auto;
+}
+
+.prop-control.is-inline .prop-number .prop-field-input {
+  width: 6ch;
+}
+
+.prop-control.is-inline .prop-preset .prop-field-input {
+  width: 5ch;
+}
+
+.prop-control.is-inline .prop-checkbox,
+.prop-control.is-inline .react-aria-Checkbox {
+  white-space: nowrap;
+}
+
+.prop-select-value {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prop-select-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Every value the button can show shares one grid cell; only the current one is visible. */
+.prop-select-sizer {
+  display: inline-grid;
+}
+
+.prop-select-sizer > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prop-select-ghost {
+  visibility: hidden;
+}
+
+.prop-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* An inline notice from the effect about its source, such as "nothing to align". */
+.prop-dialog-notice {
+  margin: 10px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  color: var(--text);
+  font-size: 0.9em;
+}
+
+.prop-help {
+  max-width: 280px;
+  padding: 8px 10px;
+  background: var(--panel-background);
+  color: var(--text);
+  border: 1px solid var(--border);
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@openpaint/properties",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Declarative property schema and rules (no UI).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@openpaint/i18n": "workspace:*"
+  }
+}

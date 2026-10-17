@@ -1,0 +1,75 @@
+/* The Curves dialog (ADJ-CURVES-UI). Luminosity is black in the light theme and white in the dark. The RGB curves keep their hue and drop to 75 % saturation in the dark theme. */
+:root {
+  --curves-luminosity: #000000;
+  --curves-red: #ff0000;
+  --curves-green: #00ff00;
+  --curves-blue: #0000ff;
+}
+
+[data-color-scheme="dark"] {
+  --curves-luminosity: #ffffff;
+  --curves-red: hsl(0 75% 50%);
+  --curves-green: hsl(120 75% 50%);
+  --curves-blue: hsl(240 75% 50%);
+}
+
+.curves-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(320px, 90vw);
+}
+
+.curves-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.curves-heading {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.curves-mode {
+  width: 90px;
+}
+
+.curves-plot {
+  width: 100%;
+}
+
+.curves-svg {
+  display: block;
+  color: var(--text);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.curves-channels {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.curves-readout,
+.curves-tip {
+  margin: 0;
+  min-height: 1em;
+  font-size: 12px;
+}
+
+.curves-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.curves-button {
+  min-width: 72px;
+}

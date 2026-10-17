@@ -1,0 +1,19 @@
+{
+  "name": "@openpaint/extension-api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Versioned internal API: effect, file-type, tool and shape contracts and registries.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@openpaint/document": "workspace:*",
+    "@openpaint/i18n": "workspace:*",
+    "@openpaint/properties": "workspace:*"
+  },
+  "devDependencies": {
+    "@openpaint/cpu": "workspace:*",
+    "@types/node": "26.6.5"
+  }
+}

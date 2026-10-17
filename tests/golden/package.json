@@ -1,0 +1,22 @@
+{
+  "name": "@openpaint/golden",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Golden-image harness: stored reference PNGs, exact Rust/WASM checks and WGSL checks in Chromium.",
+  "type": "module",
+  "scripts": {
+    "update-goldens": "node scripts/update-goldens.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@openpaint/codecs": "workspace:*",
+    "@openpaint/cpu": "workspace:*",
+    "@openpaint/document": "workspace:*",
+    "@openpaint/effects": "workspace:*",
+    "@openpaint/engine": "workspace:*",
+    "@playwright/test": "1.64.0",
+    "@types/node": "26.6.5",
+    "vite": "8.3.4",
+    "vitest": "5.0.4"
+  }
+}

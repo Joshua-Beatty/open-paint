@@ -1,0 +1,111 @@
+{
+  "$comment": "Fonts whose SIL Open Font License names a Reserved Font Name. A modified version (such as a subset) may not use that name, so each ships as the complete files its upstream distributes, byte for byte: the designers' repositories at a pinned commit, WOFF2 only where that repository publishes it, else its OpenType file. The files keep their upstream names; sha256 and bytes are checked by src/text/font-manifest.test.ts. The license text is the repository's OFL.txt at the same commit.",
+  "families": [
+    {
+      "family": "Lobster",
+      "version": "2.100",
+      "reservedFontName": "Lobster",
+      "repository": "https://github.com/impallari/The-Lobster-Font",
+      "commit": "0796aa8aa42f6cbc89fa61be4a2a12fdcd2b8998",
+      "license": { "file": "lobster/OFL.txt", "source": "OFL.txt" },
+      "files": [
+        {
+          "file": "lobster/Lobster-Regular.otf",
+          "source": "fonts/otf/Lobster-Regular.otf",
+          "bytes": 134356,
+          "sha256": "8e55bef06bbbb0acb67f315623593855ffd1717159942ecd7398435dfdea283b"
+        }
+      ]
+    },
+    {
+      "family": "Lora",
+      "version": "3.008",
+      "reservedFontName": "Lora",
+      "repository": "https://github.com/cyrealtype/Lora-Cyrillic",
+      "commit": "403b1a66ca2e79f81d749c5299559e168591a4df",
+      "license": { "file": "lora/OFL.txt", "source": "OFL.txt" },
+      "files": [
+        {
+          "file": "lora/Lora[wght].woff2",
+          "source": "fonts/webfonts/Lora[wght].woff2",
+          "bytes": 85096,
+          "sha256": "7c514f026f03de1b0fc344c0c0f0df141fcf16b6f9ab672db191908ba740dab6"
+        },
+        {
+          "file": "lora/Lora-Italic[wght].woff2",
+          "source": "fonts/webfonts/Lora-Italic[wght].woff2",
+          "bytes": 91636,
+          "sha256": "6cda7d220aebc862d9de3cdbd6e5068b64477aca6f284dbb1ca6e00114744faf"
+        }
+      ]
+    },
+    {
+      "family": "Merriweather",
+      "version": "2.200",
+      "reservedFontName": "Merriweather",
+      "repository": "https://github.com/SorkinType/Merriweather",
+      "commit": "4481226b336843648b5b2ee64f75737f262ded15",
+      "license": { "file": "merriweather/OFL.txt", "source": "OFL.txt" },
+      "files": [
+        {
+          "file": "merriweather/Merriweather-Regular.woff2",
+          "source": "fonts/webfonts/Merriweather-Regular.woff2",
+          "bytes": 77200,
+          "sha256": "bbd19b030d6011495502fcd2c858b3c117d3e7f57f53cde4a10f0909436b7330"
+        },
+        {
+          "file": "merriweather/Merriweather-Italic.woff2",
+          "source": "fonts/webfonts/Merriweather-Italic.woff2",
+          "bytes": 78052,
+          "sha256": "cce1cdf3665e8070b53f46399ce142af25741c988af4f1ed2f939df14269a9c7"
+        },
+        {
+          "file": "merriweather/Merriweather-Bold.woff2",
+          "source": "fonts/webfonts/Merriweather-Bold.woff2",
+          "bytes": 77204,
+          "sha256": "f5b5cc2f91b64a741b1cef8e4f7e2b96eff0259d35d171768dd389adac2acab9"
+        },
+        {
+          "file": "merriweather/Merriweather-BoldItalic.woff2",
+          "source": "fonts/webfonts/Merriweather-BoldItalic.woff2",
+          "bytes": 77972,
+          "sha256": "505b4241dade520496fb4fe649b58248fcef50eedab383a433e351f86d6b895d"
+        }
+      ]
+    },
+    {
+      "family": "Playfair Display",
+      "version": "1.202",
+      "reservedFontName": "Playfair Display",
+      "repository": "https://github.com/clauseggers/Playfair-Display",
+      "commit": "6e115d70ee7ff6ed887babf3829ccd1de65fd2bd",
+      "license": { "file": "playfair-display/OFL.txt", "source": "OFL.txt" },
+      "files": [
+        {
+          "file": "playfair-display/PlayfairDisplay-Regular.woff2",
+          "source": "fonts/WOFF2/PlayfairDisplay-Regular.woff2",
+          "bytes": 74988,
+          "sha256": "980587d681232367ee6956c96f1990cb000ab24eddf88986579b7f203ea3bf1a"
+        },
+        {
+          "file": "playfair-display/PlayfairDisplay-Italic.woff2",
+          "source": "fonts/WOFF2/PlayfairDisplay-Italic.woff2",
+          "bytes": 79424,
+          "sha256": "d75350db3daf2f723f98e49266e0f3b58127b7631b7d44e18897f3685557bfc8"
+        },
+        {
+          "file": "playfair-display/PlayfairDisplay-Bold.woff2",
+          "source": "fonts/WOFF2/PlayfairDisplay-Bold.woff2",
+          "bytes": 80040,
+          "sha256": "0095645c71990f86030abc605943f08b77e26fd0595b619a587004bdf4cf7337"
+        },
+        {
+          "file": "playfair-display/PlayfairDisplay-BoldItalic.woff2",
+          "source": "fonts/WOFF2/PlayfairDisplay-BoldItalic.woff2",
+          "bytes": 83284,
+          "sha256": "b5f2cd9f7ba19afa0b6611e59c38a3b8db2d04a12bf3fdb0376b7a65d56b19ff"
+        }
+      ]
+    }
+  ]
+}

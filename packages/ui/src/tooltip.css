@@ -1,0 +1,7 @@
+/*
+ * Tooltips only describe; they never take the pointer, so one shown over a neighbouring button
+ * never blocks hovering or clicking it.
+ */
+:where(.react-aria-Tooltip, [role="tooltip"], .prop-tooltip, .app-tooltip, .tool-tooltip) {
+  pointer-events: none;
+}
