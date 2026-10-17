@@ -37,7 +37,11 @@ export interface AppShellProps {
  * (WEB-A11Y). Set on the element directly, so no render happens per press.
  */
 function markPointerFocus(event: PointerEvent<HTMLElement>): void {
-  event.currentTarget.setAttribute("data-pointer-focus", "");
+  // Only on a change: any DOM change repaints the page, which costs Firefox a read-back of the
+  // engine's canvas on the engine worker just as a stroke starts (L13).
+  if (!event.currentTarget.hasAttribute("data-pointer-focus")) {
+    event.currentTarget.setAttribute("data-pointer-focus", "");
+  }
 }
 
 /** Focus left the canvas area: the next focus shows a ring again if the keyboard brings it. */
