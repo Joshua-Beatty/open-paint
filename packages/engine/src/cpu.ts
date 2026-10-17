@@ -16,6 +16,7 @@ export {
   DabPlanner,
   GradientSettings,
   gradient_rgba8 as gradientRgba8,
+  lanczos3_axis_taps as lanczos3AxisTaps,
   pencil_cells_rgba8 as pencilCellsRgba8,
   pencil_stroke_rgba8 as pencilStrokeRgba8,
   premultiply_rgba8 as premultiplyRgba8,

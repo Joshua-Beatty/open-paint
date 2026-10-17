@@ -212,6 +212,28 @@ export class DisplayTileBuilder {
     this.#stack.length = 0;
   }
 
+  /**
+   * The final (Lanczos-3) tile at `ref`, from the cache or built now with its children, against
+   * the current document: what the display shows once edits have settled.
+   */
+  final(ref: TileRef): DisplayTile {
+    const cached = this.cache.hasFinal(ref) ? this.cache.get(ref.level, ref.tx, ref.ty) : undefined;
+    if (cached !== undefined) return cached;
+    const doc = this.document();
+    if (ref.level === 0) {
+      const tile = renderBase(doc, ref);
+      this.cache.put(tile);
+      return tile;
+    }
+    const children = childrenOf(doc, ref);
+    for (const child of children) this.final(child);
+    // Read once more, so all four are the most recently used and none was evicted meanwhile.
+    for (const child of children) this.final(child);
+    const tile = downsample(this.cache, doc, ref, true);
+    this.cache.put(tile);
+    return tile;
+  }
+
   /** Builds tiles until the work list is empty or `now()` reaches `deadline`. Returns the count. */
   pump(deadline: number, now: () => number): number {
     const doc = this.document();

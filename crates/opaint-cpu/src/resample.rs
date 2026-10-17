@@ -349,9 +349,53 @@ pub fn resample_rgba8(
     Ok(out)
 }
 
+/// Values per output pixel in [`lanczos3_axis_taps`]: the first source index, the tap count and
+/// up to this many minus two weights.
+pub const AXIS_TAP_STRIDE: usize = 14;
+
+/// The Lanczos-3 taps [`lanczos3_rgba8`] uses along one axis from `src_len` to `dst_len` pixels,
+/// so a GPU twin applies the same `f32` weights in the same order: per output pixel the first
+/// source index, the tap count, then the weights, padded with zeros to [`AXIS_TAP_STRIDE`] values.
+/// Errs when a pixel has more taps than fit.
+pub fn lanczos3_axis_taps(src_len: usize, dst_len: usize) -> Result<Vec<f32>, String> {
+    if src_len == 0 || dst_len == 0 {
+        return Err("axis lengths must be positive".into());
+    }
+    let mut out = Vec::with_capacity(dst_len * AXIS_TAP_STRIDE);
+    for taps in axis_taps(Filter::Lanczos3, src_len, dst_len) {
+        if taps.weights.len() > AXIS_TAP_STRIDE - 2 {
+            return Err(format!("{} taps do not fit", taps.weights.len()));
+        }
+        out.push(taps.first as f32);
+        out.push(taps.weights.len() as f32);
+        out.extend(&taps.weights);
+        out.resize(out.len() + AXIS_TAP_STRIDE - 2 - taps.weights.len(), 0.0);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn axis_taps_are_the_weights_lanczos3_rgba8_applies() {
+        let taps = lanczos3_axis_taps(256, 128).unwrap();
+        assert_eq!(taps.len(), 128 * AXIS_TAP_STRIDE);
+        // Applying them by hand to one row reproduces the resampled row.
+        let src: Vec<u8> = (0..256 * 4).map(|i| ((i * 37) % 256) as u8).collect();
+        let row = lanczos3_rgba8(&src, 256, 1, 128, 1).unwrap();
+        for x in 0..128 {
+            let entry = &taps[x * AXIS_TAP_STRIDE..(x + 1) * AXIS_TAP_STRIDE];
+            let (first, count) = (entry[0] as usize, entry[1] as usize);
+            let mut alpha = 0f32;
+            for k in 0..count {
+                alpha += entry[2 + k] * f32::from(src[(first + k) * 4 + 3]);
+            }
+            assert_eq!(row[x * 4 + 3], to_byte(alpha), "pixel {x}");
+        }
+        assert!(lanczos3_axis_taps(0, 4).is_err());
+    }
 
     const ALL_FILTERS: [Filter; 9] = [
         Filter::Nearest,

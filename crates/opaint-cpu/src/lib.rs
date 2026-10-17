@@ -1493,6 +1493,14 @@ fn box_halve(block: &[u8], edge: usize) -> Vec<u8> {
     out
 }
 
+/// The Lanczos-3 taps of one axis from `src_len` to `dst_len` pixels, as `resample_lanczos3_rgba8`
+/// applies them (see `resample::lanczos3_axis_taps`), for its GPU twin.
+#[wasm_bindgen]
+pub fn lanczos3_axis_taps(src_len: u32, dst_len: u32) -> Result<Vec<f32>, JsError> {
+    resample::lanczos3_axis_taps(src_len as usize, dst_len as usize)
+        .map_err(|message| JsError::new(&message))
+}
+
 /// Resamples a premultiplied RGBA8 image with Lanczos-3 (see `resample`), returning the new pixels.
 #[wasm_bindgen]
 pub fn resample_lanczos3_rgba8(

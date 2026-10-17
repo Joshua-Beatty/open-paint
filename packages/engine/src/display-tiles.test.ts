@@ -402,3 +402,31 @@ describe("DisplayTileBuilder", () => {
     expect(builder.pending).toBe(false);
   });
 });
+
+describe("DisplayTileBuilder.final", () => {
+  beforeAll(async () => {
+    const wasmPath = createRequire(import.meta.url).resolve("@openpaint/cpu/opaint_cpu_bg.wasm");
+    await initCpu(await readFile(wasmPath));
+  });
+
+  it("builds the same final tile as the refined builds, from an empty cache", () => {
+    const store = new TiledPixelStore(700, 300);
+    const noise = new Surface(700, 300);
+    for (let i = 0; i < noise.data.length; i++) noise.data[i] = (i * 2654435761) >>> 24;
+    store.writeRegion(noise, 0, 0);
+    const doc = documentOf(store);
+    const pumped = new DisplayTileBuilder(new DisplayTileCache(), () => doc);
+    const ref = { level: 2, tx: 1, ty: 0 };
+    pumped.request([ref]);
+    pumped.pump(Number.POSITIVE_INFINITY, always);
+    pumped.request([], [ref]);
+    pumped.pump(Number.POSITIVE_INFINITY, always);
+    expect(pumped.cache.hasFinal(ref)).toBe(true);
+    const direct = new DisplayTileBuilder(new DisplayTileCache(), () => doc);
+    const built = direct.final(ref);
+    expect(direct.cache.hasFinal(ref)).toBe(true);
+    expect([...built.pixels]).toEqual([...(pumped.cache.get(2, 1, 0)?.pixels ?? [])]);
+    // A second call takes it from the cache.
+    expect(direct.final(ref)).toBe(built);
+  });
+});
