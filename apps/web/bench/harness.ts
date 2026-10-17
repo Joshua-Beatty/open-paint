@@ -28,10 +28,15 @@ export const SETTLE_CAP_MS = 3 * 60_000;
 
 const ENGINE_CANVAS = "[data-backend] canvas:not(.app-canvas-overlay)";
 
+/** `BENCH_DEVICE=phone` runs the scenarios on an emulated phone, in the compact layout. */
+export const PHONE = process.env.BENCH_DEVICE === "phone";
+
 /** Opens the built app with the instrumentation and the bench hook, and waits for the engine. */
 export async function openApp(page: Page): Promise<void> {
   await page.goto(`/?perf=1&bench=1&engine=${encodeURIComponent(ENGINE)}`);
-  await expect(page.getByRole("tab")).toHaveCount(1, { timeout: 60_000 });
+  // The compact layout shows no tab strip for a single image.
+  if (PHONE) await expect(page.locator(ENGINE_CANVAS)).toBeVisible({ timeout: 60_000 });
+  else await expect(page.getByRole("tab")).toHaveCount(1, { timeout: 60_000 });
   await page.waitForFunction(
     () => window.__openpaintBench !== undefined && window.__openpaintPerf !== undefined,
   );
@@ -244,6 +249,38 @@ export function frameAlignedMoves(
       }),
     { points, buttons, selector: ENGINE_CANVAS },
   );
+}
+
+/**
+ * Sends `points` as one finger's touch moves at `hz` through the DevTools protocol (Chromium), the
+ * finger already down at the first point. Returns the time the moves took to send, in ms.
+ */
+export async function paceTouchMoves(
+  page: Page,
+  points: readonly Point[],
+  hz: number,
+): Promise<number> {
+  const session = await page.context().newCDPSession(page);
+  const [first, ...rest] = points;
+  if (first === undefined) return 0;
+  const touch = (type: "touchStart" | "touchMove" | "touchEnd", point?: Point) =>
+    session.send("Input.dispatchTouchEvent", {
+      type,
+      touchPoints: point === undefined ? [] : [{ x: point.x, y: point.y, id: 0 }],
+    });
+  await touch("touchStart", first);
+  const interval = 1000 / hz;
+  const start = performance.now();
+  const sent: Promise<unknown>[] = [];
+  for (const [index, point] of rest.entries()) {
+    await waitUntil(start + index * interval);
+    sent.push(touch("touchMove", point));
+  }
+  await Promise.all(sent);
+  const took = performance.now() - start;
+  await touch("touchEnd");
+  await session.detach();
+  return took;
 }
 
 /** Presses each of `keys` in turn, `intervalMs` apart. */
