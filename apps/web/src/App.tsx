@@ -124,6 +124,8 @@ import { useSetting } from "./settings/use-setting";
 import { AppShell } from "./shell/AppShell";
 import { AuxPanelToggles } from "./shell/AuxPanelToggles";
 import { CommonActionsBar } from "./shell/CommonActionsBar";
+import { CompactMenu } from "./shell/CompactMenu";
+import { CompactPanelSheet, PanelSheetButtons } from "./shell/CompactPanelSheet";
 import { useDocumentTitle } from "./shell/document-title";
 import { HelpMenu } from "./shell/HelpMenu";
 import { ImageTabStrip, type ImageTabView } from "./shell/ImageTabStrip";
@@ -136,11 +138,13 @@ import {
   type PanelId,
   RIGHT_PANEL_IDS,
   RIGHT_SIDEBAR,
+  type RightPanelId,
 } from "./shell/panel-layout";
 import { PANEL_COMMANDS } from "./shell/panel-layout-settings";
 import { LeftSidebar, RightSidebar } from "./shell/Sidebars";
 import { type ColorSchemePreference, useColorScheme } from "./shell/theme";
 import { UnsavedChangesDialog } from "./shell/UnsavedChangesDialog";
+import { useCompactLayout } from "./shell/use-compact-layout";
 import { usePanelLayout, useViewportWidth } from "./shell/use-panel-layout";
 import { StatusBar } from "./status/StatusBar";
 import {
@@ -586,6 +590,16 @@ export function App({
   const viewportWidth = useViewportWidth();
   const canvasArea = useRef<HTMLElement>(null);
   const returnFocusToCanvas = useCallback(() => canvasArea.current?.focus(), []);
+  const compactLayout = useCompactLayout();
+  const compactRef = useRef(compactLayout.compact);
+  compactRef.current = compactLayout.compact;
+  /** The compact layout's panel sheet and tool rail; the docked layout's settings stay as saved. */
+  const [sheetPanel, setSheetPanel] = useState<RightPanelId | undefined>(undefined);
+  const [railHidden, setRailHidden] = useState(false);
+  const toggleCompactPanel = useCallback((panel: PanelId) => {
+    if (panel === "tools") setRailHidden((hidden) => !hidden);
+    else setSheetPanel((open) => (open === panel ? undefined : panel));
+  }, []);
   const finishTool = useCallback(() => {
     toolController.runtime()?.commit?.();
     returnFocusToCanvas();
@@ -1129,7 +1143,9 @@ export function App({
     const detach = PANEL_IDS.map((panel) =>
       shortcuts.register(PANEL_COMMANDS[panel], {
         run: () => {
-          panels.actions.toggleVisible(panel);
+          // The compact layout's rail and sheet are its own; the docked layout stays as saved.
+          if (compactRef.current) toggleCompactPanel(panel);
+          else panels.actions.toggleVisible(panel);
           returnFocusToCanvas();
         },
       }),
@@ -1137,7 +1153,7 @@ export function App({
     return () => {
       for (const release of detach) release();
     };
-  }, [panelsReady, panels.actions, shortcuts, returnFocusToCanvas]);
+  }, [panelsReady, panels.actions, shortcuts, returnFocusToCanvas, toggleCompactPanel]);
   useEffect(() => () => thumbnails.dispose(), [thumbnails]);
   const tabViews: ImageTabView[] = tabState.items.map((item) => ({
     id: item.id,
@@ -1154,8 +1170,71 @@ export function App({
     panels.actions.toggleVisible(panel);
     returnFocusToCanvas();
   };
+  const { compact } = compactLayout;
+  const toolsPanel = (
+    <ToolsPanel
+      tools={TOOL_REGISTRY.list()}
+      activeId={activeTool.id}
+      onSelect={(id) => {
+        toolController.activate(id);
+        returnFocusToCanvas();
+      }}
+    />
+  );
+  const colorsPanel = (setExpanded: (expanded: boolean) => void) =>
+    settings === null ? null : (
+      <ColorsPanel
+        settings={settings}
+        storage={paletteStorage}
+        commands={shortcuts}
+        expanded={layout.colorsExpanded}
+        onExpandedChange={setExpanded}
+        onRelinquish={returnFocusToCanvas}
+      />
+    );
+  const layersPanel = (
+    <LayersPanel
+      doc={activeImage?.document}
+      commands={shortcuts}
+      autoSelectNearest={autoSelectNearest}
+      thumbnailsBusy={thumbnailsBusy}
+    />
+  );
+  const historyPanel = <HistoryPanel doc={activeImage?.document} commands={shortcuts} />;
+  const undoRedoEntries = commonEntries.filter(
+    (entry) => entry.kind === "action" && (entry.id === "edit.undo" || entry.id === "edit.redo"),
+  );
   return (
     <AppShell
+      layout={compactLayout}
+      compactStart={
+        compact ? (
+          <>
+            <CompactMenu context={menuContext} actions={menuActions} />
+            <CommonActionsBar entries={undoRedoEntries} onCommand={runCommonAction} />
+          </>
+        ) : undefined
+      }
+      compactEnd={
+        compact ? (
+          <PanelSheetButtons open={sheetPanel} onToggle={(panel) => toggleCompactPanel(panel)} />
+        ) : undefined
+      }
+      sheet={
+        compact && sheetPanel !== undefined ? (
+          <CompactPanelSheet
+            panel={sheetPanel}
+            onSelect={setSheetPanel}
+            onClose={() => {
+              setSheetPanel(undefined);
+              returnFocusToCanvas();
+            }}
+            colors={colorsPanel((expanded) => panels.actions.setColorsExpanded(expanded))}
+            layers={layersPanel}
+            history={historyPanel}
+          />
+        ) : undefined
+      }
       canvasRef={canvasArea}
       commonActions={<CommonActionsBar entries={commonEntries} onCommand={runCommonAction} />}
       toolOptions={
@@ -1173,51 +1252,21 @@ export function App({
       }
       rightSidebarWidth={rightWidth}
       leftSidebar={
-        panelsReady && layout.visible.tools ? (
-          <LeftSidebar
-            onRelinquish={returnFocusToCanvas}
-            tools={
-              <ToolsPanel
-                tools={TOOL_REGISTRY.list()}
-                activeId={activeTool.id}
-                onSelect={(id) => {
-                  toolController.activate(id);
-                  returnFocusToCanvas();
-                }}
-              />
-            }
-          />
+        panelsReady && (compact ? !railHidden : layout.visible.tools) ? (
+          <LeftSidebar onRelinquish={returnFocusToCanvas} tools={toolsPanel} />
         ) : undefined
       }
       rightSidebar={
-        panelsReady && rightVisible ? (
+        panelsReady && rightVisible && !compact ? (
           <RightSidebar
             layout={layout}
             actions={panels.actions}
             width={rightWidth}
             widthResizable={viewportWidth >= RIGHT_SIDEBAR.narrowViewport}
             onRelinquish={returnFocusToCanvas}
-            colors={(setExpanded) =>
-              settings === null ? null : (
-                <ColorsPanel
-                  settings={settings}
-                  storage={paletteStorage}
-                  commands={shortcuts}
-                  expanded={layout.colorsExpanded}
-                  onExpandedChange={setExpanded}
-                  onRelinquish={returnFocusToCanvas}
-                />
-              )
-            }
-            layers={
-              <LayersPanel
-                doc={activeImage?.document}
-                commands={shortcuts}
-                autoSelectNearest={autoSelectNearest}
-                thumbnailsBusy={thumbnailsBusy}
-              />
-            }
-            history={<HistoryPanel doc={activeImage?.document} commands={shortcuts} />}
+            colors={colorsPanel}
+            layers={layersPanel}
+            history={historyPanel}
           />
         ) : undefined
       }
@@ -1246,15 +1295,18 @@ export function App({
         />
       }
       imageTabs={
-        <ImageTabStrip
-          tabs={tabViews}
-          activeId={tabState.activeId}
-          commands={shortcuts}
-          onActivate={(id) => images.activate(id)}
-          onClose={(id) => requestClose([id])}
-          onMove={(id, index) => images.move(id, index)}
-          saveAsOffered={access.canPickSaveTarget}
-        />
+        // The compact layout shows the strip only once a second image is open.
+        compact && tabViews.length < 2 ? undefined : (
+          <ImageTabStrip
+            tabs={tabViews}
+            activeId={tabState.activeId}
+            commands={shortcuts}
+            onActivate={(id) => images.activate(id)}
+            onClose={(id) => requestClose([id])}
+            onMove={(id, index) => images.move(id, index)}
+            saveAsOffered={access.canPickSaveTarget}
+          />
+        )
       }
     >
       <KeyboardShortcuts

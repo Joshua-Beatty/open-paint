@@ -59,14 +59,14 @@ export function StatusBar({ store, doc, units, commands, onZoom }: StatusBarProp
       <StatusProgress store={store} />
       <span className="app-status-separator" aria-hidden="true" />
       {doc !== undefined && (
-        <span className="app-status-text" title={t("status.imageSizeTip")}>
+        <span className="app-status-text app-status-size" title={t("status.imageSizeTip")}>
           {imageSizeText(doc.width, doc.height, doc.resolution, units, t)}
         </span>
       )}
       <span className="app-status-separator" aria-hidden="true" />
       <CursorReadout store={store} doc={doc} units={units} />
       <MenuTrigger>
-        <Button className="app-status-button" aria-label={t("status.units")}>
+        <Button className="app-status-button app-status-units" aria-label={t("status.units")}>
           {unitAbbreviation(units, t)}
         </Button>
         <Popover className="app-popover" placement="top end">

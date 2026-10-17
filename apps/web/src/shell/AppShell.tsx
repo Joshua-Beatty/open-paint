@@ -2,6 +2,8 @@ import { useTranslation } from "@openpaint/i18n/react";
 import type { FocusEvent, PointerEvent, ReactNode, Ref } from "react";
 import { Toolbar } from "react-aria-components";
 import "./shell.css";
+import "./compact.css";
+import { type CompactLayout, DESKTOP_LAYOUT } from "./use-compact-layout";
 
 export interface AppShellProps {
   /** The right sidebar's width in CSS px. Omit it to use the stylesheet default (UI-FTW-08). */
@@ -25,6 +27,18 @@ export interface AppShellProps {
   rightSidebar?: ReactNode;
   /** The status bar (UI-SB). */
   statusBar?: ReactNode;
+  /**
+   * The compact layout for phones and small tablets. The menu bar and common actions are replaced
+   * by `compactStart` and `compactEnd`, the right sidebar by `sheet`, and the left sidebar is a
+   * one-column tool rail.
+   */
+  layout?: CompactLayout;
+  /** The start of the compact top bar: the menu button, Undo and Redo. */
+  compactStart?: ReactNode;
+  /** The end of the compact top bar: the panel buttons. */
+  compactEnd?: ReactNode;
+  /** The compact panel sheet over the canvas, when one is open. */
+  sheet?: ReactNode;
   /** The canvas area for the active image. */
   children: ReactNode;
 }
@@ -66,9 +80,14 @@ export function AppShell({
   statusBar,
   rightSidebarWidth,
   canvasRef,
+  layout = DESKTOP_LAYOUT,
+  compactStart,
+  compactEnd,
+  sheet,
   children,
 }: AppShellProps) {
   const t = useTranslation();
+  const { compact } = layout;
   const rightColumn =
     rightSidebarWidth === undefined ? "var(--right-sidebar-width)" : `${rightSidebarWidth}px`;
   const columns = [
@@ -76,17 +95,36 @@ export function AppShell({
     "minmax(0, 1fr)",
     rightSidebar === undefined ? "0px" : rightColumn,
   ].join(" ");
+  const className = compact
+    ? [
+        "app-shell is-compact",
+        layout.short ? "is-short" : "",
+        layout.sideSheet ? "is-side-sheet" : "",
+        leftSidebar === undefined ? "" : "has-rail",
+      ]
+        .filter((name) => name !== "")
+        .join(" ")
+    : "app-shell";
 
+  // The canvas area keeps its place in the tree in both layouts: the engine's canvas lives in it
+  // and cannot be created again.
   return (
-    <div className="app-shell" style={{ gridTemplateColumns: columns }}>
-      <div className="app-menu-bar">{menuBar}</div>
+    <div className={className} style={compact ? undefined : { gridTemplateColumns: columns }}>
+      {compact ? (
+        <div className="app-compact-start">{compactStart}</div>
+      ) : (
+        <div className="app-menu-bar">{menuBar}</div>
+      )}
       <div className="app-tool-options">
-        {commonActions}
+        {compact ? null : commonActions}
         <Toolbar className="app-tool-config" aria-label={t("shell.toolOptions")}>
           {toolOptions}
         </Toolbar>
       </div>
-      <div className="app-image-tabs">{imageTabs}</div>
+      {compact ? <div className="app-compact-end">{compactEnd}</div> : null}
+      {compact && imageTabs === undefined ? null : (
+        <div className="app-image-tabs">{imageTabs}</div>
+      )}
       {leftSidebar !== undefined && (
         <aside className="app-sidebar app-sidebar-left">{leftSidebar}</aside>
       )}
@@ -99,9 +137,10 @@ export function AppShell({
       >
         {children}
       </main>
-      {rightSidebar !== undefined && (
+      {rightSidebar !== undefined && !compact && (
         <aside className="app-sidebar app-sidebar-right">{rightSidebar}</aside>
       )}
+      {compact && sheet !== undefined ? sheet : null}
       <footer className="app-status-bar">{statusBar}</footer>
     </div>
   );

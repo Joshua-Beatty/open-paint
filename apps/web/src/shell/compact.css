@@ -1,0 +1,551 @@
+/*
+ * The compact layout (phones, small tablets, small windows; use-compact-layout.ts) and touch
+ * sizing. The desktop layout's rules in shell.css are not changed by anything here: every rule is
+ * under .is-compact, :root[data-layout="compact"] or a coarse-pointer media query.
+ *
+ * Compact grid, portrait:          Compact grid, short (phone landscape):
+ *   start start start end            start start opts end
+ *   opts  opts  opts  opts           tabs  tabs  tabs tabs
+ *   tabs  tabs  tabs  tabs           rail  canvas ...
+ *   rail  canvas ...                 status ...
+ *   status ...
+ * The panel sheet shares the canvas cell and lies over it.
+ */
+
+.app-shell.is-compact {
+  --compact-bar-height: 48px;
+  --compact-rail-width: 52px;
+  --status-bar-height: 36px;
+  grid-template-columns: var(--compact-rail-width) auto minmax(0, 1fr) auto;
+  grid-template-rows: var(--compact-bar-height) auto auto minmax(0, 1fr) var(--status-bar-height);
+  grid-template-areas:
+    "start start start end"
+    "opts opts opts opts"
+    "tabs tabs tabs tabs"
+    "rail canvas canvas canvas"
+    "status status status status";
+  min-width: 0;
+  min-height: 0;
+  height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+  overflow: hidden;
+  background: var(--header-background);
+}
+
+.app-shell.is-compact:not(.has-rail) {
+  grid-template-areas:
+    "start start start end"
+    "opts opts opts opts"
+    "tabs tabs tabs tabs"
+    "canvas canvas canvas canvas"
+    "status status status status";
+}
+
+.app-shell.is-compact.is-short {
+  grid-template-rows: var(--compact-bar-height) auto minmax(0, 1fr) var(--status-bar-height);
+  grid-template-areas:
+    "start start opts end"
+    "tabs tabs tabs tabs"
+    "rail canvas canvas canvas"
+    "status status status status";
+}
+
+.app-shell.is-compact.is-short:not(.has-rail) {
+  grid-template-areas:
+    "start start opts end"
+    "tabs tabs tabs tabs"
+    "canvas canvas canvas canvas"
+    "status status status status";
+}
+
+.is-compact .app-compact-start,
+.is-compact .app-compact-end {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 4px;
+  background: var(--header-background);
+  border-bottom: 1px solid var(--border);
+}
+
+.is-compact .app-compact-start {
+  grid-area: start;
+}
+
+.is-compact .app-compact-end {
+  grid-area: end;
+  justify-content: flex-end;
+}
+
+.is-compact .app-tool-options {
+  grid-area: opts;
+  border-bottom: 1px solid var(--border);
+}
+
+.is-compact .app-tool-config {
+  height: var(--compact-bar-height);
+}
+
+.is-compact .tool-options-strip {
+  padding: 0 6px;
+}
+
+.is-compact .app-image-tabs {
+  grid-area: tabs;
+}
+
+.is-compact .app-sidebar-left {
+  grid-area: rail;
+  border-right-width: 1px;
+}
+
+.is-compact .app-canvas-area {
+  grid-area: canvas;
+}
+
+.is-compact .app-status-bar {
+  grid-area: status;
+}
+
+/* The top bar's buttons: 44 px touch targets (WCAG 2.5.8; 44 px recommended for touch). */
+.app-compact-button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  cursor: pointer;
+}
+
+.app-compact-button[data-pressed]:not([data-disabled]) {
+  background: var(--pressed-background);
+}
+
+.app-compact-button[data-selected] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.app-compact-button[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.app-compact-button .app-common-icon,
+.app-modifier-button .app-common-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.app-compact-panels {
+  display: flex;
+  gap: 2px;
+}
+
+/* Undo and Redo in the top bar: the common-actions buttons at touch size. */
+.is-compact .app-common-actions {
+  height: auto;
+  padding: 0;
+  border: 0;
+}
+
+.is-compact .app-common-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+.is-compact .app-common-button .app-common-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* The tool rail: the Tools panel as one scrolling column of 44 px buttons, without its header. */
+.is-compact .app-sidebar-left .app-panel-header {
+  display: none;
+}
+
+.is-compact .app-sidebar-left .app-panel {
+  border-bottom: 0;
+}
+
+.is-compact .tools-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  padding: 4px;
+}
+
+.is-compact .tool-button {
+  height: 44px;
+  border-radius: 10px;
+}
+
+.is-compact .tool-button.is-wide {
+  grid-column: auto;
+}
+
+.is-compact .tool-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.is-compact .tool-icon.is-wide {
+  width: 40px;
+}
+
+/* The status bar keeps the image size and the zoom buttons. */
+.is-compact .app-status-content {
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.is-compact .app-status-context,
+.is-compact .app-status-cursor,
+.is-compact .app-status-units,
+.is-compact .app-status-zoom-slider,
+.is-compact .app-status-separator {
+  display: none;
+}
+
+.is-compact .app-status-size {
+  margin-right: auto;
+}
+
+.is-compact .app-status-button {
+  min-width: 36px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+/* The panel sheet: a bottom sheet in portrait, a drawer at the right edge otherwise. */
+.app-sheet {
+  grid-area: canvas;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-self: end;
+  min-width: 0;
+  height: min(58%, 560px);
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel-background);
+  border-top: 1px solid var(--border);
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -6px 24px rgb(0 0 0 / 0.2);
+}
+
+.is-side-sheet .app-sheet {
+  align-self: stretch;
+  justify-self: end;
+  width: min(360px, 88%);
+  height: auto;
+  border-top: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 14px 0 0 14px;
+  box-shadow: -6px 0 24px rgb(0 0 0 / 0.2);
+}
+
+.app-sheet-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-sheet-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 4px;
+  min-width: 0;
+}
+
+.app-sheet-tab {
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+}
+
+.app-sheet-tab[data-selected] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.app-sheet-tab[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.app-sheet-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.app-sheet-body > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.app-sheet .colors-panel {
+  flex: none;
+}
+
+/* The on-screen modifier toggles in a row over the canvas's lower left corner. */
+.app-modifier-bar {
+  position: absolute;
+  z-index: 3;
+  left: 8px;
+  bottom: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.app-modifier-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-background) 92%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.18);
+  outline: none;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+.app-modifier-button[data-selected] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.app-modifier-button[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Menus and popovers in the compact layout: rows tall enough to tap, kept on screen. */
+:root[data-layout="compact"] .app-menu-item {
+  align-items: center;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+:root[data-layout="compact"] .app-menu {
+  max-height: calc(var(--app-visual-height, 100dvh) - 72px);
+  overflow: auto;
+}
+
+:root[data-layout="compact"] .overflow-menu-popover {
+  max-width: calc(100vw - 16px);
+}
+
+/*
+ * Dialogs in the compact layout are sheets at the bottom of the screen, as wide as it is, kept
+ * above the on-screen keyboard. Dialogs that preview on the canvas (effects, adjustments, Curves,
+ * Levels) take at most about half the height and do not dim the canvas, so the preview shows.
+ */
+:root[data-layout="compact"] .modal-overlay {
+  align-items: flex-end;
+  height: var(--app-visual-height, 100dvh);
+  bottom: auto;
+}
+
+:root[data-layout="compact"] .modal {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(var(--app-visual-height, 100dvh) - env(safe-area-inset-top) - 16px);
+  padding-bottom: env(safe-area-inset-bottom);
+  border-width: 1px 0 0;
+  border-radius: 14px 14px 0 0;
+}
+
+:root[data-layout="compact"] .modal.prop-dialog,
+:root[data-layout="compact"] .modal.modal-preview {
+  max-height: min(56%, calc(var(--app-visual-height, 100dvh) - 16px));
+}
+
+:root[data-layout="compact"] .modal-overlay:has(.prop-dialog, .modal-preview) {
+  background: transparent;
+}
+
+/* In landscape the previewing dialogs are a drawer at the right, beside the preview. */
+@media (orientation: landscape) {
+  :root[data-layout="compact"] .modal-overlay:has(.prop-dialog, .modal-preview) {
+    align-items: stretch;
+    justify-content: flex-end;
+  }
+
+  :root[data-layout="compact"] .modal.prop-dialog,
+  :root[data-layout="compact"] .modal.modal-preview {
+    width: min(400px, 55%);
+    max-height: none;
+    padding-right: env(safe-area-inset-right);
+    border-width: 0 0 0 1px;
+    border-radius: 14px 0 0 14px;
+  }
+}
+
+:root[data-layout="compact"] .modal.prop-dialog.is-resizable {
+  resize: none;
+  min-width: 0;
+}
+
+:root[data-layout="compact"] .modal-close {
+  width: 44px;
+  height: 44px;
+  margin: -10px -12px -10px 0;
+}
+
+:root[data-layout="compact"] .modal-actions :where(button, .react-aria-Button) {
+  min-height: 40px;
+  padding-inline: 16px;
+}
+
+/* Settings: the section list becomes a scrolling row above the page. */
+:root[data-layout="compact"] .settings-dialog {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  max-height: calc(var(--app-visual-height, 100dvh) - 120px);
+}
+
+:root[data-layout="compact"] .settings-sections {
+  flex-direction: row;
+  overflow-x: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+:root[data-layout="compact"] .settings-section {
+  flex: none;
+  padding: 10px 12px;
+  border-radius: 18px;
+  white-space: nowrap;
+}
+
+/* Touch screens without hover: the active tab always shows its close button, dirty or not. */
+@media (hover: none) {
+  .app-image-tab-item .app-image-tab-close.is-active {
+    opacity: 1;
+  }
+
+  .app-image-tab-item:has(.app-image-tab-close.is-active) .app-image-tab-dirty {
+    opacity: 0;
+  }
+}
+
+/*
+ * A coarse primary pointer (a tablet with the desktop layout): larger targets in the header, the
+ * tool options, the panels and the status bar. Panel headers keep their height, which the panel
+ * layout computes with.
+ */
+@media (pointer: coarse) {
+  :root {
+    --menu-bar-height: 44px;
+    --common-actions-height: 48px;
+    --tool-options-height: 48px;
+    --status-bar-height: 34px;
+    --left-sidebar-width: 108px;
+  }
+
+  .app-menu-button,
+  .app-aux-button {
+    min-width: 40px;
+    height: 40px;
+  }
+
+  .app-common-button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .tool-button {
+    height: 44px;
+  }
+
+  .app-panel-tool {
+    width: 40px;
+    height: 40px;
+  }
+
+  .app-panel-chevron {
+    width: 26px;
+    height: 26px;
+  }
+
+  .app-history-item {
+    min-height: 40px;
+  }
+
+  .app-status-button {
+    min-width: 32px;
+    height: 30px;
+  }
+
+  .app-image-tab-arrow,
+  .app-image-tab-list-button {
+    width: 36px;
+  }
+
+  .app-tool-config :where(.prop-field, .prop-inline-slider, .prop-select-button) {
+    height: 36px;
+  }
+
+  .app-tool-config .prop-control.is-inline {
+    height: 36px;
+  }
+
+  .app-tool-config .tool-icon-button,
+  .app-tool-config .overflow-row-more-button {
+    min-width: 36px;
+    width: auto;
+    height: 36px;
+  }
+
+  .app-tool-config .tool-finish {
+    height: 36px;
+  }
+
+  :where(.prop-option, .react-aria-ListBoxItem) {
+    min-height: 40px;
+  }
+
+  /* Only in the sheet: the docked Colors panel's heights are fixed (panel-layout.ts). */
+  .app-sheet :where(.color-icon-button, .color-tool-button) {
+    min-width: 36px;
+    height: 36px;
+  }
+}

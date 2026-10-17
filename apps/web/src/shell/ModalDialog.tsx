@@ -16,6 +16,11 @@ export interface ModalDialogProps {
   closable?: boolean;
   /** Disables the close button, for example while a cancel is already under way. */
   closeDisabled?: boolean;
+  /**
+   * The dialog previews its result on the canvas (Curves, Levels). On small screens it then takes
+   * only the lower part of the screen, so the preview stays in sight.
+   */
+  preview?: boolean;
   children: ReactNode;
 }
 
@@ -31,8 +36,12 @@ export function ModalDialog({
   wide = false,
   closable = true,
   closeDisabled = false,
+  preview = false,
   children,
 }: ModalDialogProps) {
+  const className = ["modal", wide ? "modal-wide" : "", preview ? "modal-preview" : ""]
+    .filter((name) => name !== "")
+    .join(" ");
   return (
     <ModalOverlay
       className="modal-overlay"
@@ -41,7 +50,7 @@ export function ModalDialog({
         if (!open) onClose();
       }}
     >
-      <Modal className={wide ? "modal modal-wide" : "modal"}>
+      <Modal className={className}>
         <Dialog className="modal-dialog">
           <DialogTitleBar
             title={title}
