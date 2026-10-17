@@ -246,6 +246,8 @@ export interface FrameStats {
   readonly long: number;
   /** The time spent in those gaps. */
   readonly longMs: number;
+  /** When each of those gaps began, in milliseconds after the window's start. */
+  readonly longAt: readonly number[];
 }
 
 /** The main thread's frames during `[start, end]`, given every animation frame's time. */
@@ -260,6 +262,9 @@ export function frameStats(frames: readonly number[], start: number, end: number
     interval: distribution(gaps),
     long: long.length,
     longMs: long.reduce((sum, gap) => sum + gap, 0),
+    longAt: gaps.flatMap((gap, index) =>
+      gap >= 50 ? [Math.round((edges[index] as number) - start)] : [],
+    ),
   };
 }
 

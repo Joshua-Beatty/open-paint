@@ -57,6 +57,7 @@ describe("formatTable", () => {
             interval: { count: 3, p50: 16, p95: 16, max: 52 },
             long: 1,
             longMs: 52,
+            longAt: [10],
           },
           timedOut: false,
         },

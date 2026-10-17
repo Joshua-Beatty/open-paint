@@ -124,6 +124,7 @@ function summarize(flat: FlatThread, windows: readonly [number, number][], top: 
     for (const name of new Set(named)) inclusive.set(name, (inclusive.get(name) ?? 0) + delta);
   }
   if (cpu < 5) return "";
+  const spans = longSpans(flat, windows, top);
   const list = (map: Map<string, number>) =>
     [...map]
       .sort((a, b) => b[1] - a[1])
@@ -136,7 +137,66 @@ function summarize(flat: FlatThread, windows: readonly [number, number][], top: 
     list(self),
     "  inclusive:",
     list(inclusive),
+    ...spans,
   ].join("\n");
+}
+
+/** With `--long=<ms>`: the thread's busy spans of at least that long, each with its top frames. */
+function longSpans(flat: FlatThread, windows: readonly [number, number][], top: number): string[] {
+  const threshold = Number(option("long") ?? Number.NaN);
+  if (!Number.isFinite(threshold)) return [];
+  const { thread, offset, interval } = flat;
+  const { schema, data } = thread.samples;
+  const cpuIndex = schema.threadCPUDelta;
+  const timeIndex = schema.time ?? 1;
+  const stackIndex = schema.stack ?? 0;
+  const prefixIndex = thread.stackTable.schema.prefix ?? 0;
+  const frameIndex = thread.stackTable.schema.frame ?? 1;
+  const out: string[] = [];
+  let span: { start: number; end: number; frames: Map<string, number> } | undefined;
+  let previous: number | undefined;
+  const close = () => {
+    if (span !== undefined && span.end - span.start >= threshold) {
+      const frames = [...span.frames]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, Math.min(top, 12))
+        .map(([name, count]) => `      ${String(count).padStart(5)}  ${name.slice(0, 150)}`)
+        .join("\n");
+      out.push(
+        `  busy ${(span.end - span.start).toFixed(0)} ms at ${span.start.toFixed(0)} ms:\n${frames}`,
+      );
+    }
+    span = undefined;
+  };
+  for (const sample of data) {
+    const time = (sample[timeIndex] as number) + offset;
+    if (!windows.some(([start, end]) => time >= start && time <= end)) continue;
+    const delta =
+      cpuIndex === undefined || flat.cpuScale === 0
+        ? interval
+        : ((sample[cpuIndex] as number | null) ?? 0) * flat.cpuScale;
+    // Busy: the thread ran for most of the time since the previous sample.
+    const gap = previous === undefined ? interval : time - previous;
+    previous = time;
+    if (delta < gap * 0.5) {
+      close();
+      continue;
+    }
+    span ??= { start: time, end: time, frames: new Map() };
+    span.end = time;
+    let stack = sample[stackIndex] as number | null;
+    const names = new Set<string>();
+    while (stack !== null && stack !== undefined) {
+      const row = thread.stackTable.data[stack];
+      if (row === undefined) break;
+      const name = frameName(thread, row[frameIndex] as number);
+      if (!NATIVE.test(name)) names.add(name);
+      stack = row[prefixIndex] as number | null;
+    }
+    for (const name of names) span.frames.set(name, (span.frames.get(name) ?? 0) + 1);
+  }
+  close();
+  return out;
 }
 
 const args = process.argv.slice(2);

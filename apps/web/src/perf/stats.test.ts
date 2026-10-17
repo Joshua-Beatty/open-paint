@@ -24,6 +24,7 @@ describe("frameStats", () => {
     expect(stats.interval.max).toBe(136);
     expect(stats.long).toBe(1);
     expect(stats.longMs).toBe(136);
+    expect(stats.longAt).toEqual([64]);
   });
 
   it("is one long gap without frames", () => {

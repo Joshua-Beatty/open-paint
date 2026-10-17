@@ -128,6 +128,16 @@ function scenario(
   });
 }
 
+/**
+ * Effects › Blurs › Gaussian Blur. The submenu is opened with a click: Playwright's bundled
+ * Firefox does not open it on hover.
+ */
+async function openGaussianBlur(page: Page) {
+  await page.getByRole("button", { name: "Effects", exact: true }).click();
+  await page.getByRole("menuitem", { name: /Blurs/ }).click();
+  await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
+}
+
 async function zoomedLayout(page: Page) {
   const { layout, devicePixelRatio } = await info(page);
   if (layout === undefined) throw new Error("The engine has not reported a view layout.");
@@ -241,9 +251,7 @@ scenario(
     setup.layers = 1;
     setup.openSettled = (await createDocument(page, 1)).idle;
     await fitToWindow(page);
-    await page.getByRole("button", { name: "Effects", exact: true }).click();
-    await page.getByRole("menuitem", { name: /Blurs/ }).hover();
-    await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
+    await openGaussianBlur(page);
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     setup.firstPreviewSettled = (await idle(page, SETUP_CAP_MS)).idle;
@@ -608,9 +616,7 @@ scenario(
 /** B12: Gaussian Blur at its default values, committed with OK once its preview is shown. */
 async function effectCommit(page: Page, setup: Setup, notes: string[], large: boolean) {
   await openImage(page, setup, large);
-  await page.getByRole("button", { name: "Effects", exact: true }).click();
-  await page.getByRole("menuitem", { name: /Blurs/ }).hover();
-  await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
+  await openGaussianBlur(page);
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   setup.previewSettled = (await idle(page, SETUP_CAP_MS)).idle;
