@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TOOL_REGISTRY } from "./roster";
 import { ToolController } from "./tool-controller";
 import { createToolPointerSink } from "./tool-pointer";
+import { VirtualModifiers } from "./virtual-modifiers";
 
 function setup() {
   const runtime = {
@@ -40,6 +41,22 @@ describe("createToolPointerSink", () => {
     sink.pointer("down", source, toImage);
     expect(runtime.pointer).toHaveBeenCalledWith(
       expect.objectContaining({ type: "down", x: 6, y: 4, button: 0, pressure: 1 }),
+    );
+  });
+
+  it("applies the on-screen modifier toggles to every sample", () => {
+    const runtime = { activate: vi.fn(), deactivate: vi.fn(), pointer: vi.fn() };
+    const controller = new ToolController({
+      registry: TOOL_REGISTRY,
+      createRuntime: () => runtime,
+    });
+    const modifiers = new VirtualModifiers();
+    const sink = createToolPointerSink(controller, undefined, () => modifiers.state);
+    modifiers.toggle("shift");
+    modifiers.toggle("secondary");
+    sink.pointer("down", { ...source, pointerType: "touch" }, toImage);
+    expect(runtime.pointer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "down", button: 2, shiftKey: true, ctrlKey: false }),
     );
   });
 

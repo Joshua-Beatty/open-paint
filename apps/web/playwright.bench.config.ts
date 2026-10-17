@@ -40,14 +40,22 @@ function firefoxProfilerEnv(dir: string): Record<string, string> {
 
 /** The one project `BENCH_BROWSER` selects (bench/browser.ts). */
 const projects: Record<typeof BENCH_BROWSER, Project> = {
+  // BENCH_DEVICE=phone emulates a phone with touch (the compact layout) for the M scenarios.
   chromium: {
     name: "chromium",
-    use: {
-      ...devices["Desktop Chrome"],
-      viewport,
-      channel: "chromium",
-      launchOptions: { args: CHROMIUM_WEBGPU_ARGS },
-    },
+    use:
+      process.env.BENCH_DEVICE === "phone"
+        ? {
+            ...devices["Pixel 7"],
+            channel: "chromium",
+            launchOptions: { args: CHROMIUM_WEBGPU_ARGS },
+          }
+        : {
+            ...devices["Desktop Chrome"],
+            viewport,
+            channel: "chromium",
+            launchOptions: { args: CHROMIUM_WEBGPU_ARGS },
+          },
   },
   firefox: {
     name: "firefox",

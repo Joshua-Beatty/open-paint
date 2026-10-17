@@ -27,7 +27,8 @@ import { PERF_FLAGS } from "./perf/flags";
 import { perfMonitor } from "./perf/perf-monitor";
 import type { DevicePoint } from "./status/status-model";
 import type { ToolPointerSink } from "./tools/tool-pointer";
-import { pinchCommand, type TouchSpan, touchSpan } from "./touch-pinch";
+import { TouchGestures, type TouchInputMode } from "./touch-gestures";
+import { pinchCommand } from "./touch-pinch";
 import { ViewPredictor } from "./view-predictor";
 
 /** Where the engine reports the view layout and the pointer for the status bar (UI-SB-01). */
@@ -70,6 +71,14 @@ export function canvasRestartSettings(status: EngineStatus): EngineSettings | un
     errorFlags: status.errorFlags,
     performanceCache: status.performanceCache,
   };
+}
+
+/** What touch input on the canvas does beyond the view gestures. Must be stable, like the sink. */
+export interface CanvasTouchInput {
+  /** Whether one finger draws or only pans, read when a touch starts. */
+  mode(): TouchInputMode;
+  /** A still tap with two or more fingers: two undo, three redo. */
+  tap(fingers: number): void;
 }
 
 /** How far Ctrl+Arrow scrolls in pan mode, in CSS pixels (UI-KEY-02). */
@@ -149,6 +158,10 @@ function devicePoint(canvas: HTMLCanvasElement, clientX: number, clientY: number
  * v1 moves to the backend its canvas's context cannot show (`EngineStatus.restartCanvas`), with
  * the status's settings. The document binding follows the new handle. When no engine starts at
  * all, `failed` is set.
+ *
+ * Touch goes through `TouchGestures`: one finger reaches the tool (or pans, as `touch` decides),
+ * two or more pinch-zoom and pan once per frame, and still multi-finger taps go to `touch`. While
+ * a pen is on the canvas, touches are ignored, and a pen that lands cancels a touch stroke.
  */
 export function useEngine(
   container: RefObject<HTMLElement | null>,
@@ -157,6 +170,7 @@ export function useEngine(
   tools?: ToolPointerSink,
   autoScrollSettings?: () => AutoScrollSettings,
   onEngineError?: (error: EngineError) => void,
+  touch?: CanvasTouchInput,
 ): EngineState {
   const [status, setStatus] = useState<EngineStatus>();
   const [engineHandle, setEngineHandle] = useState<EngineHandle>();
@@ -180,12 +194,8 @@ export function useEngine(
     let disposed = false;
     let spaceHeld = false;
     let drag: { x: number; y: number } | undefined;
-    const touches = new Map<number, { x: number; y: number }>();
-    let pinch: TouchSpan | undefined;
-    const pinchSpan = (): TouchSpan | undefined => {
-      const [first, second] = touches.values();
-      return first === undefined || second === undefined ? undefined : touchSpan(first, second);
-    };
+    /** Pens in contact with the canvas. Touches are ignored meanwhile (palm rejection). */
+    const pens = new Set<number>();
     let toolDown = false;
     let autoScroll:
       | { event: PointerEvent; time: number; frame: number; press: AutoScrollPress }
@@ -376,24 +386,16 @@ export function useEngine(
         shiftKey: event.shiftKey,
       });
     };
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.pointerType === "touch") {
-        touches.set(event.pointerId, devicePoint(canvas, event.clientX, event.clientY));
-        if (touches.size >= 2) {
-          canvas.setPointerCapture(event.pointerId);
-          if (pinch === undefined) {
-            stopAutoScroll();
-            if (toolDown) {
-              toolDown = false;
-              tools?.pointer("cancel", event, toImage);
-            }
-            drag = undefined;
-          }
-          pinch = pinchSpan();
-          updateCursor();
-          return;
-        }
+    /** Captures a pointer. A touch the gestures held back may already be gone by then. */
+    const capture = (event: PointerEvent) => {
+      try {
+        canvas.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer is no longer active; its release follows at once.
       }
+    };
+    /** A press that reaches the tool, or starts a pan (middle button, Space, the Pan tool). */
+    const press = (event: PointerEvent) => {
       trackModifiers(event);
       const pans = event.button === 0 && (spaceHeld || (tools?.panOnDrag() ?? false));
       if (event.button !== 1 && !pans) {
@@ -401,7 +403,7 @@ export function useEngine(
           tools !== undefined &&
           (event.button === 0 || event.button === 2 || event.button === 5)
         ) {
-          canvas.setPointerCapture(event.pointerId);
+          capture(event);
           toolDown = true;
           tools.pointer("down", event, toImage);
           startAutoScroll(event);
@@ -410,25 +412,50 @@ export function useEngine(
         return;
       }
       event.preventDefault();
-      canvas.setPointerCapture(event.pointerId);
+      capture(event);
       drag = { x: event.clientX, y: event.clientY };
       setViewDragging(true);
       updateCursor();
     };
-    const onPointerMove = (event: PointerEvent) => {
-      if (event.pointerType === "touch" && touches.has(event.pointerId)) {
-        touches.set(event.pointerId, devicePoint(canvas, event.clientX, event.clientY));
-        if (pinch !== undefined) {
-          const next = pinchSpan();
-          const step = next === undefined ? undefined : pinchCommand(pinch, next);
-          if (step !== undefined) {
-            noteViewInput();
-            void predictor?.view(step);
-          }
-          if (next !== undefined) pinch = next;
-          return;
-        }
+    const gestures = new TouchGestures<PointerEvent>({
+      tool: (phase, event) => {
+        if (phase === "down") press(event);
+        else if (phase === "move") motion(event);
+        else onToolRelease(phase, event);
+      },
+      pinch: (from, to) => {
+        const step = pinchCommand(from, to);
+        if (step === undefined || predictor === undefined) return;
+        noteViewInput();
+        void predictor.view(step);
+      },
+      pan: (dx, dy) => {
+        noteViewInput();
+        predictor?.panPerFrame(dx, dy);
+      },
+      tap: (fingers) => touch?.tap(fingers),
+      point: (x, y) => devicePoint(canvas, x, y),
+      mode: () => touch?.mode() ?? "draw",
+    });
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType === "touch") {
+        // A touch while a pen or the mouse holds the canvas is a resting hand (palm rejection).
+        if (pens.size > 0 || ((toolDown || drag !== undefined) && !gestures.active)) return;
+        gestures.down(event);
+        return;
       }
+      if (event.pointerType === "pen") pens.add(event.pointerId);
+      if (gestures.active) gestures.interrupt(event);
+      press(event);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === "touch") {
+        gestures.move(event);
+        return;
+      }
+      motion(event);
+    };
+    const motion = (event: PointerEvent) => {
       const point = devicePoint(canvas, event.clientX, event.clientY);
       sink.setPointer({ x: point.x, y: point.y });
       trackModifiers(event);
@@ -499,29 +526,36 @@ export function useEngine(
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerleave", onPointerLeave);
-    const endTouch = (event: PointerEvent) => {
-      if (event.pointerType !== "touch") return;
-      touches.delete(event.pointerId);
-      if (touches.size < 2) pinch = undefined;
-    };
     const onPointerUp = (event: PointerEvent) => {
-      endTouch(event);
+      if (event.pointerType === "touch") {
+        gestures.up(event);
+        return;
+      }
+      pens.delete(event.pointerId);
       onToolRelease("up", event);
     };
     const onPointerCancel = (event: PointerEvent) => {
-      endTouch(event);
+      if (event.pointerType === "touch") {
+        gestures.cancel(event);
+        return;
+      }
+      pens.delete(event.pointerId);
       onToolRelease("cancel", event);
     };
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerCancel);
     canvas.addEventListener("contextmenu", suppress);
     canvas.addEventListener("auxclick", suppress);
+    // Safari's own pinch events would zoom the page over the canvas (WEB-PTR-03).
+    canvas.addEventListener("gesturestart", suppress);
+    canvas.addEventListener("gesturechange", suppress);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
       disposed = true;
+      gestures.dispose();
       predictor?.dispose();
       stopAutoScroll();
       observer?.disconnect();
@@ -537,12 +571,14 @@ export function useEngine(
       canvas.removeEventListener("pointercancel", onPointerCancel);
       canvas.removeEventListener("contextmenu", suppress);
       canvas.removeEventListener("auxclick", suppress);
+      canvas.removeEventListener("gesturestart", suppress);
+      canvas.removeEventListener("gesturechange", suppress);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       document.removeEventListener("visibilitychange", onVisibility);
       canvas.remove();
     };
-  }, [container, sink, onWorkerError, tools, autoScrollSettings, onEngineError, cpuRestart]);
+  }, [container, sink, onWorkerError, tools, autoScrollSettings, onEngineError, cpuRestart, touch]);
 
   return { status, engine: engineHandle, failed };
 }

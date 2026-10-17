@@ -16,8 +16,10 @@ import {
   lastHistoryItem,
   nameProfile,
   openApp,
+  PHONE,
   paceKeys,
   paceMoves,
+  paceTouchMoves,
   pressOnCanvas,
   SETUP_CAP_MS,
 } from "./harness.ts";
@@ -67,6 +69,8 @@ function scenario(
   run: (page: Page, setup: Setup, notes: string[]) => Promise<GestureResult>,
 ) {
   test(`${id}: ${title}`, async ({ page, browser }) => {
+    // The M scenarios run on an emulated phone (BENCH_DEVICE=phone), the others on the desktop.
+    test.skip(id.startsWith("M") !== PHONE, PHONE ? "a desktop scenario" : "a phone scenario");
     nameProfile(id);
     const setup: Setup = {};
     const browserName = `${BENCH_BROWSER} ${browser.version()}`;
@@ -195,6 +199,60 @@ async function stroke(
   if (step !== "Paintbrush") notes.push(`the stroke was not recorded (last history item: ${step})`);
   return result;
 }
+
+/**
+ * M1 and M2: the B2 stroke on an emulated phone (BENCH_DEVICE=phone), by touch through the
+ * gestures (M1) and with a mouse (M2), so the touch path can be compared with the mouse path.
+ */
+async function phoneStroke(page: Page, setup: Setup, notes: string[], input: "touch" | "mouse") {
+  setup.layers = 1;
+  setup.input = input;
+  setup.openSettled = (await createDocument(page, 1)).idle;
+  await page.getByRole("radio", { name: "Paintbrush", exact: true }).click();
+  await page.evaluate((size) => window.__openpaintBench?.setBrushSize(size), BRUSH_PX);
+  await fitToWindow(page);
+  const { layout, devicePixelRatio } = await zoomedLayout(page);
+  const path = strokePath(
+    await canvasBox(page),
+    layout,
+    devicePixelRatio,
+    STROKE_IMAGE_PX,
+    STROKE_MOVES,
+    STROKE_MARGIN_CSS,
+  );
+  Object.assign(setup, {
+    zoom: layout.zoom,
+    brushPx: BRUSH_PX,
+    strokeImagePx: Math.round(path.imageLength),
+    moves: STROKE_MOVES,
+    inputHz: INPUT_HZ,
+  });
+  const [first, ...moves] = path.points;
+  if (first === undefined) throw new Error("The stroke has no points.");
+  let from: number;
+  if (input === "touch") {
+    from = await beginGesture(page);
+    setup.sendMs = Math.round(await paceTouchMoves(page, path.points, INPUT_HZ));
+  } else {
+    await page.mouse.move(first.x, first.y);
+    from = await beginGesture(page);
+    await page.mouse.down();
+    setup.sendMs = Math.round(await paceMoves(page, moves, INPUT_HZ));
+    await page.mouse.up();
+  }
+  const result = await endGesture(page, from);
+  const undo = page.getByRole("button", { name: "Undo", exact: true }).first();
+  if (!(await undo.isEnabled())) notes.push("the stroke was not recorded (Undo is disabled)");
+  return result;
+}
+
+scenario("M1", "Phone: Paintbrush 100 px, 3000 px touch stroke at fit", (page, setup, notes) =>
+  phoneStroke(page, setup, notes, "touch"),
+);
+
+scenario("M2", "Phone: Paintbrush 100 px, 3000 px mouse stroke at fit", (page, setup, notes) =>
+  phoneStroke(page, setup, notes, "mouse"),
+);
 
 scenario("B1", "Paintbrush 100 px, 3000 px stroke at 100 %", (page, setup, notes) =>
   stroke(page, setup, notes, 1, actualSize),

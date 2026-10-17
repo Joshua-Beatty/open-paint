@@ -93,6 +93,23 @@ body,
 body {
   font-family: system-ui, sans-serif;
   font-size: 13px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/*
+ * Touch screens: no pull-to-refresh or overscroll bounce, which a drag that starts near the
+ * canvas edge would trigger, and no grey flash on tapped controls.
+ */
+@media (pointer: coarse), (hover: none) {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+
+  body {
+    -webkit-tap-highlight-color: transparent;
+  }
 }
 
 .app-shell {
@@ -106,6 +123,8 @@ body {
   color: var(--text);
   font-family: system-ui, sans-serif;
   font-size: 13px;
+  /* A double tap never zooms the page; pinch-zoom and scrolling stay (the canvas sets none). */
+  touch-action: manipulation;
 }
 
 /*
@@ -483,6 +502,10 @@ body {
   min-height: 0;
   overflow: hidden;
   background: var(--canvas-area-background);
+  /* A long press on the canvas shows no callout or text selection on touch screens. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .app-status-bar {

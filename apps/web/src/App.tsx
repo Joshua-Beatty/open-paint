@@ -112,7 +112,12 @@ import {
 import { useCanvasStyle, useOverscroll } from "./settings/canvas-style";
 import { diagnosticGroups, diagnosticsText } from "./settings/diagnostics";
 import { gatherDiagnosticsFacts } from "./settings/diagnostics-facts";
-import { PenInputTracker, rememberPenInput } from "./settings/pen-input";
+import {
+  PenInputTracker,
+  rememberPenInput,
+  TOUCH_INPUT_PATH,
+  touchInputMode,
+} from "./settings/pen-input";
 import { useReducedMotionSetting } from "./settings/reduced-motion";
 import { SettingsButton } from "./settings/SettingsButton";
 import { SettingsDialog } from "./settings/SettingsDialog";
@@ -123,23 +128,28 @@ import { useSetting } from "./settings/use-setting";
 import { AppShell } from "./shell/AppShell";
 import { AuxPanelToggles } from "./shell/AuxPanelToggles";
 import { CommonActionsBar } from "./shell/CommonActionsBar";
+import { CompactMenu } from "./shell/CompactMenu";
+import { CompactPanelSheet, PanelSheetButtons } from "./shell/CompactPanelSheet";
 import { useDocumentTitle } from "./shell/document-title";
 import { HelpMenu } from "./shell/HelpMenu";
 import { ImageTabStrip, type ImageTabView } from "./shell/ImageTabStrip";
 import { KeyboardShortcuts } from "./shell/KeyboardShortcuts";
 import { type MenuActions, MenuBar } from "./shell/MenuBar";
 import { MessageDialog } from "./shell/MessageDialog";
+import { ModifierBar } from "./shell/ModifierBar";
 import {
   effectiveRightWidth,
   PANEL_IDS,
   type PanelId,
   RIGHT_PANEL_IDS,
   RIGHT_SIDEBAR,
+  type RightPanelId,
 } from "./shell/panel-layout";
 import { PANEL_COMMANDS } from "./shell/panel-layout-settings";
 import { LeftSidebar, RightSidebar } from "./shell/Sidebars";
 import { type ColorSchemePreference, useColorScheme } from "./shell/theme";
 import { UnsavedChangesDialog } from "./shell/UnsavedChangesDialog";
+import { useCompactLayout, useTouchControls } from "./shell/use-compact-layout";
 import { usePanelLayout, useViewportWidth } from "./shell/use-panel-layout";
 import { StatusBar } from "./status/StatusBar";
 import {
@@ -180,7 +190,8 @@ import { ACTIVE_TOOL_PATH, resolveActiveTool, ToolController } from "./tools/too
 import { listenForToolKeys } from "./tools/tool-keys";
 import { createToolPointerSink } from "./tools/tool-pointer";
 import { type ViewHost, viewToolRuntime } from "./tools/view-tools";
-import { useEngine } from "./useEngine";
+import { VirtualModifiers } from "./tools/virtual-modifiers";
+import { type CanvasTouchInput, useEngine } from "./useEngine";
 import { cpuOffloader, warmCpuOffloader } from "./workers/cpu-offloader";
 import { gradientLanes } from "./workers/gradient-lanes";
 import { yieldWhileBusy } from "./workers/yield-to-host";
@@ -271,7 +282,27 @@ export function App({
           viewToolRuntime(tool, viewHost),
       }),
   );
-  const [toolPointer] = useState(() => createToolPointerSink(toolController, historyRunning));
+  const [virtualModifiers] = useState(() => new VirtualModifiers());
+  const [toolPointer] = useState(() =>
+    createToolPointerSink(toolController, historyRunning, () => virtualModifiers.state),
+  );
+  const [pen] = useState(() => new PenInputTracker());
+  const [shortcuts] = useState(
+    () =>
+      new ShortcutController(
+        BUILT_IN_REGISTRY,
+        platformFromName(navigator.platform || navigator.userAgent),
+      ),
+  );
+  // One finger draws or pans as Pen & Tablet › Touch input says; a two-finger tap undoes and a
+  // three-finger tap redoes.
+  const [canvasTouch] = useState<CanvasTouchInput>(() => ({
+    mode: () => touchInputMode(settingsRef.current?.get(TOUCH_INPUT_PATH), pen.known),
+    tap: (fingers) => {
+      if (fingers === 2) shortcuts.invoke("edit.undo");
+      else if (fingers === 3) shortcuts.invoke("edit.redo");
+    },
+  }));
   // The marching ants hold still while a pointer drags on the canvas (L1).
   const autoScrollSettings = useCallback((): AutoScrollSettings => {
     const enabled = settingsRef.current?.get("ui.autoScrollWhileDrawing");
@@ -304,18 +335,12 @@ export function App({
     toolPointer,
     autoScrollSettings,
     onEngineError,
+    canvasTouch,
   );
   useEffect(() => {
     engineRef.current = engine;
   }, [engine]);
   const [earlyScheme] = useState(storedColorScheme);
-  const [shortcuts] = useState(
-    () =>
-      new ShortcutController(
-        BUILT_IN_REGISTRY,
-        platformFromName(navigator.platform || navigator.userAgent),
-      ),
-  );
   const [images] = useState(() => new ImageTabs<OpenImage>());
   const tabState = useSyncExternalStore(images.subscribe, () => images.state);
   /** The effect runtime, which is built later, for the checks that run outside React. */
@@ -520,7 +545,6 @@ export function App({
   useCanvasStyle(engine, settings);
   useOverscroll(engine, settings);
   useGraphicsSettings(settings, status);
-  const [pen] = useState(() => new PenInputTracker());
   const [sessionStart] = useState(() => new Date());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("ui");
@@ -571,6 +595,17 @@ export function App({
   const viewportWidth = useViewportWidth();
   const canvasArea = useRef<HTMLElement>(null);
   const returnFocusToCanvas = useCallback(() => canvasArea.current?.focus(), []);
+  const compactLayout = useCompactLayout();
+  const compactRef = useRef(compactLayout.compact);
+  compactRef.current = compactLayout.compact;
+  const touchControls = useTouchControls();
+  /** The compact layout's panel sheet and tool rail; the docked layout's settings stay as saved. */
+  const [sheetPanel, setSheetPanel] = useState<RightPanelId | undefined>(undefined);
+  const [railHidden, setRailHidden] = useState(false);
+  const toggleCompactPanel = useCallback((panel: PanelId) => {
+    if (panel === "tools") setRailHidden((hidden) => !hidden);
+    else setSheetPanel((open) => (open === panel ? undefined : panel));
+  }, []);
   const finishTool = useCallback(() => {
     toolController.runtime()?.commit?.();
     returnFocusToCanvas();
@@ -1114,7 +1149,9 @@ export function App({
     const detach = PANEL_IDS.map((panel) =>
       shortcuts.register(PANEL_COMMANDS[panel], {
         run: () => {
-          panels.actions.toggleVisible(panel);
+          // The compact layout's rail and sheet are its own; the docked layout stays as saved.
+          if (compactRef.current) toggleCompactPanel(panel);
+          else panels.actions.toggleVisible(panel);
           returnFocusToCanvas();
         },
       }),
@@ -1122,7 +1159,7 @@ export function App({
     return () => {
       for (const release of detach) release();
     };
-  }, [panelsReady, panels.actions, shortcuts, returnFocusToCanvas]);
+  }, [panelsReady, panels.actions, shortcuts, returnFocusToCanvas, toggleCompactPanel]);
   useEffect(() => () => thumbnails.dispose(), [thumbnails]);
   const tabViews: ImageTabView[] = tabState.items.map((item) => ({
     id: item.id,
@@ -1139,8 +1176,71 @@ export function App({
     panels.actions.toggleVisible(panel);
     returnFocusToCanvas();
   };
+  const { compact } = compactLayout;
+  const toolsPanel = (
+    <ToolsPanel
+      tools={TOOL_REGISTRY.list()}
+      activeId={activeTool.id}
+      onSelect={(id) => {
+        toolController.activate(id);
+        returnFocusToCanvas();
+      }}
+    />
+  );
+  const colorsPanel = (setExpanded: (expanded: boolean) => void) =>
+    settings === null ? null : (
+      <ColorsPanel
+        settings={settings}
+        storage={paletteStorage}
+        commands={shortcuts}
+        expanded={layout.colorsExpanded}
+        onExpandedChange={setExpanded}
+        onRelinquish={returnFocusToCanvas}
+      />
+    );
+  const layersPanel = (
+    <LayersPanel
+      doc={activeImage?.document}
+      commands={shortcuts}
+      autoSelectNearest={autoSelectNearest}
+      thumbnailsBusy={thumbnailsBusy}
+    />
+  );
+  const historyPanel = <HistoryPanel doc={activeImage?.document} commands={shortcuts} />;
+  const undoRedoEntries = commonEntries.filter(
+    (entry) => entry.kind === "action" && (entry.id === "edit.undo" || entry.id === "edit.redo"),
+  );
   return (
     <AppShell
+      layout={compactLayout}
+      compactStart={
+        compact ? (
+          <>
+            <CompactMenu context={menuContext} actions={menuActions} />
+            <CommonActionsBar entries={undoRedoEntries} onCommand={runCommonAction} />
+          </>
+        ) : undefined
+      }
+      compactEnd={
+        compact ? (
+          <PanelSheetButtons open={sheetPanel} onToggle={(panel) => toggleCompactPanel(panel)} />
+        ) : undefined
+      }
+      sheet={
+        compact && sheetPanel !== undefined ? (
+          <CompactPanelSheet
+            panel={sheetPanel}
+            onSelect={setSheetPanel}
+            onClose={() => {
+              setSheetPanel(undefined);
+              returnFocusToCanvas();
+            }}
+            colors={colorsPanel((expanded) => panels.actions.setColorsExpanded(expanded))}
+            layers={layersPanel}
+            history={historyPanel}
+          />
+        ) : undefined
+      }
       canvasRef={canvasArea}
       commonActions={<CommonActionsBar entries={commonEntries} onCommand={runCommonAction} />}
       toolOptions={
@@ -1158,51 +1258,21 @@ export function App({
       }
       rightSidebarWidth={rightWidth}
       leftSidebar={
-        panelsReady && layout.visible.tools ? (
-          <LeftSidebar
-            onRelinquish={returnFocusToCanvas}
-            tools={
-              <ToolsPanel
-                tools={TOOL_REGISTRY.list()}
-                activeId={activeTool.id}
-                onSelect={(id) => {
-                  toolController.activate(id);
-                  returnFocusToCanvas();
-                }}
-              />
-            }
-          />
+        panelsReady && (compact ? !railHidden : layout.visible.tools) ? (
+          <LeftSidebar onRelinquish={returnFocusToCanvas} tools={toolsPanel} />
         ) : undefined
       }
       rightSidebar={
-        panelsReady && rightVisible ? (
+        panelsReady && rightVisible && !compact ? (
           <RightSidebar
             layout={layout}
             actions={panels.actions}
             width={rightWidth}
             widthResizable={viewportWidth >= RIGHT_SIDEBAR.narrowViewport}
             onRelinquish={returnFocusToCanvas}
-            colors={(setExpanded) =>
-              settings === null ? null : (
-                <ColorsPanel
-                  settings={settings}
-                  storage={paletteStorage}
-                  commands={shortcuts}
-                  expanded={layout.colorsExpanded}
-                  onExpandedChange={setExpanded}
-                  onRelinquish={returnFocusToCanvas}
-                />
-              )
-            }
-            layers={
-              <LayersPanel
-                doc={activeImage?.document}
-                commands={shortcuts}
-                autoSelectNearest={autoSelectNearest}
-                thumbnailsBusy={thumbnailsBusy}
-              />
-            }
-            history={<HistoryPanel doc={activeImage?.document} commands={shortcuts} />}
+            colors={colorsPanel}
+            layers={layersPanel}
+            history={historyPanel}
           />
         ) : undefined
       }
@@ -1231,17 +1301,21 @@ export function App({
         />
       }
       imageTabs={
-        <ImageTabStrip
-          tabs={tabViews}
-          activeId={tabState.activeId}
-          commands={shortcuts}
-          onActivate={(id) => images.activate(id)}
-          onClose={(id) => requestClose([id])}
-          onMove={(id, index) => images.move(id, index)}
-          saveAsOffered={access.canPickSaveTarget}
-        />
+        // The compact layout shows the strip only once a second image is open.
+        compact && tabViews.length < 2 ? undefined : (
+          <ImageTabStrip
+            tabs={tabViews}
+            activeId={tabState.activeId}
+            commands={shortcuts}
+            onActivate={(id) => images.activate(id)}
+            onClose={(id) => requestClose([id])}
+            onMove={(id, index) => images.move(id, index)}
+            saveAsOffered={access.canPickSaveTarget}
+          />
+        )
       }
     >
+      {touchControls && <ModifierBar modifiers={virtualModifiers} />}
       <KeyboardShortcuts
         isOpen={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}

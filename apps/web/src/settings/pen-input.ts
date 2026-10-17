@@ -1,4 +1,5 @@
 import type { SettingsStore } from "@openpaint/storage";
+import type { TouchInputMode } from "../touch-gestures";
 
 /** Set once a pen has been seen, so a later session knows a pen is in use before it touches the canvas. */
 export const PEN_DETECTED_PATH = "penAndTablet.penDetected";
@@ -75,6 +76,20 @@ export class PenInputTracker implements PenPresence {
   #notify(): void {
     for (const listener of this.#listeners) listener();
   }
+}
+
+/** The setting for what one finger does on the canvas. */
+export const TOUCH_INPUT_PATH = "penAndTablet.touchInput";
+
+/**
+ * What one finger does on the canvas for the Touch input setting: Draw and Navigate say so, and
+ * Automatic draws until a pen has been used (this session or an earlier one), since then the pen
+ * draws and a finger that touches the screen is more likely a hand moving the view.
+ */
+export function touchInputMode(setting: unknown, penKnown: boolean): TouchInputMode {
+  if (setting === "Draw") return "draw";
+  if (setting === "Navigate") return "navigate";
+  return penKnown ? "navigate" : "draw";
 }
 
 /**

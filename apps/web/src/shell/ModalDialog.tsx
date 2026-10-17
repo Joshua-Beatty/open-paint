@@ -21,6 +21,11 @@ export interface ModalDialogProps {
    * dialog stays modal either way.
    */
   backdrop?: "dim" | "clear";
+  /**
+   * The dialog previews its result on the canvas (Curves, Levels). On small screens it then takes
+   * only the lower part of the screen, so the preview stays in sight.
+   */
+  preview?: boolean;
   children: ReactNode;
 }
 
@@ -37,8 +42,12 @@ export function ModalDialog({
   closable = true,
   closeDisabled = false,
   backdrop = "dim",
+  preview = false,
   children,
 }: ModalDialogProps) {
+  const className = ["modal", wide ? "modal-wide" : "", preview ? "modal-preview" : ""]
+    .filter((name) => name !== "")
+    .join(" ");
   return (
     <ModalOverlay
       className={backdrop === "clear" ? "modal-overlay is-clear" : "modal-overlay"}
@@ -47,7 +56,7 @@ export function ModalDialog({
         if (!open) onClose();
       }}
     >
-      <Modal className={wide ? "modal modal-wide" : "modal"}>
+      <Modal className={className}>
         <Dialog className="modal-dialog">
           <DialogTitleBar
             title={title}

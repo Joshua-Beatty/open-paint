@@ -143,7 +143,14 @@ export function LevelsDialog({
 
   return (
     <>
-      <ModalDialog isOpen title={t("levels.dialog.title")} onClose={onCancel} wide backdrop="clear">
+      <ModalDialog
+        isOpen
+        title={t("levels.dialog.title")}
+        onClose={onCancel}
+        wide
+        backdrop="clear"
+        preview
+      >
         <Form
           className="levels-form"
           onSubmit={(event) => {

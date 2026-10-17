@@ -55,3 +55,51 @@ describe("AppShell layout (UI-WIN-01, UI-FTW-01)", () => {
     expect(container.querySelector(".app-sidebar-right")).toBeNull();
   });
 });
+
+describe("AppShell compact layout", () => {
+  const compact = { compact: true, short: false, sideSheet: false };
+  const shell = (layout: typeof compact | undefined) => (
+    <AppShell
+      layout={layout}
+      menuBar={<span>menu</span>}
+      commonActions={<span>common</span>}
+      compactStart={<span>start</span>}
+      compactEnd={<span>end</span>}
+      toolOptions={<span>options</span>}
+      leftSidebar={<span>rail</span>}
+      rightSidebar={<span>right</span>}
+      sheet={<section className="app-sheet">sheet</section>}
+      statusBar={<span>status</span>}
+    >
+      <span>canvas</span>
+    </AppShell>
+  );
+
+  it("puts the top bar, the rail and the sheet in place of the menu bar and sidebars", () => {
+    const { container } = render(shell(compact));
+    const root = container.querySelector(".app-shell");
+    expect(root?.className).toBe("app-shell is-compact has-rail");
+    expect(Array.from(root?.children ?? []).map((element) => element.className)).toEqual([
+      "app-compact-start",
+      "app-tool-options",
+      "app-compact-end",
+      "app-sidebar app-sidebar-left",
+      "app-canvas-area",
+      "app-sheet",
+      "app-status-bar",
+    ]);
+    expect(container.querySelector(".app-tool-options")?.textContent).toBe("options");
+  });
+
+  it("keeps the same canvas area element when the layout switches, since the engine lives in it", () => {
+    const { container, rerender } = render(shell(undefined));
+    const before = container.querySelector(".app-canvas-area");
+    rerender(shell(compact));
+    expect(container.querySelector(".app-canvas-area")).toBe(before);
+    rerender(shell({ compact: true, short: true, sideSheet: true }));
+    expect(container.querySelector(".app-canvas-area")).toBe(before);
+    expect(container.querySelector(".app-shell")?.className).toContain("is-short is-side-sheet");
+    rerender(shell(undefined));
+    expect(container.querySelector(".app-canvas-area")).toBe(before);
+  });
+});

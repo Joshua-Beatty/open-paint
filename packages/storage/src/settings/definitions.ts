@@ -267,6 +267,7 @@ const FIXED_DEFINITIONS: readonly SettingDefinition[] = [
 
   flag("penAndTablet.pressureInput", true),
   flag("penAndTablet.penDetected", false),
+  choice("penAndTablet.touchInput", ["Automatic", "Draw", "Navigate"], "Automatic"),
 
   choice(
     "performance.workerPolicy",

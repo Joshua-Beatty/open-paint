@@ -137,7 +137,13 @@ export function CurvesDialog({ values, onValuesChange, onOk, onCancel }: CustomD
     pointer === undefined ? "" : t("curves.readout", { x: pointer[0], y: pointer[1] });
 
   return (
-    <ModalDialog isOpen title={t("curves.dialog.title")} onClose={onCancel} backdrop="clear">
+    <ModalDialog
+      isOpen
+      title={t("curves.dialog.title")}
+      onClose={onCancel}
+      backdrop="clear"
+      preview
+    >
       <Form
         className="curves-form"
         onSubmit={(event) => {
