@@ -1,7 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DISPLAY_TILE_SIZE } from "./display-tiles";
 import { DEFAULT_CANVAS_THEME, type FramePlan, frameStyle, type TileDraw } from "./frame";
-import { chromeUniform, currentTexture, GpuPresenter, straightPixels, tileQuad } from "./presenter";
+import {
+  CpuPresenter,
+  chromeUniform,
+  currentTexture,
+  GpuPresenter,
+  straightPixels,
+  tileQuad,
+} from "./presenter";
 
 function plan(overrides: Partial<FramePlan> = {}): FramePlan {
   return {
@@ -100,6 +107,52 @@ function countingDevice() {
   ) as GPUDevice;
   return { device, created, uploads };
 }
+
+describe("CpuPresenter drop shadow", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("blurs the shadow once per image size and copies it while the image moves", () => {
+    const blurs: number[] = [];
+    class Canvas2d {
+      width: number;
+      height: number;
+      constructor(width: number, height: number) {
+        this.width = width;
+        this.height = height;
+      }
+      getContext() {
+        return new Proxy(
+          {},
+          {
+            get: (_target, name) => (name === "canvas" ? this : () => ({})),
+            set: (_target, name, value) => {
+              if (name === "shadowBlur") blurs.push(value as number);
+              return true;
+            },
+          },
+        );
+      }
+      transferToImageBitmap() {
+        return {};
+      }
+    }
+    vi.stubGlobal("OffscreenCanvas", Canvas2d);
+    const output = {
+      canvas: new Canvas2d(1, 1),
+      transferFromImageBitmap: () => {},
+    } as unknown as ImageBitmapRenderingContext;
+    const presenter = new CpuPresenter(output);
+    presenter.resize(800, 600);
+    presenter.present(plan());
+    presenter.present(plan({ canvas: { x: 40, y: 50, width: 300, height: 200 } }));
+    expect(blurs).toHaveLength(1);
+    presenter.present(plan({ canvas: { x: 40, y: 50, width: 320, height: 200 } }));
+    expect(blurs).toHaveLength(2);
+    // An image covering the viewport casts no visible shadow.
+    presenter.present(plan({ canvas: { x: -100, y: -100, width: 1000, height: 800 } }));
+    expect(blurs).toHaveLength(2);
+  });
+});
 
 describe("GpuPresenter tile textures", () => {
   const tile = (tx: number) => ({ level: 0, tx, ty: 0, pixels: new Uint8Array(128 * 128 * 4) });

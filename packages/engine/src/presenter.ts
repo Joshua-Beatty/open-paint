@@ -76,6 +76,7 @@ export class CpuPresenter extends SurfacePresenter implements Presenter {
   readonly #context: RenderContext;
   #tileCanvases = new WeakMap<DisplayTile, RenderCanvas>();
   #checker: { key: string; pattern: CanvasPattern } | undefined;
+  #shadow: { key: string; canvas: RenderCanvas; pad: number } | undefined;
 
   constructor(output: ImageBitmapRenderingContext) {
     super(output);
@@ -91,12 +92,7 @@ export class CpuPresenter extends SurfacePresenter implements Presenter {
     ctx.fillStyle = css(style.background);
     ctx.fillRect(0, 0, this.surface.width, this.surface.height);
 
-    ctx.save();
-    ctx.shadowColor = `rgba(${style.shadow.color.join(", ")}, ${style.shadow.alpha})`;
-    ctx.shadowBlur = style.shadow.sigma * 2;
-    ctx.fillStyle = "#000";
-    ctx.fillRect(canvas.x, canvas.y, canvas.width, canvas.height);
-    ctx.restore();
+    this.#drawShadow(frame);
 
     ctx.save();
     ctx.translate(canvas.x, canvas.y);
@@ -114,6 +110,40 @@ export class CpuPresenter extends SurfacePresenter implements Presenter {
       ctx.fillRect(canvas.x + canvas.width, canvas.y, 1, canvas.height);
     }
     this.show();
+  }
+
+  /**
+   * The drop shadow, blurred once per image size and style into a cached canvas and copied from it
+   * on each frame: a Canvas 2D shadow blur of the whole image every frame costs tens of
+   * milliseconds where Canvas 2D runs in software (Firefox). Only the part of the image within
+   * reach of the viewport casts it, so a zoomed-in image needs no huge canvas, and no shadow is
+   * drawn when the image covers the viewport.
+   */
+  #drawShadow(frame: FramePlan): void {
+    const { canvas, style } = frame;
+    const { shadow } = style;
+    if (shadow.alpha <= 0) return;
+    const pad = Math.ceil(shadow.sigma * 3) + 2;
+    const x0 = Math.max(canvas.x, -pad);
+    const y0 = Math.max(canvas.y, -pad);
+    const x1 = Math.min(canvas.x + canvas.width, frame.width + pad);
+    const y1 = Math.min(canvas.y + canvas.height, frame.height + pad);
+    if (x1 <= x0 || y1 <= y0) return;
+    if (x0 <= 0 && y0 <= 0 && x1 >= frame.width && y1 >= frame.height) return;
+    const width = x1 - x0;
+    const height = y1 - y0;
+    const key = `${width}x${height}/${shadow.color.join(",")}/${shadow.alpha}/${shadow.sigma}`;
+    if (this.#shadow?.key !== key) {
+      const cell = createRenderCanvas(width + 2 * pad, height + 2 * pad);
+      const context = context2d(cell);
+      if (!context) throw new Error("Canvas 2D is unavailable.");
+      context.shadowColor = `rgba(${shadow.color.join(", ")}, ${shadow.alpha})`;
+      context.shadowBlur = shadow.sigma * 2;
+      context.fillStyle = "#000";
+      context.fillRect(pad, pad, width, height);
+      this.#shadow = { key, canvas: cell, pad };
+    }
+    this.#context.drawImage(this.#shadow.canvas, x0 - pad, y0 - pad);
   }
 
   #drawTile(draw: TileDraw): void {
@@ -137,6 +167,7 @@ export class CpuPresenter extends SurfacePresenter implements Presenter {
   trim(): void {
     this.#tileCanvases = new WeakMap();
     this.#checker = undefined;
+    this.#shadow = undefined;
   }
 
   #tileCanvas(tile: DisplayTile): RenderCanvas {
