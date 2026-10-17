@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import initWasm from "@openpaint/cpu";
 import { Document, translationAffine } from "@openpaint/document";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { BUILT_IN_REGISTRY, type BuiltInCommandId } from "../commands/catalog";
 import { platformFromName } from "../commands/keys";
@@ -119,11 +119,14 @@ describe("StatusBar", () => {
     expect(readout.getAttribute("aria-live")).toBe("polite");
   });
 
-  it("follows a live selection preview by itself, without its parent re-rendering", () => {
+  it("follows a live selection preview by itself, without its parent re-rendering", async () => {
     doc.selectAll();
     renderBar();
     act(() => doc.previewSelection(doc.selection.transform(translationAffine(10, 5)).commit()));
-    expect(screen.getByText(/^Selection top left/).textContent).toContain("10px, 5px");
+    // The accessible copy follows once the text is steady (PaintedText).
+    await waitFor(() =>
+      expect(screen.getByText(/^Selection top left/).textContent).toContain("10px, 5px"),
+    );
   });
 
   it("shows a tool hint in place of the selection readout", () => {

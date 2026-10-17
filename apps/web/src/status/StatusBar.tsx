@@ -16,6 +16,7 @@ import {
 } from "react-aria-components";
 import type { BuiltInCommandId } from "../commands/catalog";
 import type { ShortcutController } from "../commands/shortcuts";
+import { PaintedText } from "./PaintedText";
 import { UNIT_COMMAND } from "./status-commands";
 import {
   cursorText,
@@ -112,9 +113,9 @@ function StatusContext({ store, doc, units }: Pick<StatusBarProps, "store" | "do
       ? selectionText(current, doc.resolution, units, t)
       : undefined;
   return (
-    <div className="app-status-context" aria-live="polite">
+    <div className="app-status-context">
       {hint?.icon}
-      {hint?.text ?? selection ?? ""}
+      <PaintedText className="app-status-context-text" text={hint?.text ?? selection ?? ""} live />
     </div>
   );
 }
@@ -129,9 +130,11 @@ function CursorReadout({ store, doc, units }: Pick<StatusBarProps, "store" | "do
   const cursor =
     doc !== undefined && pixel !== undefined ? cursorText(pixel, doc.resolution, units, t) : "";
   return (
-    <span className="app-status-text" title={t("status.cursorTip")}>
-      {cursor}
-    </span>
+    <PaintedText
+      className="app-status-text app-status-cursor"
+      title={t("status.cursorTip")}
+      text={cursor}
+    />
   );
 }
 
