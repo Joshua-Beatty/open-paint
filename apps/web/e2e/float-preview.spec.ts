@@ -252,7 +252,67 @@ function largestDifference(
   return largest;
 }
 
+async function selectRect(page: Page, area: Box): Promise<void> {
+  await page.getByRole("radio", { name: "Rectangle Select", exact: true }).click();
+  await page.mouse.move(area.x, area.y);
+  await page.mouse.down();
+  await page.mouse.move(area.x + area.width, area.y + area.height, { steps: 4 });
+  await page.mouse.up();
+}
+
 for (const engine of ["v1", "v2"]) {
+  test(`a drag started right after a commit shows the committed image around it (engine ${engine})`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await noisyImage(page, engine);
+    const backend = await page.locator("[data-backend]").getAttribute("data-backend");
+    test.skip(backend !== "webgpu", "needs WebGPU");
+    await zoomTo(page, "fit");
+    const box = await canvasBox(page);
+    const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    // The whole image moves first, so every display tile is rebuilt after its commit.
+    await page.getByRole("radio", { name: "Move Selected Pixels", exact: true }).click();
+    await page.locator(".app-canvas-area").focus();
+    await page.keyboard.press("Control+A");
+    // Off the centre, where the rotation anchor sits.
+    await page.mouse.move(center.x - 200, center.y - 100);
+    await page.mouse.down();
+    await page.mouse.move(center.x - 120, center.y - 100, { steps: 4 });
+    await page.mouse.up();
+    await page.keyboard.press("Enter");
+
+    // Straight away, before the display has rebuilt the tiles under the first move.
+    const second: Box = { x: center.x + 60, y: center.y - 40, width: 160, height: 100 };
+    await selectRect(page, second);
+    await page.getByRole("radio", { name: "Move Selected Pixels", exact: true }).click();
+    await page.mouse.move(second.x + 40, second.y + 30);
+    await page.mouse.down();
+    await page.mouse.move(second.x + 40, second.y + 90, { steps: 4 });
+    await idle(page);
+    await page.waitForTimeout(300);
+    const during = await canvasPixels(page, box);
+    await page.mouse.up();
+    await expect(page.locator(LAST_STEP)).toHaveText("Move Pixels");
+
+    // The image as the first move left it, once the display has settled.
+    await page.locator(".app-canvas-area").focus();
+    await page.keyboard.press("Control+Z");
+    await expect(page.locator("ol.app-history-list li.is-undone")).toHaveCount(1);
+    await page.mouse.move(box.x + 4, box.y + 4);
+    await idle(page);
+    await page.waitForTimeout(400);
+    await idle(page);
+    const committed = await canvasPixels(page, box);
+    const moved: Box = { ...second, y: second.y + 60 };
+    const diff = differences(committed, during, box, [second, moved], 8);
+    expect(diff, `first difference at ${JSON.stringify(diff.first)}`).toEqual({
+      count: 0,
+      first: undefined,
+      farthest: 0,
+    });
+  });
+
   test(`Move Selection leaves every canvas pixel as it is during the drag (engine ${engine})`, async ({
     page,
   }) => {

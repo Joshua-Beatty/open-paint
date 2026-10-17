@@ -364,7 +364,7 @@ export class Engine {
       if (display.supports(this.#document, float)) {
         const visible = plan.tiles.map((draw) => draw.tile);
         const tiles = display.tiles(this.#document, float, level, visible, (ref) =>
-          this.#builder.final(ref),
+          this.#builder.cache.peek(ref),
         );
         shown = { tiles, region: float.base.region };
       }
