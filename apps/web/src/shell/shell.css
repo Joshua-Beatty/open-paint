@@ -341,7 +341,8 @@ body {
   margin-top: -5.5px;
   border-radius: 50%;
   background: var(--accent);
-  animation: app-tab-fade-in 1s ease-out;
+  /* No fade-in: in Firefox it repainted the page every frame for a second after the first edit,
+     and each repaint reads the engine canvas back on the engine worker, delaying the next stroke. */
   transition: opacity 0.25s ease;
 }
 
