@@ -1,5 +1,7 @@
 name: Deploy to Cloudflare Pages
 
+# Runs only for pushes to main and manual runs, both of which need write access. Pull requests
+# never run it. Never add `pull_request_target` here.
 on:
   push:
     branches: [main]
@@ -14,18 +16,20 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  # Builds the site. This job runs the repository's code and its dependencies' install scripts, so
+  # it gets no secrets.
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Node, pnpm, Rust (with the wasm32 target), wasm-pack and wasm-opt, as pinned in mise.toml.
-      - uses: jdx/mise-action@v2
-        with:
-          cache: true
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: crates
 
@@ -33,7 +37,7 @@ jobs:
         id: pnpm-store
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -48,13 +52,38 @@ jobs:
       - name: Check the host headers are in the build
         run: test -f apps/web/dist/_headers && grep -q "Cross-Origin-Embedder-Policy" apps/web/dist/_headers
 
-      # Wrangler runs through `pnpm dlx`, so it isn't added to the workspace's dependencies.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site
+          path: apps/web/dist
+          include-hidden-files: true
+          retention-days: 7
+
+  # Uploads the built site. It checks out nothing and installs nothing from the repository, so only
+  # the pinned Wrangler release runs alongside the Cloudflare token. The `production` environment can
+  # be limited to the main branch in the repository settings.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: site
+          path: dist
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'open-paint' }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || 'Manual deploy' }}
         run: >-
-          pnpm dlx wrangler@4 pages deploy apps/web/dist
+          npx --yes wrangler@4.151.1 pages deploy dist
           --project-name="$PROJECT" --branch=main
-          --commit-hash="$GITHUB_SHA" --commit-message="$(git log -1 --format=%s)"
+          --commit-hash="$GITHUB_SHA" --commit-message="${COMMIT_MESSAGE%%$'\n'*}"
