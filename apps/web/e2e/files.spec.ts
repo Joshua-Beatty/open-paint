@@ -48,10 +48,17 @@ test("Open uses a file input where the browser has no file pickers (WEB-FILE-01)
   await expect(page.locator(".app-status-bar")).toContainText("3 × 2");
 });
 
-test("Save As downloads the image under the chosen name without file pickers (WEB-FILE-02)", async ({
+/** File › Save, not Save As or Save All. */
+const SAVE_ITEM = /^Save(?!\s*(As|All))/;
+
+test("Save downloads the image under the chosen name without file pickers (WEB-FILE-02)", async ({
   page,
 }) => {
-  await openMenuItem(page, "File", /^Save As\.\.\./);
+  // Without file pickers Save As would only repeat Save, so the menu doesn't offer it.
+  await page.getByRole("button", { name: "File", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: /^Save As/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await openMenuItem(page, "File", SAVE_ITEM);
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
@@ -65,6 +72,23 @@ test("Save As downloads the image under the chosen name without file pickers (WE
   const chunks: Buffer[] = [];
   for await (const chunk of await file.createReadStream()) chunks.push(chunk as Buffer);
   expect([...Buffer.concat(chunks).subarray(0, 8)]).toEqual(PNG_SIGNATURE);
+});
+
+test("choosing another type in the save dialog changes the name's extension and what is saved (owner request)", async ({
+  page,
+}) => {
+  await openMenuItem(page, "File", SAVE_ITEM);
+  const dialog = page.getByRole("dialog", { name: "Save" });
+  const name = dialog.getByRole("textbox", { name: "Name" });
+  await expect(name).toHaveValue(/\.png$/);
+  await dialog.getByRole("combobox", { name: "Type" }).selectOption({ label: "OpenPaint" });
+  await expect(name).toHaveValue(/\.opaint$/);
+  const download = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  // The OpenPaint type has no save options, so no PNG options appear and the file downloads.
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/\.opaint$/);
+  await expect(page.getByRole("dialog", { name: "Save Configuration" })).toHaveCount(0);
 });
 
 test("Copy with a selection writes the PNG, plus the outline where custom types exist (WEB-CLIP-01)", async ({

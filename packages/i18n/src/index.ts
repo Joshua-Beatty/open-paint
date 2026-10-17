@@ -817,11 +817,10 @@ export const enUS = {
   "file.flatten.flattenHelp":
     "The image will be flattened, and then saved. You will be able to undo the flatten operation after saving is finished.",
   "file.flatten.cancelHelp": "Cancels the save action.",
-  "file.saveAs.title": "Save As",
+  "file.saveAs.title": "Save",
   "file.saveAs.name": "Name",
   "file.saveAs.type": "Type",
   "file.saveAs.save": "Save",
-  "file.saveAs.download": "Your browser downloads the file, so Save works like Save As.",
   "file.saving.title": "Saving",
   "file.saving.text": "Saving...",
   "file.saveConfig.title": "Save Configuration",

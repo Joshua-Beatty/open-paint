@@ -754,7 +754,7 @@ describe("Save and Save As (FMT-SAVE-01, FMT-SAVE-03)", () => {
     const done = flows.save(tabs.state.items[0]?.id ?? "", true);
     const prompt = await dialogOf(dialogs, "saveName");
     expect(prompt.name).toBe("Untitled.raw");
-    expect(prompt.types).toEqual([{ id: "raw", label: "PNG" }]);
+    expect(prompt.types).toEqual([{ id: "raw", label: "PNG", extensions: [".raw"] }]);
     prompt.answer({ name: "sketch", typeId: "raw" });
 
     expect(await done).toBe("saved");

@@ -51,6 +51,8 @@ export interface ImageTabStripProps {
   readonly onClose: (id: string) => void;
   /** Puts a dragged tab at `index` in the final order. */
   readonly onMove: (id: string, index: number) => void;
+  /** Whether the context menu offers Save As, which repeats Save without file pickers. */
+  readonly saveAsOffered?: boolean;
 }
 
 /** Movement before a press counts as a drag, in CSS pixels. */
@@ -147,6 +149,7 @@ export function ImageTabStrip({
   onActivate,
   onClose,
   onMove,
+  saveAsOffered = true,
 }: ImageTabStripProps) {
   const t = useTranslation();
   const scroller = useRef<HTMLDivElement>(null);
@@ -489,7 +492,7 @@ export function ImageTabStrip({
           <Popover className="app-popover" placement="bottom start">
             <MenuList
               label={menuTab.title}
-              entries={tabMenuEntries(menuTab.title, commands, t)}
+              entries={tabMenuEntries(menuTab.title, commands, t, saveAsOffered)}
               actions={{
                 onCommand: (command) => {
                   onActivate(anchor.id);

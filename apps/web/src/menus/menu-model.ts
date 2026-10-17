@@ -92,6 +92,12 @@ export interface MenuState {
   readonly recent: readonly MenuRecentEntry[];
   readonly view: MenuViewState;
   readonly fullScreenAvailable: boolean;
+  /**
+   * Whether Save As differs from Save: only where the browser lets the user pick the file. Without
+   * file pickers both ask for a name and download, so Save As isn't offered (owner request).
+   * Undefined counts as offered.
+   */
+  readonly saveAsOffered?: boolean;
 }
 
 /** One Open Recent entry as the menu shows it: its id, name and PNG thumbnail data URL. */
@@ -286,7 +292,9 @@ function fileEntries(context: MenuContext): readonly MenuEntry[] {
     },
     SEPARATOR,
     command(context, "file.save", "menu.file.save", s.hasDocument),
-    command(context, "file.saveAs", "menu.file.saveAs", s.hasDocument),
+    ...(s.saveAsOffered === false
+      ? []
+      : [command(context, "file.saveAs", "menu.file.saveAs", s.hasDocument)]),
     command(context, "file.saveAll", "menu.file.saveAll", s.anyUnsaved),
     SEPARATOR,
     command(context, "file.print", "menu.file.print", s.hasDocument),

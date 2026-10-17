@@ -73,6 +73,33 @@ export function resolveDownloadName(
   return { name: `${name}${selected.saveExtensions[0] ?? ""}`, type: selected };
 }
 
+/** A type of the download dialog's list: an id and its save extensions, the default first. */
+interface NamedType {
+  readonly id: string;
+  readonly extensions: readonly string[];
+}
+
+/**
+ * The name after the download dialog's type changes to `type`: a savable extension at its end is
+ * replaced by the type's default one, so the name and the list never disagree. A name with no
+ * savable extension is left as it is; saving adds the extension then.
+ */
+export function nameForType(name: string, types: readonly NamedType[], type: NamedType): string {
+  const extension = extensionOf(name);
+  if (extension === "" || !types.some((candidate) => candidate.extensions.includes(extension))) {
+    return name;
+  }
+  if (type.extensions.includes(extension)) return name;
+  return `${name.slice(0, name.length - extension.length)}${type.extensions[0] ?? ""}`;
+}
+
+/** The type a typed name's extension picks in the download dialog, or undefined when none does. */
+export function typeForName<T extends NamedType>(name: string, types: readonly T[]): T | undefined {
+  const extension = extensionOf(name);
+  if (extension === "") return undefined;
+  return types.find((type) => type.extensions.includes(extension));
+}
+
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
 }

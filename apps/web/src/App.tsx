@@ -900,6 +900,7 @@ export function App({
       canUndo: activeDocument?.history.canUndo === true,
       canRedo: activeDocument?.history.canRedo === true,
       hasSelection: activeDocument !== undefined && !activeDocument.selection.isEmpty,
+      saveAsOffered: access.canPickSaveTarget,
       clipboardHasImage: !clipboardEmpty,
       clipboardHasSelection: !clipboardEmpty,
       activeLayerIsBitmap: hasDocument,
@@ -1217,6 +1218,7 @@ export function App({
           onActivate={(id) => images.activate(id)}
           onClose={(id) => requestClose([id])}
           onMove={(id, index) => images.move(id, index)}
+          saveAsOffered={access.canPickSaveTarget}
         />
       }
     >

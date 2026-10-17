@@ -17,12 +17,14 @@ function commandItem(id: BuiltInCommandId, label: string, commands: MenuCommands
 /**
  * The image-tab context menu (UI-MENU-TAB): the file name as a disabled title, Copy File Name,
  * then Save, Save As and Close. Save and Save As are enabled only once their commands have
- * handlers, so the menu follows the command system like every other menu.
+ * handlers, so the menu follows the command system like every other menu. Save As is left out when
+ * it would only repeat Save (`saveAsOffered` false, owner request).
  */
 export function tabMenuEntries(
   title: string,
   commands: MenuCommands,
   t: Translate,
+  saveAsOffered = true,
 ): readonly MenuEntry[] {
   return [
     { kind: "item", id: "tab.title", label: title, enabled: false, checked: false },
@@ -38,7 +40,7 @@ export function tabMenuEntries(
     },
     { kind: "separator" },
     commandItem("file.save", t("menu.file.save"), commands),
-    commandItem("file.saveAs", t("menu.file.saveAs"), commands),
+    ...(saveAsOffered ? [commandItem("file.saveAs", t("menu.file.saveAs"), commands)] : []),
     commandItem("file.close", t("menu.file.close"), commands),
   ];
 }

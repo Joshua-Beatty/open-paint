@@ -37,19 +37,49 @@ describe("FileDialogHost", () => {
     expect(await answer).toBe(true);
   });
 
-  it("answers the download Save As dialog with the name and type", async () => {
+  it("answers the download save dialog with the name and type", async () => {
     const dialogs = new FileDialogs();
     render(<FileDialogHost dialogs={dialogs} />);
-    const answer = dialogs.saveName("Untitled.png", [{ id: "png", label: "PNG" }], "png");
+    const answer = dialogs.saveName(
+      "Untitled.png",
+      [{ id: "png", label: "PNG", extensions: [".png"] }],
+      "png",
+    );
 
-    const dialog = await screen.findByRole("dialog", { name: "Save As" });
-    expect(dialog.textContent).toContain("Your browser downloads the file");
+    const dialog = await screen.findByRole("dialog", { name: "Save" });
+    expect(dialog.textContent).not.toContain("downloads");
     fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
       target: { value: "sketch" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await answer).toEqual({ name: "sketch", typeId: "png" });
+  });
+
+  it("keeps the name's extension and the Type list in step (owner request)", async () => {
+    const dialogs = new FileDialogs();
+    render(<FileDialogHost dialogs={dialogs} />);
+    const types = [
+      { id: "png", label: "PNG", extensions: [".png"] },
+      { id: "openpaint", label: "OpenPaint", extensions: [".openpaint"] },
+      { id: "jpeg", label: "JPEG", extensions: [".jpg", ".jpeg"] },
+    ];
+    const answer = dialogs.saveName("Untitled.png", types, "png");
+    await screen.findByRole("dialog", { name: "Save" });
+    const name = screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement;
+    const type = screen.getByRole("combobox", { name: "Type" }) as HTMLSelectElement;
+
+    // Choosing a type swaps the extension in the name.
+    fireEvent.change(type, { target: { value: "openpaint" } });
+    expect(name.value).toBe("Untitled.openpaint");
+    // Typing a known extension picks its type; any of a type's extensions stays as typed.
+    fireEvent.change(name, { target: { value: "Untitled.jpeg" } });
+    expect(type.value).toBe("jpeg");
+    fireEvent.change(type, { target: { value: "jpeg" } });
+    expect(name.value).toBe("Untitled.jpeg");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await answer).toEqual({ name: "Untitled.jpeg", typeId: "jpeg" });
   });
 
   it("asks Open or Add layers for dropped files, with the new-image explanation when no image is open", async () => {

@@ -4,6 +4,7 @@ import { Button, Input, Label, Radio, RadioGroup, TextField } from "react-aria-c
 import type { PrintMode } from "../print/print-job";
 import { AccessLabel } from "../shell/MenuBar";
 import { ModalDialog } from "../shell/ModalDialog";
+import { nameForType, typeForName } from "./file-choices";
 import type {
   FileDialogRequest,
   FileDialogs,
@@ -186,6 +187,17 @@ function SaveNameDialog({
   const t = useTranslation();
   const [name, setName] = useState(initialName);
   const [typeId, setTypeId] = useState(initialTypeId);
+  // The name's extension and the Type list follow each other, so what Save writes is never in doubt.
+  const changeName = (next: string) => {
+    setName(next);
+    const owner = typeForName(next, types);
+    if (owner !== undefined) setTypeId(owner.id);
+  };
+  const changeType = (id: string) => {
+    setTypeId(id);
+    const type = types.find((candidate) => candidate.id === id);
+    if (type !== undefined) setName((current) => nameForType(current, types, type));
+  };
   return (
     <ModalDialog isOpen onClose={() => answer(undefined)} title={t("file.saveAs.title")}>
       <form
@@ -195,13 +207,13 @@ function SaveNameDialog({
           answer({ name, typeId });
         }}
       >
-        <TextField className="file-field" value={name} onChange={setName} autoFocus>
+        <TextField className="file-field" value={name} onChange={changeName} autoFocus>
           <Label>{t("file.saveAs.name")}</Label>
           <Input />
         </TextField>
         <label className="file-field">
           <span>{t("file.saveAs.type")}</span>
-          <select value={typeId} onChange={(event) => setTypeId(event.target.value)}>
+          <select value={typeId} onChange={(event) => changeType(event.target.value)}>
             {types.map((type) => (
               <option key={type.id} value={type.id}>
                 {type.label}
@@ -209,7 +221,6 @@ function SaveNameDialog({
             ))}
           </select>
         </label>
-        <p>{t("file.saveAs.download")}</p>
         <div className="modal-actions">
           <Button onPress={() => answer(undefined)}>{t("dialog.cancel")}</Button>
           <Button type="submit" className="is-default">

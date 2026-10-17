@@ -306,7 +306,7 @@ export class FileFlows {
 
     const choice = await dialogs.saveName(
       proposal,
-      types.map((type) => ({ id: type.id, label: t(type.label) })),
+      types.map((type) => ({ id: type.id, label: t(type.label), extensions: type.saveExtensions })),
       selected.id,
     );
     if (choice === undefined) return "canceled";

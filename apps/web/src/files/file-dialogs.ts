@@ -34,6 +34,8 @@ export type CanvasFitChoice = "expand" | "keep" | "cancel";
 export interface SaveTypeChoice {
   readonly id: string;
   readonly label: string;
+  /** The type's save extensions with their dots, the default first, such as `[".png"]`. */
+  readonly extensions: readonly string[];
 }
 
 /** The name and type the user chose in the download Save As dialog. */

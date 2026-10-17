@@ -145,6 +145,17 @@ describe("File, Edit, View, Image and Layers", () => {
     expect(item(file, "Save All").enabled).toBe(true);
   });
 
+  it("leaves Save As out where it would only repeat Save (owner request)", () => {
+    const labels = (offered: boolean | undefined) =>
+      buildMenu("file", context({ hasDocument: true, saveAsOffered: offered })).flatMap((entry) =>
+        entry.kind === "item" ? [entry.label.replaceAll("&", "")] : [],
+      );
+    expect(labels(true)).toContain("Save As...");
+    expect(labels(undefined)).toContain("Save As...");
+    expect(labels(false)).not.toContain("Save As...");
+    expect(labels(false)).toContain("Save");
+  });
+
   it("gates Undo and Redo on the history, and Undo needs more than the base entry", () => {
     const edit = buildMenu("edit", context({ hasDocument: true, canUndo: true }));
     expect(item(edit, "Undo").enabled).toBe(true);

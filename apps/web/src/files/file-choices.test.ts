@@ -4,12 +4,44 @@ import { createTranslator, enUS } from "@openpaint/i18n";
 import { describe, expect, it } from "vitest";
 import {
   extensionOf,
+  nameForType,
   openPickerTypes,
   resolveDownloadName,
   savePickerTypes,
   suggestedName,
+  typeForName,
   typeOfName,
 } from "./file-choices";
+
+describe("nameForType and typeForName (owner request: the name and the Type list agree)", () => {
+  const types = [
+    { id: "png", extensions: [".png"] },
+    { id: "opaint", extensions: [".opaint"] },
+    { id: "jpeg", extensions: [".jpg", ".jpeg"] },
+  ] as const;
+  const [pngType, opaint, jpegType] = types;
+
+  it("swaps a savable extension for the chosen type's default one", () => {
+    expect(nameForType("Untitled.png", types, opaint)).toBe("Untitled.opaint");
+    expect(nameForType("photo.final.PNG", types, jpegType)).toBe("photo.final.jpg");
+  });
+
+  it("keeps a name that already ends in one of the type's extensions", () => {
+    expect(nameForType("Untitled.jpeg", types, jpegType)).toBe("Untitled.jpeg");
+  });
+
+  it("leaves a name without a savable extension alone, since saving adds it", () => {
+    expect(nameForType("sketch", types, opaint)).toBe("sketch");
+    expect(nameForType("notes.v2", types, pngType)).toBe("notes.v2");
+  });
+
+  it("finds the type a typed extension belongs to, or none", () => {
+    expect(typeForName("a.jpeg", types)?.id).toBe("jpeg");
+    expect(typeForName("a.OPAINT", types)?.id).toBe("opaint");
+    expect(typeForName("a.txt", types)).toBeUndefined();
+    expect(typeForName("a", types)).toBeUndefined();
+  });
+});
 
 const t = createTranslator("en-US", enUS);
 
