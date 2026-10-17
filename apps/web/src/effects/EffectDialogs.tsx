@@ -86,6 +86,7 @@ export function EffectDialogs({
           values={state.values}
           notice={state.notice}
           services={services}
+          backdrop="clear"
           onValuesChange={(values) => runtime.preview(values)}
           onOk={(values) => runtime.ok(values)}
           onCancel={() => runtime.cancel()}

@@ -81,7 +81,7 @@ function LayerPropertiesForm({ doc, initial, onClose }: LayerPropertiesFormProps
   };
 
   return (
-    <ModalDialog isOpen onClose={cancel} title={t("layers.dialog.title")}>
+    <ModalDialog isOpen onClose={cancel} title={t("layers.dialog.title")} backdrop="clear">
       <Form
         className="layer-properties"
         onSubmit={(event) => {

@@ -16,6 +16,11 @@ export interface ModalDialogProps {
   closable?: boolean;
   /** Disables the close button, for example while a cancel is already under way. */
   closeDisabled?: boolean;
+  /**
+   * The page behind the dialog: dimmed, or left clear for dialogs that preview on the canvas. The
+   * dialog stays modal either way.
+   */
+  backdrop?: "dim" | "clear";
   children: ReactNode;
 }
 
@@ -31,11 +36,12 @@ export function ModalDialog({
   wide = false,
   closable = true,
   closeDisabled = false,
+  backdrop = "dim",
   children,
 }: ModalDialogProps) {
   return (
     <ModalOverlay
-      className="modal-overlay"
+      className={backdrop === "clear" ? "modal-overlay is-clear" : "modal-overlay"}
       isOpen={isOpen}
       onOpenChange={(open) => {
         if (!open) onClose();

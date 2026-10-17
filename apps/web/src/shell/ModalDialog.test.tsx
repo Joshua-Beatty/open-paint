@@ -59,4 +59,21 @@ describe("ModalDialog (WEB-UI-02)", () => {
     );
     expect(screen.getByRole("button", { name: "Close" }).hasAttribute("disabled")).toBe(true);
   });
+
+  it("dims the page behind it unless it previews on the canvas", () => {
+    const { rerender } = render(
+      <ModalDialog isOpen onClose={() => {}} title="About">
+        <p>About</p>
+      </ModalDialog>,
+    );
+    const overlay = () => screen.getByRole("dialog").closest(".modal-overlay");
+    expect(overlay()?.classList.contains("is-clear")).toBe(false);
+    rerender(
+      <ModalDialog isOpen onClose={() => {}} title="Levels" backdrop="clear">
+        <p>Levels</p>
+      </ModalDialog>,
+    );
+    expect(overlay()?.classList.contains("is-clear")).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Levels" })).toBeDefined();
+  });
 });

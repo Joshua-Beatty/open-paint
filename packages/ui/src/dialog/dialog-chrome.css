@@ -1,12 +1,18 @@
 /*
  * A modal dialog's title bar: the heading, then the close button in the top-right corner. The
  * button's 28px target overhangs the heading's line box, so the bar is no taller than the heading.
+ * The bar reaches over the dialog's 16px top and side padding, so the whole top strip drags the
+ * dialog.
  */
 .modal-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 12px;
+  margin: -16px -16px 12px;
+  padding: 16px 16px 0;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
 }
 
 .modal-header .modal-title {

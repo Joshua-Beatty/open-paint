@@ -6,6 +6,7 @@ import { Icon } from "../properties/icons";
 import { TooltipTrigger } from "../tooltip";
 import "../properties/property-dialog.css";
 import "./dialog-chrome.css";
+import { useDialogDrag } from "./use-dialog-drag";
 
 /**
  * Phosphor Icons 2.1.1 (MIT, Copyright (c) 2023 Phosphor Icons) "x" in the bold weight, copied
@@ -26,21 +27,34 @@ export interface DialogTitleBarProps {
   readonly onClose?: (() => void) | undefined;
   /** Disables the close button, for example while a cancel is already under way. */
   readonly closeDisabled?: boolean;
+  /**
+   * Which dialog this is, so it reopens where the user dragged it this session. Defaults to the
+   * title when that is a string.
+   */
+  readonly positionKey?: string;
 }
 
 /**
  * The shared title bar of every modal dialog: the heading, and a 28 px close button with the
  * accessible name and tooltip "Close" in the top-right corner. Esc still closes the dialog through
- * the overlay, so the button is only another way to cancel.
+ * the overlay, so the button is only another way to cancel. Dragging the bar moves the dialog, for
+ * example off the part of the canvas a preview changes; double-clicking it centres the dialog.
  */
-export function DialogTitleBar({ title, onClose, closeDisabled = false }: DialogTitleBarProps) {
+export function DialogTitleBar({
+  title,
+  onClose,
+  closeDisabled = false,
+  positionKey,
+}: DialogTitleBarProps) {
   const t = useTranslation();
   // The tooltip shows on hover only: on keyboard focus it would take the first Esc, so closing the
   // dialog would need two. The button's accessible name already says "Close".
   const hovered = useRef(false);
   const [tooltipOpen, setTooltipOpen] = useState(false);
+  const bar = useRef<HTMLDivElement>(null);
+  const drag = useDialogDrag(bar, positionKey ?? (typeof title === "string" ? title : undefined));
   return (
-    <div className="modal-header">
+    <div ref={bar} className="modal-header" {...drag}>
       <Heading slot="title" className="modal-title">
         {title}
       </Heading>
