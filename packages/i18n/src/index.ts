@@ -1287,6 +1287,9 @@ export const enUS = {
   "settings.note.pressureInput":
     "This enables pressure sensitivity and full-rate sampling for pens and drawing tablets. Disabling this may fix compatibility issues.",
   "settings.pen.none": "No pen input has been detected yet.",
+  "settings.field.touchInput": "Touch input",
+  "settings.note.touchInput":
+    "What one finger does on the canvas. Automatic draws until a pen is used, and then leaves the drawing to the pen. Touches are ignored while a pen is on the canvas.",
   "settings.field.backend": "Rendering backend",
   "settings.note.backend":
     "This selects how the canvas, tools, adjustments and effects are rendered. Choosing the CPU will significantly reduce performance and is not recommended except for troubleshooting.",
@@ -1378,6 +1381,8 @@ export const enUS = {
   "settings.option.cpu": "CPU only",
   "settings.option.light": "Light",
   "settings.option.dark": "Dark",
+  "settings.option.draw": "Draw with the active tool",
+  "settings.option.navigate": "Pan and zoom only",
   "settings.option.linear": "Linear",
   "settings.option.companded": "Companded",
   "settings.option.disabled": "Disabled",

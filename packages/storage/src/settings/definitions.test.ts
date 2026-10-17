@@ -80,6 +80,7 @@ const FIXED_KEYS = [
   "graphics.errorFlags",
   "penAndTablet.pressureInput",
   "penAndTablet.penDetected",
+  "penAndTablet.touchInput",
   "performance.workerPolicy",
   "layout.panels.tools.visible",
   "layout.panels.tools.collapsed",

@@ -301,6 +301,9 @@ export const PEN_BLOCK: FormBlock = {
     field("penAndTablet.pressureInput", "settings.field.pressureInput", {
       control: { footnote: "settings.note.pressureInput" },
     }),
+    field("penAndTablet.touchInput", "settings.field.touchInput", {
+      control: { footnote: "settings.note.touchInput" },
+    }),
   ],
 };
 

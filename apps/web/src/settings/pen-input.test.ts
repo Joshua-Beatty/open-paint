@@ -1,6 +1,6 @@
 import type { SettingsStore } from "@openpaint/storage";
 import { describe, expect, it, vi } from "vitest";
-import { PEN_DETECTED_PATH, PenInputTracker, rememberPenInput } from "./pen-input";
+import { PEN_DETECTED_PATH, PenInputTracker, rememberPenInput, touchInputMode } from "./pen-input";
 
 function pointer(type: string, name = "pointerdown"): Event {
   const event = new Event(name);
@@ -80,5 +80,15 @@ describe("rememberPenInput", () => {
     const tracker = new PenInputTracker();
     rememberPenInput(tracker, storeWith({ [PEN_DETECTED_PATH]: false }));
     expect(tracker.known).toBe(false);
+  });
+});
+
+describe("touchInputMode", () => {
+  it("draws or navigates as the setting says, and Automatic leaves drawing to a known pen", () => {
+    expect(touchInputMode("Draw", true)).toBe("draw");
+    expect(touchInputMode("Navigate", false)).toBe("navigate");
+    expect(touchInputMode("Automatic", false)).toBe("draw");
+    expect(touchInputMode("Automatic", true)).toBe("navigate");
+    expect(touchInputMode(undefined, false)).toBe("draw");
   });
 });

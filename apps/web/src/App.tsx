@@ -108,7 +108,12 @@ import { createSessionRecovery, type SessionOffer } from "./session/session-reco
 import { useCanvasStyle, useOverscroll } from "./settings/canvas-style";
 import { diagnosticGroups, diagnosticsText } from "./settings/diagnostics";
 import { gatherDiagnosticsFacts } from "./settings/diagnostics-facts";
-import { PenInputTracker, rememberPenInput } from "./settings/pen-input";
+import {
+  PenInputTracker,
+  rememberPenInput,
+  TOUCH_INPUT_PATH,
+  touchInputMode,
+} from "./settings/pen-input";
 import { useReducedMotionSetting } from "./settings/reduced-motion";
 import { SettingsButton } from "./settings/SettingsButton";
 import { SettingsDialog } from "./settings/SettingsDialog";
@@ -176,7 +181,8 @@ import { ACTIVE_TOOL_PATH, resolveActiveTool, ToolController } from "./tools/too
 import { listenForToolKeys } from "./tools/tool-keys";
 import { createToolPointerSink } from "./tools/tool-pointer";
 import { type ViewHost, viewToolRuntime } from "./tools/view-tools";
-import { useEngine } from "./useEngine";
+import { VirtualModifiers } from "./tools/virtual-modifiers";
+import { type CanvasTouchInput, useEngine } from "./useEngine";
 import { cpuOffloader, warmCpuOffloader } from "./workers/cpu-offloader";
 import { gradientLanes } from "./workers/gradient-lanes";
 import { yieldWhileBusy } from "./workers/yield-to-host";
@@ -267,7 +273,27 @@ export function App({
           viewToolRuntime(tool, viewHost),
       }),
   );
-  const [toolPointer] = useState(() => createToolPointerSink(toolController, historyRunning));
+  const [virtualModifiers] = useState(() => new VirtualModifiers());
+  const [toolPointer] = useState(() =>
+    createToolPointerSink(toolController, historyRunning, () => virtualModifiers.state),
+  );
+  const [pen] = useState(() => new PenInputTracker());
+  const [shortcuts] = useState(
+    () =>
+      new ShortcutController(
+        BUILT_IN_REGISTRY,
+        platformFromName(navigator.platform || navigator.userAgent),
+      ),
+  );
+  // One finger draws or pans as Pen & Tablet › Touch input says; a two-finger tap undoes and a
+  // three-finger tap redoes.
+  const [canvasTouch] = useState<CanvasTouchInput>(() => ({
+    mode: () => touchInputMode(settingsRef.current?.get(TOUCH_INPUT_PATH), pen.known),
+    tap: (fingers) => {
+      if (fingers === 2) shortcuts.invoke("edit.undo");
+      else if (fingers === 3) shortcuts.invoke("edit.redo");
+    },
+  }));
   // The marching ants hold still while a pointer drags on the canvas (L1).
   const autoScrollSettings = useCallback((): AutoScrollSettings => {
     const enabled = settingsRef.current?.get("ui.autoScrollWhileDrawing");
@@ -300,18 +326,12 @@ export function App({
     toolPointer,
     autoScrollSettings,
     onEngineError,
+    canvasTouch,
   );
   useEffect(() => {
     engineRef.current = engine;
   }, [engine]);
   const [earlyScheme] = useState(storedColorScheme);
-  const [shortcuts] = useState(
-    () =>
-      new ShortcutController(
-        BUILT_IN_REGISTRY,
-        platformFromName(navigator.platform || navigator.userAgent),
-      ),
-  );
   const [images] = useState(() => new ImageTabs<OpenImage>());
   const tabState = useSyncExternalStore(images.subscribe, () => images.state);
   /** The effect runtime, which is built later, for the checks that run outside React. */
@@ -516,7 +536,6 @@ export function App({
   useCanvasStyle(engine, settings);
   useOverscroll(engine, settings);
   useGraphicsSettings(settings, status);
-  const [pen] = useState(() => new PenInputTracker());
   const [sessionStart] = useState(() => new Date());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("ui");
