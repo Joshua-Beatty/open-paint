@@ -12,7 +12,6 @@ concurrency:
 
 permissions:
   contents: read
-  deployments: write
 
 jobs:
   deploy:
@@ -49,10 +48,13 @@ jobs:
       - name: Check the host headers are in the build
         run: test -f apps/web/dist/_headers && grep -q "Cross-Origin-Embedder-Policy" apps/web/dist/_headers
 
+      # Wrangler runs through `pnpm dlx`, so it isn't added to the workspace's dependencies.
       - name: Deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          command: pages deploy apps/web/dist --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT || 'open-paint' }} --branch=main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'open-paint' }}
+        run: >-
+          pnpm dlx wrangler@4 pages deploy apps/web/dist
+          --project-name="$PROJECT" --branch=main
+          --commit-hash="$GITHUB_SHA" --commit-message="$(git log -1 --format=%s)"
