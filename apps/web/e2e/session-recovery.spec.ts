@@ -48,6 +48,24 @@ async function openWithOpfs(page: Page): Promise<void> {
   await expect(page.getByRole("tab")).toHaveCount(1);
 }
 
+test("a reload after only a selection on the blank start image offers nothing", async ({
+  page,
+}) => {
+  await openWithOpfs(page);
+  await expect(page).toHaveTitle("Untitled - OpenPaint");
+  await page.keyboard.press("Control+A");
+  await expect(page).toHaveTitle("*Untitled - OpenPaint");
+  // Longer than the checkpoint delay, so a checkpoint would have been written by now.
+  await page.waitForTimeout(2500);
+  expect(await checkpointCount(page)).toBe(0);
+
+  await page.reload();
+  // The start image opens only once the app has found nothing to offer.
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  await expect(page.getByRole("dialog", { name: "Restore Session" })).toHaveCount(0);
+  await expect(page).toHaveTitle("Untitled - OpenPaint");
+});
+
 test("a reload offers the unsaved image back with its history, and Restore brings it back", async ({
   page,
 }) => {

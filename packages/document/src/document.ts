@@ -1,5 +1,5 @@
 import { type MessageId, t } from "@openpaint/i18n";
-import { LayerBlendMode } from "./blend-mode";
+import { DEFAULT_LAYER_BLEND_MODE, LayerBlendMode } from "./blend-mode";
 import {
   applyMetadataJson,
   CHECKPOINT_FORMAT,
@@ -7,6 +7,7 @@ import {
   CheckpointError,
   type CheckpointItem,
   type CheckpointLayer,
+  type CheckpointMetadata,
   type CheckpointSnapshot,
   type DocumentCheckpoint,
   type DocumentCheckpointManifest,
@@ -893,6 +894,48 @@ export class Document {
   /** Marks the document dirty, e.g. when a file opened with changes it must save (FMT-NAT-07). */
   markUnsaved(): void {
     this.history.markUnsaved();
+  }
+
+  /**
+   * True while the document's content is still the blank image `createBlank` made at its size
+   * (SET-LIFE-11): one opaque white "Background" layer with default properties, the default
+   * resolution, no metadata, and no applied history item that changed pixels, layers or the canvas.
+   * Selection steps, property changes that were put back and undone edits do not count. It reads
+   * only the history and the layer list, never pixels.
+   */
+  get untouchedBlank(): boolean {
+    const [base, ...steps] = this.history.appliedCommands;
+    if (base === undefined || this.#items.has(base) || !isBlankBase(base)) return false;
+    const [layer, ...others] = this.#layers;
+    if (layer === undefined || others.length > 0) return false;
+    if (
+      !isDefaultBlankLayer(layer, layer.rawBlendMode, layer.extras, layer.metadata.size) ||
+      !isDefaultResolution(this.#resolution) ||
+      !isEmptyMetadata(metadataJson(this.metadata)) ||
+      !isEmptyRecord(this.formatExtras)
+    ) {
+      return false;
+    }
+    return steps.every((command) => this.#keepsContent(command));
+  }
+
+  /** True when `command` changes no pixels, no layer list and no canvas size. */
+  #keepsContent(command: HistoryCommand): boolean {
+    if (command.parts !== undefined) return command.parts.every((part) => this.#keepsContent(part));
+    const data = this.#items.get(command);
+    if (data === undefined || data.kind === "pixels") return false;
+    const { before, after } = data;
+    return (
+      before.width === after.width &&
+      before.height === after.height &&
+      before.layers.length === after.layers.length &&
+      before.layers.every(
+        (entry, index) =>
+          entry.layer === after.layers[index]?.layer &&
+          entry.pixels === undefined &&
+          after.layers[index]?.pixels === undefined,
+      )
+    );
   }
 
   /**
@@ -1935,6 +1978,98 @@ function captureRow(store: TiledPixelStore, ty: number): Uint8Array {
 function singleBlob(pixels: string | readonly string[]): string {
   if (typeof pixels === "string") return pixels;
   throw new CheckpointError("A history snapshot's pixels must be one blob.");
+}
+
+/**
+ * True when `manifest` is a checkpoint of a document whose content is still the blank image
+ * `createBlank` made (the rule of `Document.untouchedBlank`). Reads only the manifest, so older
+ * checkpoints of an untouched blank image can be dropped without rebuilding them.
+ */
+export function isUntouchedBlankCheckpoint(manifest: DocumentCheckpointManifest): boolean {
+  const [base, ...steps] = manifest.history.items.slice(0, manifest.history.appliedCount);
+  if (base?.kind !== "base" || base.name !== t("history.newImage")) return false;
+  const [layer, ...others] = manifest.layers;
+  if (layer === undefined || others.length > 0) return false;
+  return (
+    isDefaultBlankLayer(
+      { ...layer.properties, isBackground: layer.isBackground },
+      layer.rawBlendMode,
+      layer.extras,
+      layer.metadata.length,
+    ) &&
+    isDefaultResolution(manifest.resolution) &&
+    isEmptyMetadata(manifest.metadata) &&
+    isEmptyRecord(manifest.formatExtras) &&
+    steps.every(itemKeepsContent)
+  );
+}
+
+/** The manifest form of `Document.#keepsContent`. */
+function itemKeepsContent(item: CheckpointItem): boolean {
+  if (item.kind === "compound") return item.items.every(itemKeepsContent);
+  if (item.kind !== "snapshot") return false;
+  const { before, after } = item;
+  return (
+    before.width === after.width &&
+    before.height === after.height &&
+    before.layers.length === after.layers.length &&
+    before.layers.every(
+      (entry, index) =>
+        entry.id === after.layers[index]?.id &&
+        entry.pixels === undefined &&
+        after.layers[index]?.pixels === undefined,
+    )
+  );
+}
+
+/** The "New Image" base item that `createBlank` starts a history with. */
+function isBlankBase(command: HistoryCommand): boolean {
+  return (
+    command.undoable === false &&
+    command.parts === undefined &&
+    command.name === t("history.newImage")
+  );
+}
+
+/** True for the layer `createBlank` makes, as far as its properties tell. */
+function isDefaultBlankLayer(
+  layer: LayerProperties & { readonly isBackground: boolean },
+  rawBlendMode: number | undefined,
+  extras: unknown,
+  metadataCount: number,
+): boolean {
+  return (
+    layer.isBackground &&
+    layer.name === BACKGROUND_LAYER_NAME &&
+    layer.visible &&
+    layer.opacity === DEFAULT_LAYER_OPACITY &&
+    layer.blendMode === DEFAULT_LAYER_BLEND_MODE &&
+    rawBlendMode === undefined &&
+    isEmptyRecord(extras) &&
+    metadataCount === 0
+  );
+}
+
+function isDefaultResolution(resolution: Resolution): boolean {
+  return (
+    resolution.unit === DEFAULT_RESOLUTION.unit &&
+    resolution.x === DEFAULT_RESOLUTION.x &&
+    resolution.y === DEFAULT_RESOLUTION.y
+  );
+}
+
+function isEmptyMetadata(metadata: CheckpointMetadata): boolean {
+  return (
+    metadata.exif.length === 0 &&
+    metadata.iptc.length === 0 &&
+    metadata.xmp.length === 0 &&
+    metadata.user.length === 0 &&
+    metadata.xmlHeader === undefined
+  );
+}
+
+function isEmptyRecord(value: unknown): boolean {
+  return typeof value === "object" && value !== null && Object.keys(value).length === 0;
 }
 
 /** The state of a layer that its pixels do not change (see `LayerInfo`). */

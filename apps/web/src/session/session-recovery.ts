@@ -1,6 +1,7 @@
 import {
   Document,
   type DocumentCheckpointManifest,
+  isUntouchedBlankCheckpoint,
   type MemoryAccountant,
 } from "@openpaint/document";
 import {
@@ -32,10 +33,14 @@ export interface RestoredImage {
   readonly key: string;
 }
 
-/** What a checkpoint stores next to its blobs: the tab name and the document manifest. */
+/**
+ * What a checkpoint stores next to its blobs: the tab name, the document manifest, and whether the
+ * image had a file.
+ */
 interface Payload {
   readonly name: string;
   readonly manifest: DocumentCheckpointManifest;
+  readonly file?: true;
 }
 
 interface Tracked {
@@ -48,6 +53,8 @@ interface Tracked {
   removed: boolean;
   /** The blobs of the last checkpoint written under `key`, which the next one keeps (L2). */
   stored: ReadonlySet<string>;
+  /** True when a checkpoint may exist under `key`, so one that is no longer kept is deleted. */
+  written: boolean;
 }
 
 interface Offer {
@@ -75,6 +82,19 @@ export interface SessionRecoveryOptions {
    */
   readonly pause?: () => Promise<void>;
   readonly delayMs?: number;
+  /**
+   * The name a new image gets. An image with this name and no file whose content is still the
+   * default blank image is neither checkpointed nor offered (`keepsCheckpoint`).
+   */
+  readonly untitled?: string;
+}
+
+/**
+ * False for an image there is nothing to bring back from: untitled, without a file, and with the
+ * content of a new blank image, whatever selections it has (owner request).
+ */
+export function keepsCheckpoint(image: OpenImage, untitled: string | undefined): boolean {
+  return image.file !== undefined || image.name !== untitled || !image.document.untouchedBlank;
 }
 
 /**
@@ -114,6 +134,7 @@ export class SessionRecovery {
       again: false,
       removed: false,
       stored: new Set(),
+      written: known?.written ?? key !== undefined,
     };
     // A selection preview changes nothing a checkpoint keeps until it is committed or put back.
     entry.unsubscribe = image.document.subscribe((change) => {
@@ -150,7 +171,15 @@ export class SessionRecovery {
       if (!mine && (live === "all" || live.has(entry.owner))) continue;
       try {
         const checkpoint = await this.#options.store.read(entry.owner, entry.key);
-        parsePayload(checkpoint.document);
+        const payload = parsePayload(checkpoint.document);
+        if (
+          payload.file === undefined &&
+          payload.name === this.#options.untitled &&
+          isUntouchedBlankCheckpoint(payload.manifest)
+        ) {
+          await this.#options.store.remove(entry.owner, entry.key);
+          continue;
+        }
         this.#offers.set(offerId(entry), { entry, checkpoint });
       } catch {
         // A checkpoint that cannot be read is not offered, and stays in the store.
@@ -178,7 +207,7 @@ export class SessionRecovery {
       { accountant: this.#options.accountant() },
     );
     const key = crypto.randomUUID();
-    await this.#save(key, payload.name, document);
+    await this.#save(key, { name: payload.name, document });
     await this.#options.store.remove(found.entry.owner, found.entry.key);
     return { name: payload.name, document, key };
   }
@@ -225,7 +254,16 @@ export class SessionRecovery {
       this.#schedule(entry);
       return Promise.resolve();
     }
-    entry.pending = this.#save(entry.key, entry.image.name, entry.image.document, entry.stored)
+    const kept = keepsCheckpoint(entry.image, this.#options.untitled);
+    if (!kept && !entry.written) return Promise.resolve();
+    entry.written = true;
+    const work = kept
+      ? this.#save(entry.key, entry.image, entry.stored)
+      : this.#options.store.remove(this.#options.owner, entry.key).then(() => {
+          entry.written = false;
+          return new Set<string>();
+        });
+    entry.pending = work
       .then((stored) => {
         entry.stored = stored;
       })
@@ -246,18 +284,21 @@ export class SessionRecovery {
   }
 
   /**
-   * Writes the document's checkpoint under `key`. Blobs in `stored`, which the last write under
-   * `key` left in the store, are kept rather than captured and written again. Returns the blobs the
+   * Writes the image's checkpoint under `key`. Blobs in `stored`, which the last write under `key`
+   * left in the store, are kept rather than captured and written again. Returns the blobs the
    * checkpoint now holds.
    */
   async #save(
     key: string,
-    name: string,
-    document: Document,
+    image: OpenImage,
     stored: ReadonlySet<string> = new Set(),
   ): Promise<ReadonlySet<string>> {
-    const checkpoint = await document.checkpoint(stored, this.#options.pause);
-    const payload: Payload = { name, manifest: checkpoint.manifest };
+    const checkpoint = await image.document.checkpoint(stored, this.#options.pause);
+    const payload: Payload = {
+      name: image.name,
+      manifest: checkpoint.manifest,
+      ...(image.file === undefined ? {} : { file: true }),
+    };
     const retained = checkpoint.reused ?? [];
     await this.#options.store.write(this.#options.owner, key, {
       document: payload,
@@ -293,6 +334,7 @@ export function createSessionRecovery(
   onError: (error: unknown) => void,
   accountant: () => MemoryAccountant,
   interacting: () => boolean,
+  untitled: string,
 ): SessionRecovery | undefined {
   const store = openSessionStore();
   if (store === undefined) return undefined;
@@ -307,6 +349,7 @@ export function createSessionRecovery(
     onError,
     interacting,
     pause: yieldWhileBusy(interacting),
+    untitled,
   });
 }
 
@@ -316,9 +359,9 @@ function offerId(entry: SessionEntry): string {
 
 function parsePayload(value: unknown): Payload {
   if (typeof value === "object" && value !== null) {
-    const { name, manifest } = value as Partial<Payload>;
+    const { name, manifest, file } = value as Partial<Payload>;
     if (typeof name === "string" && typeof manifest === "object" && manifest !== null) {
-      return { name, manifest };
+      return { name, manifest, ...(file === true ? { file } : {}) };
     }
   }
   throw new Error("The session checkpoint is damaged.");

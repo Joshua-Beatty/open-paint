@@ -104,7 +104,11 @@ import { PERF_FLAGS } from "./perf/flags";
 import { perfMonitor } from "./perf/perf-monitor";
 import { browserPrinter } from "./print/browser-printer";
 import { SessionRestoreDialog } from "./session/SessionRestoreDialog";
-import { createSessionRecovery, type SessionOffer } from "./session/session-recovery";
+import {
+  createSessionRecovery,
+  keepsCheckpoint,
+  type SessionOffer,
+} from "./session/session-recovery";
 import { useCanvasStyle, useOverscroll } from "./settings/canvas-style";
 import { diagnosticGroups, diagnosticsText } from "./settings/diagnostics";
 import { gatherDiagnosticsFacts } from "./settings/diagnostics-facts";
@@ -325,6 +329,7 @@ export function App({
         navigating() ||
         engineStrokesPending() > 0 ||
         effectRuntimeRef.current?.active === true,
+      t("document.untitled"),
     ),
   );
   const [sessionOffers, setSessionOffers] = useState<readonly SessionOffer[] | undefined>(
@@ -410,9 +415,8 @@ export function App({
     startImageId.current = undefined;
     const start = images.state.items.find((item) => item.id === id);
     if (start === undefined) return;
-    const { document } = start.value;
-    if (!document.dirty && !document.history.canUndo) closeImages([start.id]);
-  }, [images, closeImages]);
+    if (!keepsCheckpoint(start.value, t("document.untitled"))) closeImages([start.id]);
+  }, [images, closeImages, t]);
   /**
    * Offers the checkpoints of earlier sessions once, then keeps every open image checkpointed. With
    * nothing to offer, the app opens the default blank image.

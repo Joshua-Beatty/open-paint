@@ -263,6 +263,90 @@ describe("SessionRecovery (WEB-MEM-05, SET-LIFE-11)", () => {
     expect(session.saving).toBe(false);
   });
 
+  describe("untouched blank images (owner request)", () => {
+    const untitled = "Untitled";
+    const blank = (): OpenImage => ({
+      name: untitled,
+      document: Document.createBlank({ width: 12, height: 10 }),
+    });
+
+    async function offersAfter(image: OpenImage, change?: (doc: Document) => Promise<void>) {
+      const store = new MemorySessionStore();
+      const earlier = recovery(store, "earlier", { untitled });
+      await earlier.begin();
+      earlier.track("1", image, "a");
+      await change?.(image.document);
+      await earlier.flush();
+      const current = recovery(store, "current", { untitled });
+      return { offers: await current.begin(), store };
+    }
+
+    const paint = (doc: Document) => {
+      const layer = doc.activeLayer;
+      if (layer === undefined) throw new Error("no layer");
+      doc.editLayerPixels("Brush", layer, rect(0, 0, 2, 2), (pixels) => {
+        pixels.fill({ r: 255, g: 0, b: 0, a: 255 }, rect(0, 0, 2, 2));
+      });
+    };
+
+    it("never checkpoints a new blank image that was left as it is", async () => {
+      const { offers, store } = await offersAfter(blank());
+      expect(offers).toEqual([]);
+      expect(store.writes).toHaveLength(0);
+    });
+
+    it("does not offer a blank image that only has a selection", async () => {
+      const { offers, store } = await offersAfter(blank(), async (doc) => doc.selectAll());
+      expect(offers).toEqual([]);
+      expect(store.writes).toHaveLength(0);
+    });
+
+    it("deletes the checkpoint once every edit is undone", async () => {
+      const store = new MemorySessionStore();
+      const session = recovery(store, "self", { untitled });
+      await session.begin();
+      const image = blank();
+      session.track("1", image, "k");
+      paint(image.document);
+      await session.flush();
+      expect(store.entries.size).toBe(1);
+
+      await image.document.history.undo();
+      await session.flush();
+      expect(store.entries.size).toBe(0);
+    });
+
+    it("offers a blank image that was drawn on, or got a layer", async () => {
+      expect((await offersAfter(blank(), async (doc) => paint(doc))).offers).toHaveLength(1);
+      const layered = await offersAfter(blank(), async (doc) => void doc.addLayer());
+      expect(layered.offers).toHaveLength(1);
+    });
+
+    it("offers a blank image that has a file or a name of its own", async () => {
+      const saved: OpenImage = { ...blank(), file: { typeId: "png" } };
+      expect((await offersAfter(saved)).offers).toHaveLength(1);
+      expect((await offersAfter({ ...blank(), name: "Poster" })).offers).toHaveLength(1);
+    });
+
+    it("drops older checkpoints of untouched blank images and counts only the rest", async () => {
+      const store = new MemorySessionStore();
+      // A session without the rule wrote both, as earlier versions did.
+      const earlier = recovery(store, "earlier");
+      await earlier.begin();
+      const selected = blank();
+      selected.document.selectAll();
+      earlier.track("1", selected, "a");
+      earlier.track("2", editedImage("Sketch"), "b");
+      await earlier.flush();
+      expect(store.entries.size).toBe(2);
+
+      const current = recovery(store, "current", { untitled });
+      const offers = await current.begin();
+      expect(offers.map((offer) => offer.name)).toEqual(["Sketch"]);
+      expect([...store.entries.keys()]).toEqual(["earlier/b"]);
+    });
+  });
+
   it("reports a failed write without losing the image", async () => {
     const store = new MemorySessionStore();
     store.failWrites = true;
