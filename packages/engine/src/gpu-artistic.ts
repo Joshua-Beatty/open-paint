@@ -11,7 +11,7 @@ import {
   planPencilSketch,
 } from "@openpaint/effects";
 import { GpuGaussianBlur } from "./gpu-gaussian-blur";
-import { entryPipelines, runStage } from "./gpu-stage";
+import { entryPipelines, runStage, StageChain } from "./gpu-stage";
 
 /**
  * Ink Sketch (FX-ART-INK) on WebGPU: the ink lines, the Glow's clamped Gaussian and screen, and the
@@ -38,30 +38,26 @@ export class GpuInkSketch {
     const { width, height } = input;
     if (width === 0 || height === 0) return new Surface(width, height);
 
-    const device = this.#device;
-    const lines = await runStage(
-      device,
-      this.#pipelines.ink_lines,
-      width,
-      height,
-      { f0: plan.threshold },
-      [input.data],
-    );
-    const blurred = await this.#gaussian.run(
-      input,
-      { radius: plan.glowRadius, gammaBoost: 0, quality: plan.glowQuality },
-      "clamp",
-    );
-    const [shift, mul, div] = plan.glowPlan;
-    const glow = await runStage(
-      device,
-      this.#pipelines.glow_screen,
-      width,
-      height,
-      { f0: shift, f1: mul, f2: div },
-      [input.data, blurred.data],
-    );
-    return runStage(device, this.#pipelines.ink_darken, width, height, {}, [glow.data, lines.data]);
+    // Every stage stays on the GPU; only the last one is read back.
+    const chain = new StageChain(this.#device, width, height);
+    try {
+      const source = chain.upload(input.data);
+      const lines = chain.stage(this.#pipelines.ink_lines, { f0: plan.threshold }, [source]);
+      const blurred = this.#gaussian.encode(
+        chain,
+        source,
+        { radius: plan.glowRadius, gammaBoost: 0, quality: plan.glowQuality },
+        "clamp",
+      );
+      const [shift, mul, div] = plan.glowPlan;
+      const glow = chain.stage(this.#pipelines.glow_screen, { f0: shift, f1: mul, f2: div }, [
+        source,
+        blurred,
+      ]);
+      return await chain.read(chain.stage(this.#pipelines.ink_darken, {}, [glow, lines]));
+    } finally {
+      chain.destroy();
+    }
   }
 }
 
@@ -121,15 +117,20 @@ export class GpuPencilSketch {
     const { width, height } = input;
     if (width === 0 || height === 0) return new Surface(width, height);
 
-    const blurred = await this.#gaussian.run(input, {
-      radius: plan.blurRadius,
-      gammaBoost: 0,
-      quality: plan.blurQuality,
-    });
-    const [shift, mul, div] = plan.plan;
-    return runStage(this.#device, this.#pipeline, width, height, { f0: shift, f1: mul, f2: div }, [
-      input.data,
-      blurred.data,
-    ]);
+    const chain = new StageChain(this.#device, width, height);
+    try {
+      const source = chain.upload(input.data);
+      const blurred = this.#gaussian.encode(chain, source, {
+        radius: plan.blurRadius,
+        gammaBoost: 0,
+        quality: plan.blurQuality,
+      });
+      const [shift, mul, div] = plan.plan;
+      return await chain.read(
+        chain.stage(this.#pipeline, { f0: shift, f1: mul, f2: div }, [source, blurred]),
+      );
+    } finally {
+      chain.destroy();
+    }
   }
 }

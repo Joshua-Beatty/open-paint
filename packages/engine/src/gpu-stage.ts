@@ -1,11 +1,10 @@
 import { Surface } from "@openpaint/document";
 import { ARTISTIC_PARAMS_BYTES } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 /** The storage slot of the packed RGBA8 output in every stage shader. */
 const OUTPUT_SLOT = 3;
 
@@ -21,8 +20,7 @@ export interface StageFields {
 
 /**
  * One compute entry point over RGBA8 images. `inputs` bind to slots 1 and 2 in order, and the
- * packed output comes back from slot 3. The stage is submitted and read back before it returns,
- * so a later stage can use its result.
+ * packed output comes back from slot 3. The stage is submitted and read back before it returns.
  */
 export async function runStage(
   device: GPUDevice,
@@ -32,44 +30,96 @@ export async function runStage(
   fields: StageFields,
   inputs: readonly Uint8ClampedArray[],
 ): Promise<Surface> {
-  const bytes = width * height * RGBA8_BYTES_PER_PIXEL;
-  const buffers: GPUBuffer[] = [];
-  const buffer = (label: string, size: number, usage: number) => {
-    const created = device.createBuffer({ label, size, usage });
-    buffers.push(created);
+  const chain = new StageChain(device, width, height);
+  try {
+    const sources = inputs.map((data) => chain.upload(data));
+    return await chain.read(chain.stage(pipeline, fields, sources));
+  } finally {
+    chain.destroy();
+  }
+}
+
+/**
+ * Stages of a multi-stage effect recorded into one command encoder: each stage's output stays in a
+ * GPU buffer that later stages read, and only the last one is read back (L9, L11), so a chain costs
+ * one wait on the GPU instead of one per stage.
+ */
+export class StageChain {
+  readonly encoder: GPUCommandEncoder;
+  readonly bytes: number;
+  readonly #buffers: GPUBuffer[] = [];
+
+  constructor(
+    readonly device: GPUDevice,
+    readonly width: number,
+    readonly height: number,
+  ) {
+    this.encoder = device.createCommandEncoder({ label: "stage chain" });
+    this.bytes = width * height * RGBA8_BYTES_PER_PIXEL;
+  }
+
+  /** A packed RGBA8 storage buffer for one image of the chain, freed with the chain. */
+  image(label: string): GPUBuffer {
+    return this.buffer(label, this.bytes, BufferUsage.STORAGE | BufferUsage.COPY_SRC);
+  }
+
+  /** A buffer freed with the chain. */
+  buffer(label: string, size: number, usage: number): GPUBuffer {
+    const created = this.device.createBuffer({ label, size, usage });
+    this.#buffers.push(created);
     return created;
-  };
+  }
 
-  const uniform = buffer(
-    "params",
-    ARTISTIC_PARAMS_BYTES,
-    BufferUsage.UNIFORM | BufferUsage.COPY_DST,
-  );
-  device.queue.writeBuffer(uniform, 0, paramsBytes(width, height, fields));
-  const entries: GPUBindGroupEntry[] = [{ binding: 0, resource: { buffer: uniform } }];
-  inputs.forEach((data, index) => {
-    const source = buffer(`input ${index}`, bytes, BufferUsage.STORAGE | BufferUsage.COPY_DST);
-    device.queue.writeBuffer(source, 0, data);
-    entries.push({ binding: index + 1, resource: { buffer: source } });
-  });
-  const output = buffer("output", bytes, BufferUsage.STORAGE | BufferUsage.COPY_SRC);
-  entries.push({ binding: OUTPUT_SLOT, resource: { buffer: output } });
-  const readback = buffer("readback", bytes, BufferUsage.MAP_READ | BufferUsage.COPY_DST);
+  /** Uploads packed RGBA8 pixels into a new image of the chain. */
+  upload(data: Uint8ClampedArray): GPUBuffer {
+    const source = this.buffer(
+      "stage input",
+      this.bytes,
+      BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC,
+    );
+    this.device.queue.writeBuffer(source, 0, data);
+    return source;
+  }
 
-  const encoder = device.createCommandEncoder();
-  const pass = encoder.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }));
-  pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
-  pass.end();
-  encoder.copyBufferToBuffer(output, 0, readback, 0, bytes);
-  device.queue.submit([encoder.finish()]);
+  /** Records one `ARTISTIC_PARAMS_WGSL` stage over `inputs` (slots 1 and 2) into a new image. */
+  stage(
+    pipeline: GPUComputePipeline,
+    fields: StageFields,
+    inputs: readonly GPUBuffer[],
+  ): GPUBuffer {
+    const { device, width, height } = this;
+    const uniform = this.buffer(
+      "params",
+      ARTISTIC_PARAMS_BYTES,
+      BufferUsage.UNIFORM | BufferUsage.COPY_DST,
+    );
+    device.queue.writeBuffer(uniform, 0, paramsBytes(width, height, fields));
+    const output = this.image("stage output");
+    const entries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: { buffer: uniform } },
+      ...inputs.map((buffer, index) => ({ binding: index + 1, resource: { buffer } })),
+      { binding: OUTPUT_SLOT, resource: { buffer: output } },
+    ];
+    const pass = this.encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(
+      0,
+      device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }),
+    );
+    pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
+    pass.end();
+    return output;
+  }
 
-  await readback.mapAsync(MAP_READ_MODE);
-  const packed = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-  readback.unmap();
-  for (const created of buffers) created.destroy();
-  return new Surface(width, height, packed);
+  /** Submits the chain and reads `image` back. */
+  async read(image: GPUBuffer): Promise<Surface> {
+    const packed = await readBack(this.device, this.encoder, image, this.bytes);
+    return new Surface(this.width, this.height, packed);
+  }
+
+  destroy(): void {
+    for (const created of this.#buffers.splice(0)) created.destroy();
+  }
 }
 
 /**
@@ -103,11 +153,6 @@ export async function runPackedStage(
     size: bytes,
     usage: BufferUsage.STORAGE | BufferUsage.COPY_SRC,
   });
-  const readback = device.createBuffer({
-    label: "readback",
-    size: bytes,
-    usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-  });
   const tableBuffers = tables.map((table, index) => {
     const buffer = device.createBuffer({
       label: `table ${index}`,
@@ -135,13 +180,8 @@ export async function runPackedStage(
   pass.setBindGroup(0, group);
   pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
   pass.end();
-  encoder.copyBufferToBuffer(output, 0, readback, 0, bytes);
-  device.queue.submit([encoder.finish()]);
-
-  await readback.mapAsync(MAP_READ_MODE);
-  const packed = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-  readback.unmap();
-  for (const created of [params, source, output, readback, ...tableBuffers]) created.destroy();
+  const packed = await readBack(device, encoder, output, bytes);
+  for (const created of [params, source, output, ...tableBuffers]) created.destroy();
   return new Surface(width, height, packed);
 }
 
