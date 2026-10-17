@@ -1477,17 +1477,17 @@ body {
   height: calc(100% - var(--ruler-size));
 }
 
-/* The cursor marker on each ruler; it moves with a transform, so the ruler is not redrawn. */
+/* The cursor marker on each ruler: a canvas of its own over it, so the ruler is not redrawn. */
 .app-ruler-marker {
   position: absolute;
+  display: block;
   pointer-events: none;
-  background: var(--ruler-marker);
 }
 
 .app-ruler-marker-horizontal {
   top: 0;
   left: var(--ruler-size);
-  width: 1px;
+  width: calc(100% - var(--ruler-size));
   height: var(--ruler-size);
 }
 
@@ -1495,7 +1495,7 @@ body {
   top: var(--ruler-size);
   left: 0;
   width: var(--ruler-size);
-  height: 1px;
+  height: calc(100% - var(--ruler-size));
 }
 
 .app-ruler-corner {

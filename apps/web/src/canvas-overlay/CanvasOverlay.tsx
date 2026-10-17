@@ -1,7 +1,6 @@
 import type { Document } from "@openpaint/document";
 import { useTranslation } from "@openpaint/i18n/react";
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { canvasScale } from "../canvas-scale";
 import { type MeasureUnit, unitAbbreviation, unitsPerPixel } from "../status/status-model";
 import type { StatusStore } from "../status/status-store";
 import { cloneSourceMarker } from "../tools/clone-source";
@@ -362,29 +361,36 @@ function Ruler({
   selectionTo,
 }: RulerProps) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const markerRef = useRef<HTMLDivElement>(null);
+  const markerRef = useRef<HTMLCanvasElement>(null);
   const size = useCanvasBacking(ref);
   const layout = useViewLayout(store);
-  // The cursor marker follows the pointer by moving an element, so a pointer move neither
-  // re-renders nor repaints the ruler (L3).
+  // The cursor marker is drawn on a canvas of its own over the ruler, so a pointer move neither
+  // re-renders nor repaints the ruler (L3), and changes no DOM: in Firefox every page repaint
+  // reads the engine's WebGPU canvas back on the engine worker (L13).
   useEffect(() => {
+    let drawn: number | undefined;
     const place = () => {
       const marker = markerRef.current;
       if (marker === null) return;
       const { pointer } = store.state;
-      if (pointer === undefined) {
-        marker.style.display = "none";
-        return;
-      }
-      const at =
-        Math.round(orientation === "horizontal" ? pointer.x : pointer.y) / canvasScale.value;
-      marker.style.display = "";
-      marker.style.transform =
-        orientation === "horizontal" ? `translateX(${at}px)` : `translateY(${at}px)`;
+      const horizontal = orientation === "horizontal";
+      const at = pointer === undefined ? undefined : Math.round(horizontal ? pointer.x : pointer.y);
+      if (at === drawn && marker.width === size.width && marker.height === size.height) return;
+      if (marker.width !== size.width) marker.width = size.width;
+      if (marker.height !== size.height) marker.height = size.height;
+      const ctx = marker.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, marker.width, marker.height);
+      drawn = at;
+      if (at === undefined) return;
+      ctx.fillStyle = colorVariable(getComputedStyle(marker), "--ruler-marker", "#d93636");
+      const line = Math.max(1, Math.round(size.scale));
+      if (horizontal) ctx.fillRect(at, 0, line, marker.height);
+      else ctx.fillRect(0, at, marker.width, line);
     };
     place();
     return store.subscribe(place);
-  }, [store, orientation]);
+  }, [store, orientation, size]);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas || size.width === 0 || size.height === 0) return;
@@ -434,11 +440,7 @@ function Ruler({
         width={size.width}
         height={size.height}
       />
-      <div
-        ref={markerRef}
-        className={`app-ruler-marker app-ruler-marker-${orientation}`}
-        aria-hidden="true"
-      />
+      <canvas ref={markerRef} className={`app-ruler-marker app-ruler-marker-${orientation}`} />
     </>
   );
 }
