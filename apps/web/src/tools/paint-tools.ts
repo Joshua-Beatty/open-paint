@@ -90,6 +90,11 @@ export interface PaintHost {
   readonly settings: () => ColorSettings | null;
   /** The image the tools paint on, or undefined when none is open. */
   readonly document: () => Document | undefined;
+  /**
+   * Calls `listener` with the image `document` now returns, after another one (or none) becomes
+   * active. Returns the function that stops listening.
+   */
+  readonly onDocumentSwitch?: (listener: (document: Document | undefined) => void) => () => void;
   readonly translate: Translate;
   /** Tells the user about a refused memory operation (WEB-MEM-03). */
   readonly notify: (messageId: MessageId) => void;

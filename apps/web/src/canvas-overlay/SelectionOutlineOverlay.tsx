@@ -109,6 +109,12 @@ export function SelectionOutlineOverlay({
     return () => clearInterval(timer);
   }, [animate, path, paint]);
   return (
-    <canvas ref={ref} className="app-canvas-overlay" width={size.width} height={size.height} />
+    <canvas
+      ref={ref}
+      className="app-canvas-overlay"
+      data-overlay="selection"
+      width={size.width}
+      height={size.height}
+    />
   );
 }

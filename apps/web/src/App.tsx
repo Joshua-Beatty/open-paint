@@ -248,6 +248,9 @@ export function App({
   const viewport = useRef<HTMLDivElement>(null);
   const [statusStore] = useState(() => new StatusStore());
   const [floats] = useState(() => new FloatingHandoff());
+  const [documentSwitchListeners] = useState(
+    () => new Set<(document: Document | undefined) => void>(),
+  );
   const engineRef = useRef<EngineHandle | undefined>(undefined);
   const viewHost: ViewHost = {
     view: (command) => void engineRef.current?.view(command),
@@ -606,6 +609,12 @@ export function App({
   const paintHost: PaintHost = {
     settings: () => settingsRef.current,
     document: () => images.active?.value.document,
+    onDocumentSwitch: (listener) => {
+      documentSwitchListeners.add(listener);
+      return () => {
+        documentSwitchListeners.delete(listener);
+      };
+    },
     translate: t,
     notify: (messageId) => setNotice(t(messageId)),
     report: (cause) => void errors.report(cause, { context: "paint tool" }),
@@ -881,6 +890,10 @@ export function App({
       }
     };
   }, [activeDocument, images, toolController]);
+  // The active tool follows the newly active image, such as the move tools' handles.
+  useEffect(() => {
+    for (const listener of [...documentSwitchListeners]) listener(activeDocument);
+  }, [activeDocument, documentSwitchListeners]);
   const selected = activeDocument !== undefined && !activeDocument.selection.isEmpty;
   // Once something is selected, the worker for Move Selected Pixels commits loads at idle.
   useEffect(() => (selected ? warmCpuOffloader() : undefined), [selected]);

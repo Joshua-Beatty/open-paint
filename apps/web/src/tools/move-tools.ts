@@ -4,6 +4,7 @@ import {
   type FloatingPixels,
   IDENTITY_AFFINE,
   intersectRects,
+  type Rect,
   rect,
   type Selection,
   type TransformOptions,
@@ -223,7 +224,20 @@ export function movePixelsToolRuntime(host: PaintHost, handoff: FloatingHandoff)
       const { selection } = document;
       return selection.isEmpty ? canvas : intersectRects(selectionBounds(selection), canvas);
     },
+    // The area a press lifts, shown only with a selection: the whole-canvas move needs no handles.
+    idleFrame: () => {
+      const document = host.document();
+      if (document?.activeLayer === undefined || document.selection.isEmpty) return undefined;
+      const canvas = rect(0, 0, document.width, document.height);
+      return intersectRects(selectionBounds(document.selection), canvas);
+    },
   });
+}
+
+/** The selection's bounds, which Move Selection's frame starts on, or undefined without one. */
+function selectedBounds(host: PaintHost): Rect | undefined {
+  const selection = host.document()?.selection;
+  return selection === undefined || selection.isEmpty ? undefined : selectionBounds(selection);
 }
 
 /** The runtime of Move Selection (TL-MOVE-SEL-01). It moves the outline only, never the pixels. */
@@ -235,10 +249,8 @@ export function moveSelectionToolRuntime(host: PaintHost): ToolRuntime {
       const document = host.document();
       return document === undefined ? undefined : selectionTarget(document);
     },
-    idleSource: () => {
-      const selection = host.document()?.selection;
-      return selection === undefined || selection.isEmpty ? undefined : selectionBounds(selection);
-    },
+    idleSource: () => selectedBounds(host),
+    idleFrame: () => selectedBounds(host),
   });
 }
 

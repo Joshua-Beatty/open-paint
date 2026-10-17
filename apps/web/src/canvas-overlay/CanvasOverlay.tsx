@@ -188,8 +188,9 @@ export function GradientHandlesOverlay({ store }: { store: StatusStore }) {
 }
 
 /**
- * The transform frame of Move Selected Pixels and Move Selection (TL-MOVE-01): the outline, the scale
- * handles, the rotation anchor and its reset button. It never takes pointer input.
+ * The transform frame of Move Selected Pixels, Move Selection and Shapes (TL-MOVE-01): the scale
+ * handles, the rotation anchor and its reset button, and the outline when the state asks for it.
+ * It never takes pointer input.
  */
 export function TransformFrameOverlay({ store }: { store: StatusStore }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -219,7 +220,13 @@ export function TransformFrameOverlay({ store }: { store: StatusStore }) {
     });
   }, [layout, frame, size]);
   return (
-    <canvas ref={ref} className="app-canvas-overlay" width={size.width} height={size.height} />
+    <canvas
+      ref={ref}
+      className="app-canvas-overlay"
+      data-overlay="transform-frame"
+      width={size.width}
+      height={size.height}
+    />
   );
 }
 

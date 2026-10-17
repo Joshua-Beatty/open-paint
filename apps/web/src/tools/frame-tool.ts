@@ -4,6 +4,7 @@ import {
   IDENTITY_AFFINE,
   isEmptyRect,
   type Rect,
+  rectsEqual,
   sameAffine,
   translationAffine,
 } from "@openpaint/document";
@@ -26,6 +27,7 @@ import {
   gestureFor,
   gestureResult,
   hitFrame,
+  type TransformFrameState,
   transformFrame,
 } from "./transform-frame";
 
@@ -86,6 +88,11 @@ export interface FrameToolOptions {
    * shows what the press will do. Undefined when a press would find nothing to move.
    */
   readonly idleSource?: () => Rect | undefined;
+  /**
+   * The rectangle whose handles are shown while the tool is active and has no target, so the user
+   * sees that a press can scale or rotate it. Undefined shows nothing. Showing them changes nothing.
+   */
+  readonly idleFrame?: () => Rect | undefined;
 }
 
 /** A gesture in progress, from the press to the release. */
@@ -101,6 +108,15 @@ interface Drag {
 
 function pointOf(event: ToolPointerEvent): FramePoint {
   return { x: event.x, y: event.y };
+}
+
+function centerOf(source: Rect): FramePoint {
+  return { x: source.x + source.width / 2, y: source.y + source.height / 2 };
+}
+
+/** The frame state of a move tool: its outline, handles, anchor and reset button. */
+function frameState(source: Rect, m: AffineMatrix, anchor: FramePoint): TransformFrameState {
+  return frameGeometry(source, m, anchor);
 }
 
 /**
@@ -123,6 +139,12 @@ class FrameRuntime implements ToolRuntime {
   #hover: ToolPointerEvent | undefined;
   /** The settling of a target that ended while its last step was still computed. */
   #leaving: Promise<void> | undefined;
+  #active = false;
+  /** The rectangle whose handles are shown while there is no target. */
+  #idle: Rect | undefined;
+  #stopDocument: (() => void) | undefined;
+  #stopSwitch: (() => void) | undefined;
+  #refreshQueued = false;
 
   constructor(options: FrameToolOptions) {
     this.#options = options;
@@ -136,18 +158,26 @@ class FrameRuntime implements ToolRuntime {
   }
 
   activate(): void {
+    this.#active = true;
     this.#unsubscribe = this.#options.host
       .settings()
       ?.onChange((change) => this.#optionChanged(change));
+    this.#stopSwitch = this.#options.host.onDocumentSwitch?.(() => this.#watchDocument());
+    this.#watchDocument();
     this.#disconnect = this.#options.connect?.((target) => this.adopt(target));
   }
 
   deactivate(): void {
     this.commit();
+    this.#active = false;
     this.#disconnect?.();
     this.#unsubscribe?.();
+    this.#stopSwitch?.();
+    this.#stopDocument?.();
     this.#disconnect = undefined;
     this.#unsubscribe = undefined;
+    this.#stopSwitch = undefined;
+    this.#stopDocument = undefined;
     this.#end();
   }
 
@@ -271,16 +301,74 @@ class FrameRuntime implements ToolRuntime {
     this.#drag = undefined;
     this.#frames.cancel();
     this.#nudges.cancel();
+    this.#idle = undefined;
     transformFrame.set(undefined);
+    this.#showIdle();
   }
 
   #show(): void {
     const target = this.#current();
+    if (target === undefined) {
+      this.#showIdle();
+      return;
+    }
+    this.#idle = undefined;
+    transformFrame.set(frameState(target.source, target.transform, target.anchor));
+  }
+
+  /**
+   * Shows the handles of what a press would transform while the tool has no target, or nothing.
+   * It only draws: nothing is lifted or recorded. The store changes only when the rectangle does.
+   */
+  #showIdle(): void {
+    if (this.#target !== undefined) return;
+    const source = this.#active ? this.#options.idleFrame?.() : undefined;
+    const shown = source === undefined || isEmptyRect(source) ? undefined : source;
+    const idle = this.#idle;
+    if (shown === idle || (shown !== undefined && idle !== undefined && rectsEqual(shown, idle))) {
+      return;
+    }
+    this.#idle = shown;
     transformFrame.set(
-      target === undefined
-        ? undefined
-        : frameGeometry(target.source, target.transform, target.anchor),
+      shown === undefined ? undefined : frameState(shown, IDENTITY_AFFINE, centerOf(shown)),
     );
+  }
+
+  /** Follows the open document's changes, after the tool starts or another image becomes active. */
+  #watchDocument(): void {
+    this.#stopDocument?.();
+    this.#stopDocument = this.#options.host.document()?.subscribe((change) => {
+      if (change !== "preview") this.#queueRefresh();
+    });
+    this.#refresh();
+  }
+
+  /**
+   * Refreshes the frame once the change that notified has finished: a commit notifies before its
+   * target has caught up with the history, so the target is only asked afterwards.
+   */
+  #queueRefresh(): void {
+    if (this.#refreshQueued) return;
+    this.#refreshQueued = true;
+    queueMicrotask(() => {
+      this.#refreshQueued = false;
+      this.#refresh();
+    });
+  }
+
+  /**
+   * Ends a target that an undo, a redo or another edit replaced, and shows the handles of the
+   * selection as it is now (a new selection, a restored one, or none).
+   */
+  #refresh(): void {
+    if (!this.#active || this.#drag !== undefined) return;
+    const target = this.#target;
+    if (target !== undefined) {
+      if (target.settling?.() !== undefined || target.live) return;
+      this.#end();
+      return;
+    }
+    this.#showIdle();
   }
 
   #name(key: MessageId): MessageId {
@@ -290,10 +378,18 @@ class FrameRuntime implements ToolRuntime {
   #down(event: ToolPointerEvent): void {
     if (this.#drag !== undefined || (event.button !== 0 && event.button !== 2)) return;
     this.#flushNudge();
+    const press = pointOf(event);
+    const scale = viewScaleOf(event);
+    // The anchor of the shown frame is still at its centre, so its reset button has nothing to do,
+    // and pressing it lifts nothing.
+    if (this.#current() === undefined && this.#idle !== undefined) {
+      const idle = this.#idle;
+      const hit = hitFrame(idle, IDENTITY_AFFINE, centerOf(idle), press, event.button, scale);
+      if (hit?.kind === "reset") return;
+    }
     const target = this.#current() ?? this.#start();
     if (target === undefined) return;
     this.#show();
-    const press = pointOf(event);
     const start: FrameStart = { m: target.transform, anchor: target.anchor, press };
     const hit = hitFrame(
       target.source,
@@ -301,13 +397,11 @@ class FrameRuntime implements ToolRuntime {
       target.anchor,
       press,
       event.button,
-      viewScaleOf(event),
+      scale,
     );
     if (hit?.kind === "reset") {
-      const center = {
-        x: target.source.x + target.source.width / 2,
-        y: target.source.y + target.source.height / 2,
-      };
+      const center = centerOf(target.source);
+      if (target.anchor.x === center.x && target.anchor.y === center.y) return;
       target.preview(target.transform, center);
       target.commit(this.#name(this.#options.names.anchor));
       this.#show();

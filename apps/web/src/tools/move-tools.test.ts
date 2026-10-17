@@ -245,7 +245,8 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
       doc.setActiveLayer(blue);
       expect(runtime.hasPending?.()).toBe(false);
       expect(doc.history.undoName).toBe("history.finishPixels");
-      expect(transformFrame.state).toBeUndefined();
+      // Only the moved selection's handles stay, ready for the new layer.
+      expect(transformFrame.state?.handles.se).toEqual({ x: 50, y: 44 });
       // The outline is document-wide: it stays where the first move left it.
       expect(doc.selection.bounds()).toEqual(rect(10, 4, 40, 40));
 
@@ -273,7 +274,8 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
 
     it("shows the move arrows inside the selection before anything is lifted", () => {
       expect(cursorAt(BODY_PRESS.x, BODY_PRESS.y)).toBe("move");
-      expect(transformFrame.state).toBeUndefined();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(doc.activeLayer?.floatPreview).toBeUndefined();
     });
 
     it("shows a resize arrow along each handle, an open hand on the anchor and a rotate arrow outside", () => {
@@ -357,15 +359,89 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
     expect(doc.selection.bounds()).toEqual(rect(10, 4, 40, 40));
   });
 
-  it("draws the frame while it holds the pixels, and clears it when finished", () => {
+  it("draws the frame while it holds the pixels", () => {
     runtime.pointer(event("down", BODY_PRESS.x, BODY_PRESS.y));
     expect(transformFrame.state).toBeDefined();
-    expect(transformFrame.state?.outline).not.toBe(false);
     runtime.pointer(event("up", BODY_PRESS.x, BODY_PRESS.y));
     expect(runtime.hasPending?.()).toBe(true);
     runtime.commit?.();
     expect(runtime.hasPending?.()).toBe(false);
+    // Finished, the tool shows the selection's handles again; deactivated, nothing.
+    expect(transformFrame.state?.handles.se).toEqual(SE_HANDLE);
+    runtime.deactivate();
     expect(transformFrame.state).toBeUndefined();
+    runtime.activate();
+  });
+
+  describe("handles before any press (owner request)", () => {
+    /** Lets the tool see the document changes that notified, as it does after each one. */
+    const settle = () => Promise.resolve();
+
+    it("shows the selection's handles as soon as it is active, and lifts or records nothing", () => {
+      runtime.deactivate();
+      transformFrame.set(undefined);
+      const changes: string[] = [];
+      const unsubscribe = doc.subscribe((change) => changes.push(change));
+      const layer = doc.activeLayer as Layer;
+      const before = [...layer.pixels.readRegion(layer.pixels.bounds).data];
+      const steps = doc.history.appliedCommands.length;
+      runtime = movePixelsToolRuntime(host(), handoff);
+      runtime.activate();
+      const state = transformFrame.state;
+      expect(state?.handles.nw).toEqual({ x: 4, y: 4 });
+      expect(state?.handles.se).toEqual(SE_HANDLE);
+      expect(state?.anchor).toEqual({ x: 24, y: 24 });
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(layer.floatPreview).toBeUndefined();
+      expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual(before);
+      expect(doc.history.appliedCommands.length).toBe(steps);
+      expect(changes).toEqual([]);
+      // Hovering a handle shows its resize arrow before any press.
+      runtime.pointer(event("move", SE_HANDLE.x, SE_HANDLE.y));
+      expect(runtime.cursor?.({ canPan: false, panning: false })).toBe("nwse-resize");
+      unsubscribe();
+    });
+
+    it("hides them without a selection and follows a new or restored selection", async () => {
+      doc.deselect();
+      await settle();
+      expect(transformFrame.state).toBeUndefined();
+      doc.selectAll();
+      await settle();
+      expect(transformFrame.state?.handles.se).toEqual({ x: 64, y: 64 });
+      await doc.history.undo();
+      await settle();
+      expect(transformFrame.state).toBeUndefined();
+      await doc.history.undo();
+      await settle();
+      expect(transformFrame.state?.handles.se).toEqual(SE_HANDLE);
+      expect(runtime.hasPending?.()).toBe(false);
+    });
+
+    it("shows the restored selection's handles when an undo replaces a move", async () => {
+      drag(BODY_PRESS, { x: BODY_PRESS.x + 6, y: BODY_PRESS.y });
+      expect(transformFrame.state?.handles.se).toEqual({ x: 50, y: 44 });
+      await doc.history.undo();
+      await settle();
+      expect(transformFrame.state?.handles.se).toEqual(SE_HANDLE);
+    });
+
+    it("scales on the first press on a handle, as one Resize Pixels item", () => {
+      const before = doc.history.appliedCommands.length;
+      drag(SE_HANDLE, { x: SE_HANDLE.x + 16, y: SE_HANDLE.y + 8 });
+      expect(doc.history.appliedCommands.length).toBe(before + 1);
+      expect(doc.history.undoName).toBe("history.resizePixels");
+      expect(doc.selection.bounds()).toEqual(rect(4, 4, 56, 48));
+      expect(transformFrame.state?.handles.se).toEqual({ x: 60, y: 52 });
+    });
+
+    it("lifts nothing for a press on the reset button of an anchor already at the centre", () => {
+      const before = doc.history.appliedCommands.length;
+      runtime.pointer(event("down", 24 + 14, 24 + 14));
+      runtime.pointer(event("up", 24 + 14, 24 + 14));
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(doc.history.appliedCommands.length).toBe(before);
+    });
   });
 
   it("finishes as Finish Pixels, which is the Enter and Esc commit", () => {
@@ -490,7 +566,8 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
     drag(BODY_PRESS, { x: BODY_PRESS.x + 6, y: BODY_PRESS.y });
     await doc.history.undo();
     expect(runtime.hasPending?.()).toBe(false);
-    expect(transformFrame.state).toBeUndefined();
+    // The handles are back on the selection as it was before the move.
+    expect(transformFrame.state?.handles.se).toEqual(SE_HANDLE);
   });
 });
 
@@ -512,6 +589,29 @@ describe("Move Selection (TL-MOVE-SEL-01)", () => {
 
   afterEach(() => {
     runtime.deactivate();
+  });
+
+  it("shows the selection's handles as soon as it is active, and hides them without one", async () => {
+    const before = doc.history.appliedCommands.length;
+    expect(transformFrame.state?.handles.se).toEqual(SE_HANDLE);
+    expect(doc.history.appliedCommands.length).toBe(before);
+    expect(runtime.hasPending?.()).toBe(false);
+    doc.deselect();
+    await Promise.resolve();
+    expect(transformFrame.state).toBeUndefined();
+  });
+
+  it("resizes the outline on the first press on a handle, as one Resize Selection item", () => {
+    const before = doc.history.appliedCommands.length;
+    runtime.pointer(event("down", SE_HANDLE.x, SE_HANDLE.y));
+    runtime.pointer(event("move", SE_HANDLE.x + 16, SE_HANDLE.y + 8));
+    // The marching ants follow the outline while it is dragged.
+    expect(doc.selection.bounds()).toEqual(rect(4, 4, 56, 48));
+    runtime.pointer(event("up", SE_HANDLE.x + 16, SE_HANDLE.y + 8));
+    expect(doc.history.appliedCommands.length).toBe(before + 1);
+    expect(doc.history.undoName).toBe("history.resizeSelection");
+    expect(transformFrame.state?.handles.se.x).toBeCloseTo(60);
+    expect(transformFrame.state?.handles.se.y).toBeCloseTo(52);
   });
 
   it("moves the outline and leaves the pixels where they are", () => {
