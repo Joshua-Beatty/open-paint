@@ -7,6 +7,7 @@ import {
   planBokehBlur,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 const ENTRY_POINTS = ["prepare", "blur_vertical", "blur_horizontal", "finish"] as const;
 type EntryPoint = (typeof ENTRY_POINTS)[number];
@@ -30,8 +31,6 @@ const PLANE_BYTES_PER_PIXEL = 16;
 /** Bytes per pixel of packed RGBA8 input and output. */
 const RGBA8_BYTES_PER_PIXEL = 4;
 const WORKGROUP_SIZE = 8;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /** The `Params` uniform of one dispatch (see `BOKEH_BLUR_WGSL`). */
 interface Stage {
@@ -103,12 +102,6 @@ export class GpuBokehBlur {
       BufferUsage.COPY_DST,
     );
     const output = storage("output", pixels * RGBA8_BYTES_PER_PIXEL, BufferUsage.COPY_SRC);
-    const readback = device.createBuffer({
-      label: "readback",
-      size: pixels * RGBA8_BYTES_PER_PIXEL,
-      usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    });
-    buffers.push(readback);
     device.queue.writeBuffer(inputBuffer, 0, input.data);
     device.queue.writeBuffer(vertical, 0, plan.vertical);
     device.queue.writeBuffer(horizontal, 0, plan.horizontal);
@@ -171,12 +164,7 @@ export class GpuBokehBlur {
     }
     dispatch("finish", stage(0), { acc, dst_u32: output });
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, pixels * RGBA8_BYTES_PER_PIXEL);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const bytes = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const bytes = await readBack(device, encoder, output, pixels * RGBA8_BYTES_PER_PIXEL);
     for (const buffer of [...buffers, ...uniforms]) buffer.destroy();
     return new Surface(width, height, bytes);
   }

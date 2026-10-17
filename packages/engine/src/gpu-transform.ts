@@ -1,5 +1,6 @@
 import { Surface } from "@openpaint/document";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 /**
  * The sampling functions of `TRANSFORM_WGSL`, shared with the floating preview: they read the
@@ -186,8 +187,6 @@ const MAX_ANISOTROPIC_AXIS = 16;
 const PARAMS_BYTES = 64;
 const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * One resampling: the destination size, the inverse transform `a, b, c, d, e, f` from destination
@@ -262,11 +261,6 @@ export class GpuTransform {
       size: bytes,
       usage: BufferUsage.STORAGE | BufferUsage.COPY_SRC,
     });
-    const readback = device.createBuffer({
-      label: "transform readback",
-      size: bytes,
-      usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    });
     device.queue.writeBuffer(params, 0, uniform.buffer);
     if (input.data.byteLength > 0) device.queue.writeBuffer(source, 0, input.data);
     const encoder = device.createCommandEncoder({ label: "transform" });
@@ -285,12 +279,8 @@ export class GpuTransform {
     );
     pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, bytes);
-    device.queue.submit([encoder.finish()]);
-    await readback.mapAsync(MAP_READ_MODE);
-    const pixels = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
-    for (const buffer of [params, source, output, readback]) buffer.destroy();
+    const pixels = await readBack(device, encoder, output, bytes);
+    for (const buffer of [params, source, output]) buffer.destroy();
     return new Surface(width, height, pixels);
   }
 }

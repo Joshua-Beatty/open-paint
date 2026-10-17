@@ -11,11 +11,10 @@ import {
   motionBlurPlan,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * Fragment Blur (FX-BLUR-FRAG) on WebGPU: one compute pass. The shader is the WGSL twin of
@@ -119,11 +118,6 @@ export async function runDirectionalBlur(
     pixels * RGBA8_BYTES_PER_PIXEL,
     BufferUsage.STORAGE | BufferUsage.COPY_SRC,
   );
-  const readback = buffer(
-    "readback",
-    pixels * RGBA8_BYTES_PER_PIXEL,
-    BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-  );
   const params = buffer("params", uniform.byteLength, BufferUsage.UNIFORM | BufferUsage.COPY_DST);
   device.queue.writeBuffer(source, 0, input.data);
   device.queue.writeBuffer(planBuffer, 0, plan);
@@ -144,12 +138,7 @@ export async function runDirectionalBlur(
   pass.setBindGroup(0, group);
   pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
   pass.end();
-  encoder.copyBufferToBuffer(output, 0, readback, 0, pixels * RGBA8_BYTES_PER_PIXEL);
-  device.queue.submit([encoder.finish()]);
-
-  await readback.mapAsync(MAP_READ_MODE);
-  const bytes = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-  readback.unmap();
+  const bytes = await readBack(device, encoder, output, pixels * RGBA8_BYTES_PER_PIXEL);
   for (const created of buffers) created.destroy();
   return new Surface(width, height, bytes);
 }

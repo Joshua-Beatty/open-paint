@@ -1,13 +1,12 @@
 import { Surface } from "@openpaint/document";
 import { PIXEL_NOISE_WGSL } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
 /** Bytes of the `NoiseParams` uniform: width, height, seed and padding. */
 const PARAMS_BYTES = 16;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * The per-pixel generator of the effects (FX-A-00-05) on WebGPU. The shader is the WGSL twin of
@@ -44,11 +43,6 @@ export class GpuPixelNoise {
       size: bytes,
       usage: BufferUsage.STORAGE | BufferUsage.COPY_SRC,
     });
-    const readback = device.createBuffer({
-      label: "noise readback",
-      size: bytes,
-      usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    });
     const params = new Uint32Array([width, height, seed >>> 0, 0]);
     device.queue.writeBuffer(uniform, 0, params);
 
@@ -66,15 +60,9 @@ export class GpuPixelNoise {
     pass.setBindGroup(0, bindGroup);
     pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, bytes);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const data = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const data = await readBack(device, encoder, output, bytes);
     uniform.destroy();
     output.destroy();
-    readback.destroy();
     return new Surface(width, height, data);
   }
 }
