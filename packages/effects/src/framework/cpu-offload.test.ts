@@ -227,6 +227,43 @@ describe("WorkerCpuOffloader", () => {
     expect(workers).toHaveLength(1);
   });
 
+  it("splits a tall commit into row bands across workers, byte-identical, and stops the extras", async () => {
+    const workers: FakeWorker[] = [];
+    const offloader = new WorkerCpuOffloader({
+      builtinIds: new Set(),
+      floatBands: 3,
+      createWorker: () => {
+        const worker = new FakeWorker([]);
+        workers.push(worker);
+        return worker;
+      },
+    });
+    const job: FloatingComposeJob = {
+      pixels: image(30, 150),
+      coverage: undefined,
+      outline: [[0, 0, 30, 0, 30, 150, 0, 150]],
+      quality: "antialiased",
+      area: rect(0, 0, 50, 200),
+      base: image(50, 200),
+      stamps: [
+        {
+          transform: { a: 0.9, b: 0.3, c: -0.3, d: 0.9, e: 12.5, f: 4 },
+          options: { sampling: "linear", linearLight: false },
+        },
+      ],
+      placement: {
+        transform: { a: 0.8, b: -0.5, c: 0.5, d: 0.8, e: 3.25, f: 30 },
+        options: { sampling: "cubic", linearLight: true },
+      },
+    };
+    const result = await offloader.composeFloating(job);
+    const here = composeFloating(job);
+    expect(result.drawn).toEqual(here.drawn);
+    expect(result.base).toEqual(here.base);
+    expect(workers).toHaveLength(3);
+    expect(workers.map((worker) => worker.terminated)).toEqual([false, true, true]);
+  });
+
   it("resamples on this thread when no worker can be created", async () => {
     const offloader = new WorkerCpuOffloader({
       builtinIds: new Set(),

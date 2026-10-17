@@ -1,10 +1,13 @@
+import { transform_rows_rgba8 } from "@openpaint/cpu";
 import { isIntegerTranslation } from "./affine";
 import { type CoverageRuns, coverageRuns, placeByCoverage } from "./coverage-place";
 import { type Rect, rect, rectsEqual } from "./geometry";
 import {
   renderTransformed,
+  TRANSFORM_SAMPLINGS,
   type TransformedPixels,
   type TransformOptions,
+  transformPlan,
 } from "./pixel-transform";
 import { Selection } from "./selection";
 import {
@@ -13,7 +16,7 @@ import {
   type SelectionPolygon,
   type SelectionQuality,
 } from "./selection-polygons";
-import { Surface } from "./surface";
+import { bytesOf, Surface } from "./surface";
 
 /**
  * The floating content of a Move Selected Pixels session and how it lands on the layer: the
@@ -135,6 +138,64 @@ export function composeFloating(job: FloatingComposeJob): FloatingComposeResult 
   }
   const { transform, options } = job.placement;
   return { drawn: source.compose(base, job.area, job.area, transform, options), base };
+}
+
+/**
+ * Rows `first .. first + count` of `composeFloating`'s result and base, byte for byte, from `base`
+ * holding only those rows of the job's base: every step is per pixel (the resample through
+ * `transform_rows_rgba8` with the whole result's inverse, the coverage sliced from the whole
+ * mask), so bands computed apart join into the whole result.
+ */
+export function composeFloatingRows(
+  job: FloatingComposeJob,
+  first: number,
+  count: number,
+): FloatingComposeResult {
+  const source = new FloatingSource(job.pixels, job.coverage, job.outline, job.quality);
+  const { area } = job;
+  const band = rect(area.x, area.y + first, area.width, count);
+  if (job.base.width !== band.width || job.base.height !== band.height) {
+    throw new RangeError("The base must hold the band's rows.");
+  }
+  const step = (base: Surface, { transform: m, options }: FloatingStep): Surface => {
+    const result = base.clone();
+    if (isIntegerTranslation(m)) {
+      placeByCoverage(result, source.pixels, m.e - band.x, m.f - band.y, source.coverage);
+      return result;
+    }
+    const plan = transformPlan(source.pixels, m, area);
+    if (plan === undefined || plan.inverse === undefined) return result;
+    const { bounds, inverse } = plan;
+    const top = Math.max(bounds.y, band.y);
+    const bottom = Math.min(bounds.y + bounds.height, band.y + band.height);
+    if (top >= bottom) return result;
+    const rows = bottom - top;
+    const pixels = transform_rows_rgba8(
+      bytesOf(source.pixels),
+      source.pixels.width,
+      source.pixels.height,
+      bounds.width,
+      bounds.height,
+      new Float64Array(inverse),
+      TRANSFORM_SAMPLINGS.indexOf(options.sampling),
+      options.linearLight,
+      top - bounds.y,
+      rows,
+    );
+    const mask = source.shape.transform(m).mask(bounds);
+    const from = (top - bounds.y) * bounds.width;
+    placeByCoverage(
+      result,
+      new Surface(bounds.width, rows, new Uint8ClampedArray(pixels)),
+      bounds.x - band.x,
+      top - band.y,
+      mask.subarray(from, from + rows * bounds.width),
+    );
+    return result;
+  };
+  let base = job.base;
+  for (const stamp of job.stamps) base = step(base, stamp);
+  return { drawn: step(base, job.placement), base };
 }
 
 /** Runs a commit elsewhere, such as in the CPU worker. It rejects when it fails. */

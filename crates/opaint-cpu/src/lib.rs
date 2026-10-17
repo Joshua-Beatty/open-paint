@@ -1573,6 +1573,43 @@ pub fn transform_rgba8(
     .map_err(|message| JsError::new(&message))
 }
 
+/// Rows `first .. first + rows` of `transform_rgba8`'s `dst_width` x `dst_height` result, byte for
+/// byte, so workers can compute bands of one transform apart.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen]
+pub fn transform_rows_rgba8(
+    src: &[u8],
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    inverse: &[f64],
+    sampling: u8,
+    linear_light: bool,
+    first: u32,
+    rows: u32,
+) -> Result<Vec<u8>, JsError> {
+    let inverse = <[f64; 6]>::try_from(inverse)
+        .map_err(|_| JsError::new("a transform needs six coefficients"))?;
+    let sampling = transform::Sampling::try_from(sampling)
+        .map_err(|id| JsError::new(&format!("unknown sampling choice {id}")))?;
+    transform::transform_rows_rgba8(
+        &transform::Spec {
+            src,
+            src_width: src_width as usize,
+            src_height: src_height as usize,
+            dst_width: dst_width as usize,
+            dst_height: dst_height as usize,
+            inverse,
+            sampling,
+            linear_light,
+        },
+        first as usize,
+        rows as usize,
+    )
+    .map_err(|message| JsError::new(&message))
+}
+
 /// Rasterizes a polygon set (even-odd fill, see `mask`) into a `width` x `height` selection mask
 /// of one byte per pixel. Aliased masks hold 0 or 255. Antialiased masks hold each pixel's covered
 /// fraction. `coords` holds the rings' `x, y` pairs in order; `counts` holds each ring's vertex count.

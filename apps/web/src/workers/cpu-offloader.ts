@@ -13,6 +13,9 @@ export function cpuOffloader(): WorkerCpuOffloader {
         type: "module",
       }) as unknown as CpuWorkerLike,
     builtinIds: new Set(builtinEffectBindings(1, 1).map((binding) => binding.descriptor.id)),
+    // A Move Selected Pixels commit resamples the whole selection with the reference: split
+    // across a few cores. Each worker holds a copy of the content while it runs.
+    floatBands: Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)),
   });
   return offloader;
 }

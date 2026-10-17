@@ -1,8 +1,10 @@
 import {
   composeFloating,
+  composeFloatingRows,
   type FloatingComposeJob,
   type FloatingComposeResult,
   type ResampleOptions,
+  rect,
   resampleSurface,
   Surface,
 } from "@openpaint/document";
@@ -51,7 +53,10 @@ export interface FloatCpuJob extends Omit<FloatingComposeJob, "pixels" | "base">
   readonly kind: "float";
   readonly id: number;
   readonly content: CpuPixels;
+  /** The base, or only the rows of `rows` when it is given. */
   readonly baseIn: CpuPixels;
+  /** A band of the result to compute (`composeFloatingRows`), or the whole of it. */
+  readonly rows?: { readonly first: number; readonly count: number };
 }
 
 export type CpuJob = EffectCpuJob | ResampleCpuJob | FloatCpuJob;
@@ -86,12 +91,16 @@ export function runCpuJobOutputs(
     return [resampleSurface(source, job.targetWidth, job.targetHeight, job.options)];
   }
   if (job.kind === "float") {
-    const { content, baseIn, kind: _kind, id: _id, ...rest } = job;
-    const result = composeFloating({
+    const { content, baseIn, rows, kind: _kind, id: _id, ...rest } = job;
+    const compose: FloatingComposeJob = {
       ...rest,
       pixels: new Surface(content.width, content.height, content.pixels),
       base: new Surface(baseIn.width, baseIn.height, baseIn.pixels),
-    });
+    };
+    const result =
+      rows === undefined
+        ? composeFloating(compose)
+        : composeFloatingRows(compose, rows.first, rows.count);
     return job.stamps.length > 0 ? [result.drawn, result.base] : [result.drawn];
   }
   const binding = bindings.find((item) => item.descriptor.id === job.effectId);
@@ -131,6 +140,8 @@ export interface WorkerCpuOffloaderOptions {
   readonly createWorker: () => CpuWorkerLike;
   /** The ids of the built-in bindings the worker loads. Other bindings run on this thread. */
   readonly builtinIds: ReadonlySet<string>;
+  /** Workers a Move Selected Pixels commit is split across (`composeFloating`). Default 1. */
+  readonly floatBands?: number;
 }
 
 interface PendingJob {
@@ -158,6 +169,8 @@ export class WorkerCpuOffloader implements CpuOffloader {
   readonly #options: WorkerCpuOffloaderOptions;
   readonly #pending = new Map<number, PendingJob>();
   #worker: CpuWorkerLike | undefined;
+  /** Extra workers that compute row bands of a Move Selected Pixels commit. */
+  readonly #helpers: CpuWorkerLike[] = [];
   #nextId = 0;
 
   constructor(options: WorkerCpuOffloaderOptions) {
@@ -219,23 +232,72 @@ export class WorkerCpuOffloader implements CpuOffloader {
   }
 
   /**
-   * Computes a Move Selected Pixels commit in the worker (`composeFloating`), with the same
-   * reference, so the result is byte-identical to computing it here. The content and the base are
-   * copied, so they are unchanged.
+   * Computes a Move Selected Pixels commit in workers (`composeFloating`), with the same reference,
+   * so the result is byte-identical to computing it here. A tall area is split into row bands
+   * (`composeFloatingRows`) that `floatBands` workers compute side by side; the extra workers stop
+   * afterwards, so their memory goes with them. The content and the base are copied, so they are
+   * unchanged.
    */
-  composeFloating(job: FloatingComposeJob): Promise<FloatingComposeResult> {
+  async composeFloating(job: FloatingComposeJob): Promise<FloatingComposeResult> {
     const { pixels, base, ...rest } = job;
-    const content = { width: pixels.width, height: pixels.height, pixels: pixels.data.slice() };
-    const baseIn = { width: base.width, height: base.height, pixels: base.data.slice() };
-    const message: FloatCpuJob = { ...rest, kind: "float", id: this.#takeId(), content, baseIn };
-    const transfer = [content.pixels.buffer, baseIn.pixels.buffer];
-    return this.#dispatch(message, transfer, undefined, () => {
-      const result = composeFloating(job);
-      return [result.drawn, result.base];
-    }).then(([drawn, stamped]) => ({
-      drawn: drawn as Surface,
-      base: job.stamps.length > 0 && stamped !== undefined ? stamped : base,
-    }));
+    const { width, height } = job.area;
+    const bands = Math.max(1, Math.min(this.#options.floatBands ?? 1, Math.floor(height / 64)));
+    const band = (first: number, count: number, worker: () => CpuWorkerLike) => {
+      const content = { width: pixels.width, height: pixels.height, pixels: pixels.data.slice() };
+      const rows = new Surface(width, count);
+      rows.copyFrom(base, rect(0, first, width, count), 0, 0);
+      const baseIn = { width, height: count, pixels: rows.data as Uint8ClampedArray<ArrayBuffer> };
+      const message: FloatCpuJob = {
+        ...rest,
+        kind: "float",
+        id: this.#takeId(),
+        content,
+        baseIn,
+        ...(bands > 1 && { rows: { first, count } }),
+      };
+      const inline = () => {
+        const result =
+          bands > 1
+            ? composeFloatingRows({ ...job, base: rows }, first, count)
+            : composeFloating(job);
+        return [result.drawn, result.base];
+      };
+      return this.#dispatch(
+        message,
+        [content.pixels.buffer, baseIn.pixels.buffer],
+        undefined,
+        inline,
+        worker,
+      );
+    };
+    if (bands === 1) {
+      const [drawn, stamped] = await band(0, height, () => this.#ownWorker());
+      return {
+        drawn: drawn as Surface,
+        base: job.stamps.length > 0 && stamped !== undefined ? stamped : base,
+      };
+    }
+    const size = Math.ceil(height / bands);
+    const parts: Promise<Surface[]>[] = [];
+    for (let index = 0; index * size < height; index++) {
+      const first = index * size;
+      const worker = index === 0 ? () => this.#ownWorker() : () => this.#helper(index - 1);
+      parts.push(band(first, Math.min(size, height - first), worker));
+    }
+    try {
+      const results = await Promise.all(parts);
+      const drawn = new Surface(width, height);
+      const stamped = job.stamps.length > 0 ? new Surface(width, height) : base;
+      results.forEach(([part, partBase], index) => {
+        if (part !== undefined) drawn.copyFrom(part, part.bounds, 0, index * size);
+        if (stamped !== base && partBase !== undefined) {
+          stamped.copyFrom(partBase, partBase.bounds, 0, index * size);
+        }
+      });
+      return { drawn, base: stamped };
+    } finally {
+      this.#stopHelpers();
+    }
   }
 
   #takeId(): number {
@@ -245,17 +307,18 @@ export class WorkerCpuOffloader implements CpuOffloader {
   }
 
   /**
-   * Posts `job` and resolves with its reply. The post throws synchronously when the job cannot be
-   * sent, and then `inline` runs it on this thread instead.
+   * Posts `job` to `worker` (the main one by default) and resolves with its reply. The post throws
+   * synchronously when the job cannot be sent, and then `inline` runs it on this thread instead.
    */
   #dispatch(
     job: CpuJob,
     transfer: Transferable[],
     signal: AbortSignal | undefined,
     inline: () => Surface[],
+    worker: () => CpuWorkerLike = () => this.#ownWorker(),
   ): Promise<Surface[]> {
     try {
-      this.#ownWorker().postMessage({ job }, transfer);
+      worker().postMessage({ job }, transfer);
     } catch {
       return new Promise<Surface[]>((resolve) => resolve(inline()));
     }
@@ -277,7 +340,25 @@ export class WorkerCpuOffloader implements CpuOffloader {
   }
 
   #ownWorker(): CpuWorkerLike {
-    if (this.#worker !== undefined) return this.#worker;
+    this.#worker ??= this.#startWorker();
+    return this.#worker;
+  }
+
+  /** The `index`th extra worker for row bands, started on first use. */
+  #helper(index: number): CpuWorkerLike {
+    let worker = this.#helpers[index];
+    if (worker === undefined) {
+      worker = this.#startWorker();
+      this.#helpers[index] = worker;
+    }
+    return worker;
+  }
+
+  #stopHelpers(): void {
+    for (const worker of this.#helpers.splice(0)) worker.terminate();
+  }
+
+  #startWorker(): CpuWorkerLike {
     const worker = this.#options.createWorker();
     worker.onmessage = (event: MessageEvent<CpuReply>) => {
       const reply = event.data;
@@ -296,7 +377,6 @@ export class WorkerCpuOffloader implements CpuOffloader {
     worker.onerror = (event: ErrorEvent) => {
       this.#drop(new Error(event.message || "The CPU worker stopped."));
     };
-    this.#worker = worker;
     return worker;
   }
 
@@ -304,11 +384,12 @@ export class WorkerCpuOffloader implements CpuOffloader {
     this.#drop(abortError());
   }
 
-  /** Stops the worker and fails every job it still owes. The next job starts a new worker. */
+  /** Stops the workers and fails every job they still owe. The next job starts a new worker. */
   #drop(error: Error): void {
     const worker = this.#worker;
     this.#worker = undefined;
     worker?.terminate();
+    this.#stopHelpers();
     const jobs = [...this.#pending.values()];
     this.#pending.clear();
     for (const job of jobs) job.reject(error);
