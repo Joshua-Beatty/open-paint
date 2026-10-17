@@ -1,0 +1,58 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time; a newer push replaces a queued one.
+concurrency:
+  group: deploy-pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node, pnpm, Rust (with the wasm32 target), wasm-pack and wasm-opt, as pinned in mise.toml.
+      - uses: jdx/mise-action@v2
+        with:
+          cache: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates
+
+      - name: Locate the pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Check the host headers are in the build
+        run: test -f apps/web/dist/_headers && grep -q "Cross-Origin-Embedder-Policy" apps/web/dist/_headers
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          command: pages deploy apps/web/dist --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT || 'open-paint' }} --branch=main
