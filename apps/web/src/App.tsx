@@ -177,7 +177,7 @@ import { listenForToolKeys } from "./tools/tool-keys";
 import { createToolPointerSink } from "./tools/tool-pointer";
 import { type ViewHost, viewToolRuntime } from "./tools/view-tools";
 import { useEngine } from "./useEngine";
-import { cpuOffloader } from "./workers/cpu-offloader";
+import { cpuOffloader, warmCpuOffloader } from "./workers/cpu-offloader";
 import { gradientLanes } from "./workers/gradient-lanes";
 import { yieldWhileBusy } from "./workers/yield-to-host";
 
@@ -881,6 +881,9 @@ export function App({
       }
     };
   }, [activeDocument, images, toolController]);
+  const selected = activeDocument !== undefined && !activeDocument.selection.isEmpty;
+  // Once something is selected, the worker for Move Selected Pixels commits loads at idle.
+  useEffect(() => (selected ? warmCpuOffloader() : undefined), [selected]);
   const activeLayer = activeDocument?.activeLayer;
   const activeLayerIndex =
     activeDocument !== undefined && activeLayer !== undefined

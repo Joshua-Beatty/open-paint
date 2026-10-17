@@ -294,6 +294,15 @@ describe("WorkerCpuOffloader", () => {
     expect(workers).toHaveLength(1);
   });
 
+  it("starts its worker ahead of the first job when warmed, and the job runs in it", async () => {
+    const { offloader, workers } = offloaderWith();
+    offloader.warm();
+    offloader.warm();
+    expect(workers).toHaveLength(1);
+    await offloader.run(brighten, image(4, 4), { amount: 1 }, undefined, signal());
+    expect(workers).toHaveLength(1);
+  });
+
   it("only offers bindings the worker loads", () => {
     const { offloader } = offloaderWith();
     expect(offloader.canRun(brighten as EffectBinding<unknown>)).toBe(true);

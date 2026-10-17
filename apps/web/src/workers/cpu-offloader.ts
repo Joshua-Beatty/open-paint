@@ -19,3 +19,17 @@ export function cpuOffloader(): WorkerCpuOffloader {
   });
   return offloader;
 }
+
+/**
+ * Starts the offloader's worker when the page is next idle, so the first Move Selected Pixels
+ * commit does not wait for the worker to load. Returns the function that calls it off.
+ */
+export function warmCpuOffloader(): () => void {
+  const warm = () => cpuOffloader().warm();
+  if (typeof requestIdleCallback === "function") {
+    const id = requestIdleCallback(warm, { timeout: 2000 });
+    return () => cancelIdleCallback(id);
+  }
+  const id = setTimeout(warm, 500);
+  return () => clearTimeout(id);
+}

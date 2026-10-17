@@ -177,6 +177,15 @@ export class WorkerCpuOffloader implements CpuOffloader {
     this.#options = options;
   }
 
+  /** Starts the worker now, if it is not running, so the first job does not wait for it to load. */
+  warm(): void {
+    try {
+      this.#ownWorker();
+    } catch {
+      // No worker can be created: jobs run on this thread, as when posting fails.
+    }
+  }
+
   canRun(binding: EffectBinding<unknown>): boolean {
     return this.#options.builtinIds.has(binding.descriptor.id);
   }
