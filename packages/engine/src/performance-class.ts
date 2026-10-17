@@ -93,8 +93,9 @@ export async function benchmarkPerformanceClass(device: GPUDevice): Promise<Perf
     const run = async (passes: number): Promise<number | undefined> => {
       const encoder = device.createCommandEncoder();
       for (let i = 0; i < passes; i++) {
+        // A pass's timestamp writes must name at least one index: only the first and last do.
         const writes =
-          timestamps === undefined
+          timestamps === undefined || (i !== 0 && i !== passes - 1)
             ? undefined
             : {
                 querySet: timestamps.set,

@@ -74,7 +74,13 @@ export { GpuInkSketch, GpuOilPainting, GpuPencilSketch } from "./gpu-artistic";
 export { GpuBokehBlur } from "./gpu-bokeh-blur";
 export { GpuBrush } from "./gpu-brush";
 export { type ComposedTile, GpuCompositor } from "./gpu-compositor";
-export { adapterKey, type GpuAdapterSummary, KEY_LIMITS, summarizeAdapter } from "./gpu-device";
+export {
+  adapterKey,
+  type GpuAdapterSummary,
+  KEY_LIMITS,
+  requestDevice,
+  summarizeAdapter,
+} from "./gpu-device";
 export { GpuFragmentBlur, GpuMotionBlur } from "./gpu-directional-blur";
 export { GpuDistortion, type GpuDistortionParams } from "./gpu-distortion";
 export {
