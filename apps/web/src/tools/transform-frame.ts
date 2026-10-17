@@ -362,8 +362,8 @@ export function gestureResult(
 
 /**
  * The state the frame overlay draws: the geometry in image pixels, and whether its outline is drawn.
- * Selections keep their outline; a pending shape shows only its handles, so the outline never hides
- * the shape's own stroke.
+ * The move tools and pending shapes show only the handles: the marching ants already show a
+ * selection, and the outline would hide a shape's own stroke.
  */
 export type TransformFrameState = FrameGeometry & { readonly outline?: boolean };
 

@@ -112,6 +112,9 @@ for (const zoom of ["100", "fit"] as const) {
       await expect
         .poll(() => drawnBounds(page, "transform-frame", around(corner, 5)))
         .toBeDefined();
+      // Only the handles: no frame line along the edge between them.
+      const edge = { x: (selected.left * 3 + selected.right) / 4, y: selected.top };
+      expect(await drawnBounds(page, "transform-frame", around(edge, 3))).toBeUndefined();
       await expect(steps).toHaveCount(before);
 
       // Hovering the corner shows a resize arrow before any click.

@@ -114,9 +114,12 @@ function centerOf(source: Rect): FramePoint {
   return { x: source.x + source.width / 2, y: source.y + source.height / 2 };
 }
 
-/** The frame state of a move tool: its outline, handles, anchor and reset button. */
+/**
+ * The frame state of a move tool: its handles, anchor and reset button, without the outline. The
+ * selection's marching ants already show the shape (owner request).
+ */
 function frameState(source: Rect, m: AffineMatrix, anchor: FramePoint): TransformFrameState {
-  return frameGeometry(source, m, anchor);
+  return { ...frameGeometry(source, m, anchor), outline: false };
 }
 
 /**

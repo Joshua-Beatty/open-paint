@@ -359,9 +359,10 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
     expect(doc.selection.bounds()).toEqual(rect(10, 4, 40, 40));
   });
 
-  it("draws the frame while it holds the pixels", () => {
+  it("draws the frame's handles without its outline while it holds the pixels", () => {
     runtime.pointer(event("down", BODY_PRESS.x, BODY_PRESS.y));
     expect(transformFrame.state).toBeDefined();
+    expect(transformFrame.state?.outline).toBe(false);
     runtime.pointer(event("up", BODY_PRESS.x, BODY_PRESS.y));
     expect(runtime.hasPending?.()).toBe(true);
     runtime.commit?.();
@@ -388,6 +389,7 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
       runtime = movePixelsToolRuntime(host(), handoff);
       runtime.activate();
       const state = transformFrame.state;
+      expect(state?.outline).toBe(false);
       expect(state?.handles.nw).toEqual({ x: 4, y: 4 });
       expect(state?.handles.se).toEqual(SE_HANDLE);
       expect(state?.anchor).toEqual({ x: 24, y: 24 });
@@ -516,6 +518,31 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
     expect(doc.history.undoName).toBe("history.rotatePixels");
   });
 
+  it("turns the selection with the pixels while a rotation is dragged, for the marching ants", () => {
+    runtime.pointer(event("down", 24 + 16 * Math.cos(-0.5), 24 + 16 * Math.sin(-0.5), 2));
+    runtime.pointer(
+      event(
+        "move",
+        24 + 16 * Math.cos(-0.5 + Math.PI / 4),
+        24 + 16 * Math.sin(-0.5 + Math.PI / 4),
+        2,
+      ),
+    );
+    // An eighth turn of the 40 px square about its centre: its bounds grow to the diagonal.
+    const bounds = doc.selection.bounds();
+    expect(bounds.width).toBeGreaterThan(55);
+    expect(bounds.height).toBeGreaterThan(55);
+    runtime.pointer(
+      event(
+        "up",
+        24 + 16 * Math.cos(-0.5 + Math.PI / 4),
+        24 + 16 * Math.sin(-0.5 + Math.PI / 4),
+        2,
+      ),
+    );
+    expect(doc.history.undoName).toBe("history.rotatePixels");
+  });
+
   it("merges nudges that follow each other within 500 ms into one Move Pixels item", () => {
     const before = doc.history.appliedCommands.length;
     runtime.nudge?.(1, 0, 1);
@@ -593,6 +620,7 @@ describe("Move Selection (TL-MOVE-SEL-01)", () => {
 
   it("shows the selection's handles as soon as it is active, and hides them without one", async () => {
     const before = doc.history.appliedCommands.length;
+    expect(transformFrame.state?.outline).toBe(false);
     expect(transformFrame.state?.handles.se).toEqual(SE_HANDLE);
     expect(doc.history.appliedCommands.length).toBe(before);
     expect(runtime.hasPending?.()).toBe(false);
@@ -612,6 +640,30 @@ describe("Move Selection (TL-MOVE-SEL-01)", () => {
     expect(doc.history.undoName).toBe("history.resizeSelection");
     expect(transformFrame.state?.handles.se.x).toBeCloseTo(60);
     expect(transformFrame.state?.handles.se.y).toBeCloseTo(52);
+  });
+
+  it("turns the outline while a rotation is dragged, for the marching ants", () => {
+    runtime.pointer(event("down", 24 + 16 * Math.cos(-0.5), 24 + 16 * Math.sin(-0.5), 2));
+    runtime.pointer(
+      event(
+        "move",
+        24 + 16 * Math.cos(-0.5 + Math.PI / 4),
+        24 + 16 * Math.sin(-0.5 + Math.PI / 4),
+        2,
+      ),
+    );
+    const bounds = doc.selection.bounds();
+    expect(bounds.width).toBeGreaterThan(55);
+    expect(bounds.height).toBeGreaterThan(55);
+    runtime.pointer(
+      event(
+        "up",
+        24 + 16 * Math.cos(-0.5 + Math.PI / 4),
+        24 + 16 * Math.sin(-0.5 + Math.PI / 4),
+        2,
+      ),
+    );
+    expect(doc.history.undoName).toBe("history.rotateSelection");
   });
 
   it("moves the outline and leaves the pixels where they are", () => {
