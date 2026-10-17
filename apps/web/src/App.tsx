@@ -132,6 +132,7 @@ import { ImageTabStrip, type ImageTabView } from "./shell/ImageTabStrip";
 import { KeyboardShortcuts } from "./shell/KeyboardShortcuts";
 import { type MenuActions, MenuBar } from "./shell/MenuBar";
 import { MessageDialog } from "./shell/MessageDialog";
+import { ModifierBar } from "./shell/ModifierBar";
 import {
   effectiveRightWidth,
   PANEL_IDS,
@@ -144,7 +145,7 @@ import { PANEL_COMMANDS } from "./shell/panel-layout-settings";
 import { LeftSidebar, RightSidebar } from "./shell/Sidebars";
 import { type ColorSchemePreference, useColorScheme } from "./shell/theme";
 import { UnsavedChangesDialog } from "./shell/UnsavedChangesDialog";
-import { useCompactLayout } from "./shell/use-compact-layout";
+import { useCompactLayout, useTouchControls } from "./shell/use-compact-layout";
 import { usePanelLayout, useViewportWidth } from "./shell/use-panel-layout";
 import { StatusBar } from "./status/StatusBar";
 import {
@@ -593,6 +594,7 @@ export function App({
   const compactLayout = useCompactLayout();
   const compactRef = useRef(compactLayout.compact);
   compactRef.current = compactLayout.compact;
+  const touchControls = useTouchControls();
   /** The compact layout's panel sheet and tool rail; the docked layout's settings stay as saved. */
   const [sheetPanel, setSheetPanel] = useState<RightPanelId | undefined>(undefined);
   const [railHidden, setRailHidden] = useState(false);
@@ -1309,6 +1311,7 @@ export function App({
         )
       }
     >
+      {touchControls && <ModifierBar modifiers={virtualModifiers} />}
       <KeyboardShortcuts
         isOpen={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
