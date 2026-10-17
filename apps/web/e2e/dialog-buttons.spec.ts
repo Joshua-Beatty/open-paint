@@ -134,8 +134,8 @@ for (const scheme of ["light", "dark"] as const) {
       await cancel(page);
     }
 
-    // Save As in the page, then the JPEG options.
-    await menu(page, "File", /^Save As/);
+    // Save in the page (without the picker there is no Save As), then the JPEG options.
+    await menu(page, "File", /^Save(?! As| All)/);
     await checkFooter(page, "save-as");
     await shoot(page, scheme, "save-as");
     const saveAs = page.locator(".modal-dialog").last();
