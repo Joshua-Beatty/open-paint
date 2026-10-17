@@ -991,3 +991,86 @@ scenario(
     return result;
   },
 );
+
+/** B23: strokes started after the pointer hovered the canvas, the way a mouse user starts one. */
+const STROKE_STARTS = 5;
+
+/**
+ * Hovers the pointer across the canvas for about a second at 120 Hz (the status bar and the brush
+ * outline follow it), then presses and draws a short Paintbrush stroke, `STROKE_STARTS` times.
+ * Before each, `prepare` runs (B23b: a Rectangle Select drag, then the Paintbrush again). Reports
+ * the time from each press (its event time) to the end of the first engine present after it.
+ */
+async function strokeStarts(
+  page: Page,
+  setup: Setup,
+  notes: string[],
+  prepare: (box: { x: number; y: number; width: number; height: number }) => Promise<void>,
+): Promise<GestureResult> {
+  const { layout, devicePixelRatio, box } = await openImage(page, setup, false);
+  const image = visibleImage(box, layout, devicePixelRatio);
+  const starts: number[] = [];
+  let result: GestureResult | undefined;
+  for (let i = 0; i < STROKE_STARTS; i++) {
+    await prepare(image);
+    await page.getByRole("radio", { name: "Paintbrush", exact: true }).click();
+    const y = image.y + image.height * (0.2 + 0.15 * i);
+    const hover = linePath({ x: image.x + 4, y }, { x: image.x + image.width * 0.5, y }, INPUT_HZ);
+    await page.mouse.move(image.x + 2, y);
+    const from = await beginGesture(page);
+    await paceMoves(page, hover, INPUT_HZ);
+    const press = hover.at(-1) ?? { x: image.x, y };
+    await page.mouse.down();
+    await paceMoves(
+      page,
+      linePath(press, { x: press.x + image.width * 0.3, y: press.y }, 30),
+      INPUT_HZ,
+    );
+    await page.mouse.up();
+    result = await endGesture(page, from);
+    const snapshot = await page.evaluate(() => window.__openpaintPerf?.snapshot());
+    const down = snapshot?.inputs.find((input) => input.kind === "pointerdown")?.time;
+    const present = snapshot?.presents
+      .map((p) => p.end)
+      .filter((end) => down !== undefined && end >= down)
+      .sort((a, b) => a - b)[0];
+    if (down !== undefined && present !== undefined) starts.push(present - down);
+  }
+  setup.strokeStarts = starts.map((ms) => ms.toFixed(1)).join(" ");
+  starts.sort((a, b) => a - b);
+  const at = (q: number) => starts[Math.min(starts.length - 1, Math.floor(q * starts.length))];
+  notes.push(
+    `stroke start to first present p50/max ${at(0.5)?.toFixed(1) ?? "-"}/${starts.at(-1)?.toFixed(1) ?? "-"} ms over ${starts.length}`,
+  );
+  if (result === undefined) throw new Error("No stroke was drawn.");
+  return result;
+}
+
+scenario("B23a", "Stroke start after hovering the canvas, default image", (page, setup, notes) =>
+  strokeStarts(page, setup, notes, async () => {}),
+);
+
+scenario(
+  "B23b",
+  "Stroke start after a Rectangle Select drag and hovering the canvas, default image",
+  (page, setup, notes) =>
+    strokeStarts(page, setup, notes, async (image) => {
+      await page.getByRole("radio", { name: "Rectangle Select", exact: true }).click();
+      const a = { x: image.x + image.width * 0.1, y: image.y + image.height * 0.1 };
+      await page.mouse.move(a.x, a.y);
+      await page.mouse.down();
+      await paceMoves(
+        page,
+        circlePath(
+          { x: image.x + image.width * 0.6, y: image.y + image.height * 0.6 },
+          image.height * 0.2,
+          2,
+          INPUT_HZ,
+        ),
+        INPUT_HZ,
+      );
+      // Ends inside the image, so the selection holds the strokes that follow.
+      await page.mouse.move(image.x + image.width * 0.95, image.y + image.height * 0.95);
+      await page.mouse.up();
+    }),
+);
