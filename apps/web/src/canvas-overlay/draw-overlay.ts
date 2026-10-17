@@ -1,10 +1,19 @@
-import type { BrushOutline, GridLines, RulerOrientation, RulerTick } from "./overlay-math";
+import {
+  BRUSH_TIP_OUTLINES,
+  type BrushOutline,
+  DEFAULT_BRUSH_TIP,
+  type GridLines,
+  type RulerOrientation,
+  type RulerTick,
+} from "./overlay-math";
 
 /**
- * Draws the brush outline (TL-BRUSH-01) in the tip's shape, a circle or a square, as a dark line with
+ * Draws the brush outline (TL-BRUSH-01) in the tip's shape (`BRUSH_TIP_OUTLINES`) as a dark line with
  * a light line just outside it, so the outline shows on any color.
  */
 export function paintBrushOutline(ctx: CanvasRenderingContext2D, outline: BrushOutline): void {
+  const tip = BRUSH_TIP_OUTLINES[outline.shape] ?? BRUSH_TIP_OUTLINES[DEFAULT_BRUSH_TIP];
+  if (tip === undefined) return;
   ctx.save();
   ctx.lineWidth = 1;
   for (const [color, radius] of [
@@ -13,11 +22,7 @@ export function paintBrushOutline(ctx: CanvasRenderingContext2D, outline: BrushO
   ] as const) {
     ctx.strokeStyle = color;
     ctx.beginPath();
-    if (outline.shape === "square") {
-      ctx.rect(outline.x - radius, outline.y - radius, radius * 2, radius * 2);
-    } else {
-      ctx.arc(outline.x, outline.y, radius, 0, Math.PI * 2);
-    }
+    tip.trace(ctx, outline.x, outline.y, radius);
     ctx.stroke();
   }
   ctx.restore();

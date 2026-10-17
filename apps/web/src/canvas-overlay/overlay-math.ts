@@ -38,23 +38,52 @@ export interface GridLines {
 /** The smallest brush outline radius in device pixels, so a 1 px tip still shows. */
 const MIN_BRUSH_RADIUS = 1;
 
-/** The brush tip's shape (TL-OPT-BRUSH "brush.type"), which the outline follows. */
-export type BrushOutlineShape = "circle" | "square";
+/** The path calls a tip outline uses, which both `CanvasRenderingContext2D` and `Path2D` have. */
+export interface TipPath {
+  arc(x: number, y: number, radius: number, startAngle: number, endAngle: number): void;
+  rect(x: number, y: number, width: number, height: number): void;
+  moveTo(x: number, y: number): void;
+  lineTo(x: number, y: number): void;
+  closePath(): void;
+}
 
 /**
- * The brush outline in device pixels: a circle of `radius`, or an upright square whose half side
- * is `radius`, centred on the pointer.
+ * How a brush tip's outline is drawn at the pointer: `trace` adds the tip's shape, centred on
+ * (x, y) and fitting a box of half side `radius`, to `path`. A new tip registers one entry here, keyed
+ * by its value of the tip setting (`tools.brush.type`), and every brush tool's cursor follows it.
  */
+export interface BrushTipOutline {
+  trace(path: TipPath, x: number, y: number, radius: number): void;
+}
+
+/** The outline of each brush tip, keyed by the tip setting's value. */
+export const BRUSH_TIP_OUTLINES: Readonly<Record<string, BrushTipOutline>> = {
+  Circle: {
+    trace: (path, x, y, radius) => {
+      path.moveTo(x + radius, y);
+      path.arc(x, y, radius, 0, Math.PI * 2);
+    },
+  },
+  Square: {
+    trace: (path, x, y, radius) => path.rect(x - radius, y - radius, radius * 2, radius * 2),
+  },
+};
+
+/** The tip a brush outline draws when the setting names no registered tip. */
+export const DEFAULT_BRUSH_TIP = "Circle";
+
+/** The tip a stored `tools.brush.type` value names, or the default for an unknown value. */
+export function brushOutlineShape(tipType: unknown): string {
+  return typeof tipType === "string" && tipType in BRUSH_TIP_OUTLINES ? tipType : DEFAULT_BRUSH_TIP;
+}
+
+/** The brush outline in device pixels: the tip's shape fitting a box of half side `radius`. */
 export interface BrushOutline {
   readonly x: number;
   readonly y: number;
   readonly radius: number;
-  readonly shape: BrushOutlineShape;
-}
-
-/** The outline shape of a stored `tools.brush.type` value: "Square" is a square, else a circle. */
-export function brushOutlineShape(tipType: unknown): BrushOutlineShape {
-  return tipType === "Square" ? "square" : "circle";
+  /** A key of `BRUSH_TIP_OUTLINES`. */
+  readonly shape: string;
 }
 
 /**
@@ -66,7 +95,7 @@ export function brushOutline(
   diameter: number,
   zoom: number,
   pointer: { readonly x: number; readonly y: number },
-  shape: BrushOutlineShape = "circle",
+  shape: string = DEFAULT_BRUSH_TIP,
 ): BrushOutline | undefined {
   if (!(diameter > 0) || !(zoom > 0)) return undefined;
   return {

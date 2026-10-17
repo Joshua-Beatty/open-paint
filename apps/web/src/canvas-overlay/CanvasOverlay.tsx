@@ -27,8 +27,8 @@ import {
   type RulerColors,
 } from "./draw-overlay";
 import {
-  type BrushOutlineShape,
   brushOutline,
+  DEFAULT_BRUSH_TIP,
   gridLines,
   gridOpacity,
   type RulerOrientation,
@@ -71,12 +71,12 @@ export function PixelGridOverlay({ store, showGrid }: { store: StatusStore; show
 export function BrushCursorOverlay({
   store,
   diameter,
-  shape = "circle",
+  shape = DEFAULT_BRUSH_TIP,
 }: {
   store: StatusStore;
   diameter: number | undefined;
-  /** The tip's shape, so a square tip shows a square outline. */
-  shape?: BrushOutlineShape;
+  /** The tip, a key of `BRUSH_TIP_OUTLINES`, so the outline has the tip's shape. */
+  shape?: string;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const size = useCanvasBacking(ref);
