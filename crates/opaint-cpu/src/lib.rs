@@ -1465,7 +1465,7 @@ pub fn highlights_shadows_rgba8(
 #[wasm_bindgen]
 pub fn box_halve_rgba8(block: &[u8], edge: u32) -> Result<Vec<u8>, JsError> {
     let edge = edge as usize;
-    if edge % 2 != 0 || block.len() != edge * edge * 4 {
+    if !edge.is_multiple_of(2) || block.len() != edge * edge * 4 {
         return Err(JsError::new("box_halve_rgba8 needs an even square block"));
     }
     Ok(box_halve(block, edge))
@@ -1478,14 +1478,15 @@ fn box_halve(block: &[u8], edge: usize) -> Vec<u8> {
     for (y, out_row) in out.chunks_exact_mut(half * 4).enumerate() {
         let top = &block[2 * y * row..(2 * y + 1) * row];
         let bottom = &block[(2 * y + 1) * row..(2 * y + 2) * row];
-        for (x, px) in out_row.chunks_exact_mut(4).enumerate() {
-            for c in 0..4 {
+        let (pixels, _) = out_row.as_chunks_mut::<4>();
+        for (x, px) in pixels.iter_mut().enumerate() {
+            for (c, value) in px.iter_mut().enumerate() {
                 let i = x * 8 + c;
                 let sum = u16::from(top[i])
                     + u16::from(top[i + 4])
                     + u16::from(bottom[i])
                     + u16::from(bottom[i + 4]);
-                px[c] = ((sum + 2) >> 2) as u8;
+                *value = ((sum + 2) >> 2) as u8;
             }
         }
     }
