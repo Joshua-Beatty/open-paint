@@ -139,9 +139,16 @@ async function openGaussianBlur(page: Page) {
   await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
 }
 
+/**
+ * The engine's layout and its device pixels per CSS pixel, measured from the engine canvas: the
+ * window's `devicePixelRatio` can disagree with the canvas (desktop Firefox on a high-DPI screen).
+ */
 async function zoomedLayout(page: Page) {
-  const { layout, devicePixelRatio } = await info(page);
+  const { layout } = await info(page);
   if (layout === undefined) throw new Error("The engine has not reported a view layout.");
+  const devicePixelRatio = await page
+    .locator("[data-backend] canvas:not(.app-canvas-overlay)")
+    .evaluate((canvas: HTMLCanvasElement) => canvas.width / canvas.getBoundingClientRect().width);
   return { layout, devicePixelRatio };
 }
 
