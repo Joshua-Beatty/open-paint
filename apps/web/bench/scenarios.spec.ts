@@ -653,6 +653,39 @@ scenario("B12b", "Gaussian Blur OK after its preview, 4000 x 3000", (page, setup
 );
 
 /**
+ * B23-B25: an effect's dialog opened from its menu on 4000 x 3000 at its default values. The
+ * gesture is the click on the menu item, so settle is the time until its first preview is shown.
+ */
+async function effectPreview(page: Page, setup: Setup, submenu: string, effect: string) {
+  await openImage(page, setup, true);
+  await page.getByRole("button", { name: "Effects", exact: true }).click();
+  await page.getByRole("menuitem", { name: new RegExp(`^${submenu}`) }).click();
+  const item = page.getByRole("menuitem", { name: new RegExp(`^${effect}`) });
+  const box = await item.boundingBox();
+  if (box === null) throw new Error(`The ${effect} menu item has no box.`);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const from = await beginGesture(page);
+  await page.mouse.down();
+  await page.mouse.up();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  const result = await endGesture(page, from);
+  await page.keyboard.press("Escape");
+  return result;
+}
+
+scenario("B23", "Median Blur dialog opened, preview at defaults, 4000 x 3000", (page, setup) =>
+  effectPreview(page, setup, "Blurs", "Median Blur"),
+);
+
+scenario("B24", "Ink Sketch dialog opened, preview at defaults, 4000 x 3000", (page, setup) =>
+  effectPreview(page, setup, "Artistic", "Ink Sketch"),
+);
+
+scenario("B25", "Glow dialog opened, preview at defaults, 4000 x 3000", (page, setup) =>
+  effectPreview(page, setup, "Photo", "Glow"),
+);
+
+/**
  * B13: Gradient with no selection. The drag starts at the image's center and its end circles fast
  * for 3 s, so the whole layer's gradient changes on every frame.
  */
