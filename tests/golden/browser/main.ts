@@ -35,6 +35,7 @@ import {
   type ComposedTile,
   type CompositeDocument,
   checkCompositeV2,
+  checkFloat,
   checkPartialSyncV2,
   checkPresentedEdges,
   checkStrokeV2,
@@ -194,6 +195,7 @@ declare global {
     runV2StrokeCase: (id: string) => Promise<GoldenResult | null>;
     runV2SyncCase: (id: string) => Promise<GoldenResult | null>;
     runPresentEdgeCase: (id: string) => Promise<GoldenResult | null>;
+    runFloatCase: (id: string) => Promise<GoldenResult | null>;
   }
 }
 
@@ -1227,3 +1229,13 @@ async function runPresentEdgeCase(id: string): Promise<GoldenResult | null> {
 }
 
 window.runPresentEdgeCase = runPresentEdgeCase;
+
+/** The floating preview of Move Selected Pixels on the GPU against the reference (TL-MOVE-PIX-01). */
+async function runFloatCase(id: string): Promise<GoldenResult | null> {
+  const device = await getDevice();
+  if (!device) return null;
+  await ensureCpu();
+  return { id, ...(await checkFloat(device, id)) };
+}
+
+window.runFloatCase = runFloatCase;

@@ -1,4 +1,5 @@
 import { DEFAULT_LAYER_BLEND_MODE, isLayerBlendMode, type LayerBlendMode } from "./blend-mode";
+import type { LayerFloatPreview } from "./float-preview";
 import type { Rect } from "./geometry";
 import { MetadataMap } from "./metadata";
 import type { TiledPixelStore } from "./tiled-store";
@@ -84,6 +85,7 @@ export class Layer {
   #blendMode: LayerBlendMode;
   #rawBlendMode: number | undefined;
   #livePreview: LayerLivePreview | undefined;
+  #floatPreview: LayerFloatPreview | undefined;
 
   constructor(id: number, pixels: TiledPixelStore, init: LayerInit) {
     const normalized = normalizeLayerProperties(init);
@@ -188,6 +190,20 @@ export class Layer {
   /** Called by `Document`. */
   setLivePreview(preview: LayerLivePreview | undefined): void {
     this.#livePreview = preview;
+  }
+
+  /**
+   * The floating content the canvas draws over this layer's pixels while Move Selected Pixels
+   * previews a transform, or undefined. The pixels stay as they are. Set through
+   * `Document.setLayerFloatPreview`.
+   */
+  get floatPreview(): LayerFloatPreview | undefined {
+    return this.#floatPreview;
+  }
+
+  /** Called by `Document`. */
+  setFloatPreview(preview: LayerFloatPreview | undefined): void {
+    this.#floatPreview = preview;
   }
 
   /** Frees the layer's pixel memory. The layer must not be used afterwards. */

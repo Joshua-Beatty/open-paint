@@ -84,6 +84,15 @@ struct Live {
 @group(0) @binding(13) var<uniform> p: AdjustParams;
 @group(0) @binding(14) var<uniform> live: Live;
 @group(0) @binding(15) var<storage, read> live_coverage: array<u32>;
+// Floating content (TL-MOVE-PIX-01): the layer flagged 2 shows this texture (straight RGBA8 with
+// a mip chain) over its region instead of its tiles. region = x, y, w, h in image pixels, aligned to
+// 256 so every mip level lines up; levels = its mip count.
+struct Float {
+  region: vec4u,
+  levels: vec4u,
+}
+@group(0) @binding(16) var float_tex: texture_2d<f32>;
+@group(0) @binding(17) var<uniform> float_info: Float;
 
 ${BLEND_WGSL}
 fn to_u8(t: vec4f) -> vec4u {
@@ -138,8 +147,21 @@ fn composite(@builtin(global_invocation_id) id: vec3u) {
   let tile = lp / size;
   let local = vec2i(lp - tile * size);
   let cell = tile.y * params.tiles_x + tile.x;
+  let scale = 1u << params.level;
   for (var i = 0u; i < params.layer_count; i++) {
     let layer = layers[params.layer_start + i];
+    if ((layer.w & 2u) != 0u) {
+      let fr = float_info.region;
+      let at = lp * scale;
+      if (at.x >= fr.x && at.y >= fr.y && at.x < fr.x + fr.z && at.y < fr.y + fr.w) {
+        let level = min(params.level, float_info.levels.x - 1u);
+        let size = vec2u(textureDimensions(float_tex, level)) - vec2u(1u);
+        let local = min((at - fr.xy) >> vec2u(level), size);
+        let f = to_u8(textureLoad(float_tex, vec2i(local), level));
+        d = composite_pixel(d, f, layer.y, layer.z);
+        continue;
+      }
+    }
     let code = table[layer.x + cell];
     if (code == 0xffffffffu) {
       continue;
@@ -156,9 +178,8 @@ fn composite(@builtin(global_invocation_id) id: vec3u) {
       continue;
     }
     var s = to_u8(load_page(k, local, code & 0xffffu, params.level));
-    if (layer.w != 0u) {
+    if ((layer.w & 1u) != 0u) {
       // A mip pixel stands for a block of image pixels; the filter reads the block's center.
-      let scale = 1u << params.level;
       s = live_pixel(s, lp * scale + vec2u(scale >> 1u));
     }
     d = composite_pixel(d, s, layer.y, layer.z);

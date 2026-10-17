@@ -2,7 +2,14 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import initWasm from "@openpaint/cpu";
-import { rect, resampleSurface, Surface, TiledPixelStore } from "@openpaint/document";
+import {
+  composeFloating,
+  type FloatingComposeJob,
+  rect,
+  resampleSurface,
+  Surface,
+  TiledPixelStore,
+} from "@openpaint/document";
 import type { EffectDescriptor } from "@openpaint/extension-api";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { EffectBinding } from "./binding";
@@ -11,6 +18,7 @@ import {
   type CpuReply,
   type CpuWorkerLike,
   runCpuJob,
+  runCpuJobOutputs,
   WorkerCpuOffloader,
 } from "./cpu-offload";
 import { renderRegion } from "./render";
@@ -78,11 +86,17 @@ class FakeWorker implements CpuWorkerLike {
   reply(job: CpuJob): void {
     if (this.terminated) return;
     try {
-      const output = runCpuJob(job, this.bindings);
+      const [output, ...rest] = runCpuJobOutputs(job, this.bindings);
+      if (output === undefined) throw new Error("no output");
       const pixels = output.data.slice();
+      const more = rest.map((surface) => ({
+        width: surface.width,
+        height: surface.height,
+        pixels: surface.data.slice(),
+      }));
       this.onmessage?.({
-        data: { id: job.id, ok: true, width: output.width, height: output.height, pixels },
-      } as MessageEvent<CpuReply>);
+        data: { id: job.id, ok: true, width: output.width, height: output.height, pixels, more },
+      } as unknown as MessageEvent<CpuReply>);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       this.onmessage?.({ data: { id: job.id, ok: false, message } } as MessageEvent<CpuReply>);
@@ -180,6 +194,36 @@ describe("WorkerCpuOffloader", () => {
     const options = { filter: "bicubic", linearLight: false } as const;
     const output = await offloader.resample(source, 9, 3, options);
     expect(output).toEqual(resampleSurface(source, 9, 3, options));
+    expect(workers).toHaveLength(1);
+  });
+
+  it("computes a Move Selected Pixels commit in the worker exactly as here, stamps included", async () => {
+    const { offloader, workers } = offloaderWith();
+    const pixels = image(6, 4);
+    const turn = (angle: number, e: number) => ({
+      a: Math.cos(angle),
+      b: Math.sin(angle),
+      c: -Math.sin(angle),
+      d: Math.cos(angle),
+      e,
+      f: 3.2,
+    });
+    const job: FloatingComposeJob = {
+      pixels,
+      coverage: undefined,
+      outline: [[0, 0, 6, 0, 6, 4, 0, 4]],
+      quality: "antialiased",
+      area: rect(0, 0, 16, 12),
+      base: image(16, 12),
+      stamps: [{ transform: turn(0.3, 4.5), options: { sampling: "linear", linearLight: false } }],
+      placement: { transform: turn(0.8, 7.25), options: { sampling: "cubic", linearLight: true } },
+    };
+    const before = [...job.base.data];
+    const result = await offloader.composeFloating(job);
+    const here = composeFloating(job);
+    expect(result.drawn).toEqual(here.drawn);
+    expect(result.base).toEqual(here.base);
+    expect([...job.base.data]).toEqual(before);
     expect(workers).toHaveLength(1);
   });
 

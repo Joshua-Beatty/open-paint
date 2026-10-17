@@ -5,6 +5,8 @@ export * from "./clipboard";
 export * from "./color";
 export * from "./coverage-place";
 export * from "./document";
+export * from "./float-preview";
+export * from "./floating-compose";
 export * from "./format-extras";
 export * from "./geometry";
 export * from "./hatch-patterns";

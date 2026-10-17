@@ -1,5 +1,7 @@
 import {
   type ColorRgba8,
+  type FloatPlacement,
+  type LayerFloatPreview,
   type LayerLivePreview,
   type Rect,
   rect,
@@ -8,6 +10,7 @@ import {
   TILE_SIZE,
   type TileCoord,
   TiledPixelStore,
+  TRANSFORM_SAMPLINGS,
 } from "@openpaint/document";
 import {
   type CompositeDocument,
@@ -26,6 +29,8 @@ export interface MirroredLayer {
   readonly pixels: TiledPixelStore;
   /** The per-pixel adjustment shown over the layer while a dialog previews it. */
   readonly livePreview?: LayerLivePreview | undefined;
+  /** The floating content shown over the layer while Move Selected Pixels previews it. */
+  readonly floatPreview?: LayerFloatPreview | undefined;
 }
 
 /** The document as the main thread describes it: its size and layer stack, bottom to top. */
@@ -42,6 +47,49 @@ export interface SyncLayer {
   readonly mode: number;
   /** The live filter shown over the layer (`LayerLivePreview`), or absent for none. */
   readonly live?: SyncLive;
+  /** The floating content shown over the layer (`LayerFloatPreview`), or absent for none. */
+  readonly float?: SyncFloat;
+}
+
+/**
+ * One placement of floating content as it crosses to the worker: the transform `a, b, c, d, e, f`,
+ * the TL-OPT-RESAMP sampling id, and the moved shape as rings (`coords` in canvas pixels, `counts`
+ * vertices per ring).
+ */
+export interface SyncPlacement {
+  readonly transform: readonly number[];
+  readonly sampling: number;
+  readonly linearLight: boolean;
+  readonly coords: Float64Array;
+  readonly counts: Uint32Array;
+  readonly antialiased: boolean;
+}
+
+/** The floating content's pixels, straight RGBA8, and its coverage (one byte per pixel). */
+export interface SyncFloatContent {
+  readonly width: number;
+  readonly height: number;
+  readonly pixels: Uint8Array;
+  readonly coverage: Uint8Array | undefined;
+}
+
+/** The base the floating content is drawn onto, over `region` (canvas pixels). */
+export interface SyncFloatBase {
+  readonly region: Rect;
+  readonly pixels: Uint8Array;
+}
+
+/**
+ * A layer's floating content (`LayerFloatPreview`). The content and the base are sent once per
+ * key: later syncs carry only the placement, so a preview frame sends a transform (L9).
+ */
+export interface SyncFloat {
+  readonly contentKey: number;
+  readonly content?: SyncFloatContent;
+  readonly baseKey: number;
+  readonly base?: SyncFloatBase;
+  readonly placement: SyncPlacement;
+  readonly stamps: readonly SyncPlacement[];
 }
 
 /**
@@ -137,6 +185,9 @@ export class DocumentMirror {
   readonly #coverageKeys = new WeakMap<Uint8Array, number>();
   readonly #sentCoverage = new Map<number, number>();
   #nextCoverageKey = 0;
+  /** The keys of floating contents and bases, and the ones the worker holds per layer id. */
+  readonly #floatKeys = new WeakMap<object, number>();
+  readonly #sentFloat = new Map<number, { readonly content: number; readonly base: number }>();
 
   /** Makes the next description a full sync, e.g. after the engine lost its GPU document. */
   invalidate(): void {
@@ -172,16 +223,22 @@ export class DocumentMirror {
     const layers = doc?.layers ?? [];
     const size = `${width}x${height}`;
     const full = size !== this.#size;
-    if (full) this.#sentCoverage.clear();
+    if (full) {
+      this.#sentCoverage.clear();
+      this.#sentFloat.clear();
+    }
     const buffers: ArrayBuffer[] = [];
-    const stack: SyncLayer[] = layers.map(({ id, visible, opacity, blendMode, livePreview }) => {
-      const layer = { id, visible, opacity, mode: blendMode };
-      if (livePreview === undefined) {
-        this.#sentCoverage.delete(id);
+    const stack: SyncLayer[] = layers.map(
+      ({ id, visible, opacity, blendMode, livePreview, floatPreview }) => {
+        let layer: SyncLayer = { id, visible, opacity, mode: blendMode };
+        if (livePreview === undefined) this.#sentCoverage.delete(id);
+        else layer = { ...layer, live: this.#live(id, livePreview, buffers) };
+        if (floatPreview !== undefined) {
+          layer = { ...layer, float: this.#float(id, floatPreview, buffers) };
+        }
         return layer;
-      }
-      return { ...layer, live: this.#live(id, livePreview, buffers) };
-    });
+      },
+    );
     const reset = full
       ? []
       : layers.filter((layer) => this.#stores.get(layer.id) !== layer.pixels).map(({ id }) => id);
@@ -228,6 +285,55 @@ export class DocumentMirror {
   }
 
   /**
+   * The sync of a layer's floating content. The content and the base go as copies the first time
+   * the layer shows them, and as their keys alone after that (L9). The worker keeps the last ones
+   * it got per layer, also while no float is shown, so a session's next drag sends no pixels.
+   */
+  #float(id: number, preview: LayerFloatPreview, buffers: ArrayBuffer[]): SyncFloat {
+    const contentKey = this.#keyOf(preview.content);
+    const baseKey = this.#keyOf(preview.base);
+    const sent = this.#sentFloat.get(id);
+    const float: {
+      contentKey: number;
+      baseKey: number;
+      placement: SyncPlacement;
+      stamps: SyncPlacement[];
+      content?: SyncFloatContent;
+      base?: SyncFloatBase;
+    } = {
+      contentKey,
+      baseKey,
+      placement: syncPlacement(preview),
+      stamps: preview.stamps.map(syncPlacement),
+    };
+    if (sent?.content !== contentKey) {
+      const { pixels, coverage } = preview.content;
+      const bytes = new Uint8Array(pixels.data.slice().buffer);
+      const mask = coverage?.slice();
+      buffers.push(bytes.buffer);
+      if (mask !== undefined) buffers.push(mask.buffer);
+      float.content = { width: pixels.width, height: pixels.height, pixels: bytes, coverage: mask };
+    }
+    if (sent?.base !== baseKey) {
+      const bytes = new Uint8Array(preview.base.pixels.data.slice().buffer);
+      buffers.push(bytes.buffer);
+      float.base = { region: preview.base.region, pixels: bytes };
+    }
+    this.#sentFloat.set(id, { content: contentKey, base: baseKey });
+    return float;
+  }
+
+  #keyOf(item: object): number {
+    let key = this.#floatKeys.get(item);
+    if (key === undefined) {
+      this.#nextCoverageKey += 1;
+      key = this.#nextCoverageKey;
+      this.#floatKeys.set(item, key);
+    }
+    return key;
+  }
+
+  /**
    * The sync of a layer's live filter. Its coverage goes as a copy the first time the layer shows
    * it, and as its key alone after that (L9), so a dialog's preview sends only its parameters.
    */
@@ -251,6 +357,29 @@ export class DocumentMirror {
     buffers.push(bytes.buffer);
     return { effectId, params, region, coverageKey, coverage: bytes };
   }
+}
+
+/** A placement of floating content as the worker gets it. */
+export function syncPlacement(placement: FloatPlacement): SyncPlacement {
+  const { transform: m, options, shape, quality } = placement;
+  let vertices = 0;
+  for (const ring of shape) vertices += ring.length / 2;
+  const coords = new Float64Array(vertices * 2);
+  const counts = new Uint32Array(shape.length);
+  let at = 0;
+  shape.forEach((ring, index) => {
+    counts[index] = ring.length / 2;
+    coords.set(ring, at);
+    at += ring.length;
+  });
+  return {
+    transform: [m.a, m.b, m.c, m.d, m.e, m.f],
+    sampling: TRANSFORM_SAMPLINGS.indexOf(options.sampling),
+    linearLight: options.linearLight,
+    coords,
+    counts,
+    antialiased: quality === "antialiased",
+  };
 }
 
 /** A tile to send, with the store rectangle that changed in it when only that part is sent. */
@@ -303,11 +432,20 @@ export class DocumentReplica {
   #stores = new Map<number, TiledPixelStore>();
   #document: CompositeDocument = EMPTY_DOCUMENT;
   readonly #filters = new LiveFilterReplica();
+  readonly #floats = new FloatReplica();
+  #float: FloatLayer | undefined;
+
+  /** The floating content the last sync shows, drawn over its layer (TL-MOVE-PIX-01). */
+  get float(): FloatLayer | undefined {
+    return this.#float;
+  }
 
   /** Applies one sync and returns the document to draw, and what changed. */
   apply(sync: DocumentSync): ReplicaChange {
     const full =
       sync.full || sync.width !== this.#document.width || sync.height !== this.#document.height;
+    if (full) this.#floats.clear();
+    this.#float = this.#floats.apply(sync.layers);
     if (full) {
       for (const store of this.#stores.values()) store.dispose();
       this.#stores = new Map();
@@ -396,6 +534,69 @@ export class LiveFilterReplica {
     }
     this.#filters = next;
     return next;
+  }
+}
+
+/** A layer's floating content in the worker: the stored content and base, and the placements. */
+export interface FloatLayer {
+  readonly layerId: number;
+  /** The layer's place in the synced stack, bottom to top, hidden layers included. */
+  readonly index: number;
+  readonly contentKey: number;
+  readonly content: SyncFloatContent;
+  readonly baseKey: number;
+  readonly base: SyncFloatBase;
+  readonly placement: SyncPlacement;
+  readonly stamps: readonly SyncPlacement[];
+}
+
+/**
+ * The worker's floating contents (TL-MOVE-PIX-01). A content and a base come with the first sync of
+ * their keys and are kept per layer, also while the layer shows no float, so a session's next drag
+ * needs only its placement. One layer at a time shows one.
+ */
+export class FloatReplica {
+  readonly #contents = new Map<
+    number,
+    { readonly key: number; readonly value: SyncFloatContent }
+  >();
+  readonly #bases = new Map<number, { readonly key: number; readonly value: SyncFloatBase }>();
+
+  /** The float the synced stack shows, or undefined. */
+  apply(layers: readonly SyncLayer[]): FloatLayer | undefined {
+    const ids = new Set(layers.map((layer) => layer.id));
+    for (const map of [this.#contents, this.#bases]) {
+      for (const id of map.keys()) if (!ids.has(id)) map.delete(id);
+    }
+    let shown: FloatLayer | undefined;
+    layers.forEach(({ id, float }, index) => {
+      if (float === undefined) return;
+      if (float.content !== undefined) {
+        this.#contents.set(id, { key: float.contentKey, value: float.content });
+      }
+      if (float.base !== undefined) this.#bases.set(id, { key: float.baseKey, value: float.base });
+      const content = this.#contents.get(id);
+      const base = this.#bases.get(id);
+      if (shown !== undefined || content?.key !== float.contentKey || base?.key !== float.baseKey) {
+        return;
+      }
+      shown = {
+        layerId: id,
+        index,
+        contentKey: content.key,
+        content: content.value,
+        baseKey: base.key,
+        base: base.value,
+        placement: float.placement,
+        stamps: float.stamps,
+      };
+    });
+    return shown;
+  }
+
+  clear(): void {
+    this.#contents.clear();
+    this.#bases.clear();
   }
 }
 

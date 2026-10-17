@@ -2,6 +2,9 @@ import {
   type ColorRgba8,
   type Document,
   EMPTY_RECT,
+  type FloatingComposer,
+  type FloatingDisplay,
+  type FloatingPixels,
   intersectRects,
   isEmptyRect,
   type Layer,
@@ -118,6 +121,13 @@ export interface PaintHost {
    * (`FloatingPixels.setResampler`).
    */
   readonly transformResampler?: () => TransformResampler | undefined;
+  /**
+   * Draws a Move Selected Pixels session's previews on the engine's GPU over its layer, or
+   * undefined without one (`FloatingPixels.setDisplay`).
+   */
+  readonly floatDisplay?: (session: FloatingPixels) => FloatingDisplay | undefined;
+  /** Computes Move Selected Pixels steps off the main thread (`FloatingPixels.setComposer`). */
+  readonly floatComposer?: () => FloatingComposer | undefined;
 }
 
 /** The colors a stroke can draw with: the button's pair and the primary and secondary colors. */

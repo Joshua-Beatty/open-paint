@@ -1,3 +1,4 @@
+import type { Rect } from "@openpaint/document";
 import { identityPlan, POSTERIZE_OP, pixelAdjustment } from "@openpaint/effects";
 import type { LiveFilter } from "../composite";
 import { PARAMS_BYTES as ADJUST_PARAMS_BYTES, paramsBytes } from "../gpu-adjustment";
@@ -20,6 +21,8 @@ const PARAMS_STRIDE = 256;
 const GROUPS = Math.ceil(COMPOSITE_TILE_SIZE / 8);
 /** Bytes of the shader's `Live` uniform: the region, then the flags. */
 const LIVE_REGION_BYTES = 32;
+/** Bytes of the shader's `Float` uniform: the region, then the mip count. */
+const FLOAT_INFO_BYTES = 32;
 /** `GPUShaderStage.COMPUTE`; the DOM lib types WebGPU interfaces but not these globals. */
 const COMPUTE_STAGE = 0x4;
 
@@ -86,6 +89,10 @@ export class GpuCompositorV2 {
   /** The live filter the buffers hold, and the coverage they hold. */
   #live: LiveFilter | undefined;
   #liveCoverageBytes: Uint8Array | undefined;
+  /** The floating content's texture and region (`setFloat`), or a 1 px stand-in. */
+  readonly #floatInfo: GPUBuffer;
+  #floatView: GPUTextureView;
+  #floatStandIn: GPUTexture | undefined;
 
   /**
    * Results are premultiplied for presentation. `premultiply: false` keeps them straight, which
@@ -123,8 +130,16 @@ export class GpuCompositorV2 {
         { binding: 13, visibility: COMPUTE_STAGE, buffer: { type: "uniform" } },
         { binding: 14, visibility: COMPUTE_STAGE, buffer: { type: "uniform" } },
         { binding: 15, visibility: COMPUTE_STAGE, buffer: { type: "read-only-storage" } },
+        { binding: 16, visibility: COMPUTE_STAGE, texture: { sampleType: "float" } },
+        { binding: 17, visibility: COMPUTE_STAGE, buffer: { type: "uniform" } },
       ],
     });
+    this.#floatInfo = device.createBuffer({
+      label: "v2 float region",
+      size: FLOAT_INFO_BYTES,
+      usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
+    });
+    this.#floatView = this.#emptyFloat().createView();
     this.#liveParams = device.createBuffer({
       label: "v2 live filter adjustment",
       size: ADJUST_PARAMS_BYTES,
@@ -161,6 +176,7 @@ export class GpuCompositorV2 {
       format: "rgba8unorm",
       usage: TextureUsage.TEXTURE_BINDING,
     });
+    this.setFloat(undefined, undefined);
   }
 
   /** The texture array of blended tiles (premultiplied), for the presenter. */
@@ -205,6 +221,32 @@ export class GpuCompositorV2 {
   }
 
   /**
+   * Sets the floating content the layer flagged in the table shows over `region` (TL-MOVE-PIX-01),
+   * or none. The caller re-blends the tiles under it.
+   */
+  setFloat(texture: GPUTexture | undefined, region: Rect | undefined): void {
+    const info = new Uint32Array(8);
+    if (texture !== undefined && region !== undefined) {
+      info.set([region.x, region.y, region.width, region.height, texture.mipLevelCount]);
+      this.#floatView = texture.createView();
+    } else {
+      info[4] = 1;
+      this.#floatView = this.#emptyFloat().createView();
+    }
+    this.#device.queue.writeBuffer(this.#floatInfo, 0, info);
+  }
+
+  #emptyFloat(): GPUTexture {
+    this.#floatStandIn ??= this.#device.createTexture({
+      label: "v2 composite no float",
+      size: [1, 1],
+      format: "rgba8unorm",
+      usage: TextureUsage.TEXTURE_BINDING,
+    });
+    return this.#floatStandIn;
+  }
+
+  /**
    * Blends whatever `draws` need: tiles not cached yet and tiles marked dirty. Returns each draw's
    * slot. `extent` is the image size; `table` is the GPU document's current table.
    */
@@ -234,6 +276,8 @@ export class GpuCompositorV2 {
     this.#liveParams.destroy();
     this.#liveRegion.destroy();
     this.#liveCoverage.destroy();
+    this.#floatInfo.destroy();
+    this.#floatStandIn?.destroy();
   }
 
   #blend(
@@ -323,6 +367,8 @@ export class GpuCompositorV2 {
         { binding: 13, resource: { buffer: this.#liveParams } },
         { binding: 14, resource: { buffer: this.#liveRegion } },
         { binding: 15, resource: { buffer: this.#liveCoverage } },
+        { binding: 16, resource: this.#floatView },
+        { binding: 17, resource: { buffer: this.#floatInfo } },
       ],
     });
   }

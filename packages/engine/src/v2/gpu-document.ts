@@ -1,6 +1,9 @@
+import { type Rect, TILE_SIZE } from "@openpaint/document";
 import type { CompositeDocument, LiveFilter } from "../composite";
 import {
   type DocumentSync,
+  type FloatLayer,
+  FloatReplica,
   LiveFilterReplica,
   type SyncTile,
   tileFillBytes,
@@ -30,6 +33,8 @@ export class GpuDocument {
   readonly #filters = new LiveFilterReplica();
   /** The live filter the compositor applies, and its layer. One layer at a time has one. */
   #live: { readonly layerId: number; readonly filter: LiveFilter } | undefined;
+  readonly #floats = new FloatReplica();
+  #float: FloatLayer | undefined;
 
   /** `pageSlices` caps the tile pool's page size (tests use tiny pages). */
   constructor(
@@ -77,9 +82,34 @@ export class GpuDocument {
       this.#table.setLiveLayer(live?.[0]);
     }
     if (changed || freed.length > 0 || filterChanged) this.changes.stackChanged();
+    const float = this.#floats.apply(sync.layers);
+    if (float !== this.#float) {
+      // Each placement re-blends the tiles under the float's region, where it was and is now.
+      for (const shown of [this.#float, float]) {
+        if (shown !== undefined) this.#tilesChanged(shown.base.region);
+      }
+      this.#float = float;
+      this.#table.setFloatLayer(float?.layerId);
+    }
     for (const id of sync.reset ?? []) this.#emptyLayer(id);
     for (const { id, tiles } of sync.tiles) {
       for (const tile of tiles) this.writeTile(id, tile);
+    }
+  }
+
+  /** The floating content shown over a layer (TL-MOVE-PIX-01), or undefined. */
+  get float(): FloatLayer | undefined {
+    return this.#float;
+  }
+
+  #tilesChanged(region: Rect): void {
+    const table = this.#table;
+    const tx1 = Math.min(table.tilesX, Math.ceil((region.x + region.width) / TILE_SIZE));
+    const ty1 = Math.min(table.tilesY, Math.ceil((region.y + region.height) / TILE_SIZE));
+    for (let ty = Math.max(0, Math.floor(region.y / TILE_SIZE)); ty < ty1; ty++) {
+      for (let tx = Math.max(0, Math.floor(region.x / TILE_SIZE)); tx < tx1; tx++) {
+        this.changes.tileChanged(tx, ty);
+      }
     }
   }
 
@@ -144,6 +174,8 @@ export class GpuDocument {
     this.pool.reset();
     this.#pageOf.clear();
     this.#live = undefined;
+    this.#float = undefined;
+    this.#floats.clear();
     this.#table = new TileTable(width, height);
     this.changes.stackChanged();
   }

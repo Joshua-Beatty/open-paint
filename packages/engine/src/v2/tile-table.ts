@@ -24,8 +24,8 @@ export interface BuiltTable {
   /** Slot codes, `tilesX * tilesY` per active layer, bottom to top, `NO_TILE` where empty. */
   readonly table: Uint32Array;
   /**
-   * Four words per active layer: table offset, blend mode, opacity, and 1 when the compositor
-   * draws the layer through the live filter.
+   * Four words per active layer: table offset, blend mode, opacity, and flags: 1 when the
+   * compositor draws the layer through the live filter, 2 when floating content covers it.
    */
   readonly layers: Uint32Array;
   /** The pages each active layer's tiles use, bottom to top. */
@@ -45,6 +45,8 @@ export class TileTable {
   #built: BuiltTable | undefined;
   /** The layer the compositor shows through the live filter, if any. */
   #liveLayer: number | undefined;
+  /** The layer the compositor shows with floating content over it, if any. */
+  #floatLayer: number | undefined;
 
   constructor(
     readonly width: number,
@@ -102,6 +104,13 @@ export class TileTable {
   setLiveLayer(id: number | undefined): void {
     if (id === this.#liveLayer) return;
     this.#liveLayer = id;
+    this.#built = undefined;
+  }
+
+  /** Marks the layer the compositor draws floating content over (undefined for none). */
+  setFloatLayer(id: number | undefined): void {
+    if (id === this.#floatLayer) return;
+    this.#floatLayer = id;
     this.#built = undefined;
   }
 
@@ -171,7 +180,8 @@ export class TileTable {
       for (const [key, code] of layer.tiles) table[base + key] = code;
       for (const [key, code] of layer.overrides) table[base + key] = code;
       const live = layer.info.id === this.#liveLayer ? 1 : 0;
-      layers.set([base, layer.info.mode, layer.info.opacity, live], index * 4);
+      const float = layer.info.id === this.#floatLayer ? 2 : 0;
+      layers.set([base, layer.info.mode, layer.info.opacity, live | float], index * 4);
     });
     this.#built = {
       table,

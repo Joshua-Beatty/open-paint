@@ -56,6 +56,11 @@ export interface FrameTarget {
   finish(name: string): boolean;
   /** Records the current transform again under a new option (TL-FRAME-02). */
   rerender?(name: string): void;
+  /**
+   * While a step is still computed off this thread before it is recorded, a promise that settles
+   * once it is (`ToolRuntime.settling`). Calls made meanwhile run after it, in order.
+   */
+  settling?(): Promise<void> | undefined;
 }
 
 /** The history names of a frame tool (TL-MOVE-PIX-01, TL-MOVE-SEL-01), as catalog keys. */
@@ -116,6 +121,8 @@ class FrameRuntime implements ToolRuntime {
   readonly #frames: FrameCoalescer;
   /** The last pointer sample, which the cursor is chosen for. */
   #hover: ToolPointerEvent | undefined;
+  /** The settling of a target that ended while its last step was still computed. */
+  #leaving: Promise<void> | undefined;
 
   constructor(options: FrameToolOptions) {
     this.#options = options;
@@ -166,6 +173,11 @@ class FrameRuntime implements ToolRuntime {
 
   hasPending(): boolean {
     return this.#current() !== undefined;
+  }
+
+  /** The step of the target, or of the one just finished, still being computed before it is recorded. */
+  settling(): Promise<void> | undefined {
+    return this.#target?.settling?.() ?? this.#leaving;
   }
 
   /**
@@ -247,6 +259,14 @@ class FrameRuntime implements ToolRuntime {
   }
 
   #end(): void {
+    const leaving = this.#target?.settling?.();
+    if (leaving !== undefined) {
+      this.#leaving = leaving;
+      const clear = () => {
+        if (this.#leaving === leaving) this.#leaving = undefined;
+      };
+      leaving.then(clear, clear);
+    }
     this.#target = undefined;
     this.#drag = undefined;
     this.#frames.cancel();

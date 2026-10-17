@@ -1,4 +1,4 @@
-import { rect, TiledPixelStore } from "@openpaint/document";
+import { rect, Surface, TiledPixelStore } from "@openpaint/document";
 import { describe, expect, it } from "vitest";
 import {
   DocumentMirror,
@@ -144,6 +144,58 @@ describe("DocumentMirror and DocumentReplica", () => {
     expect(mirror.describe(withLive({ intensity: 60 })).layers[0]?.live?.coverage).toEqual(
       coverage,
     );
+  });
+
+  it("sends floating content and its base once per key, then only placements, without restacking", () => {
+    const layer = new TiledPixelStore(10, 10);
+    const mirror = new DocumentMirror();
+    const replica = new DocumentReplica();
+    const plain = documentOf(10, 10, [{ id: 1, pixels: layer }]);
+    const first = replica.apply(mirror.describe(plain)).document;
+    const pixels = new Surface(4, 3);
+    pixels.fill(RED);
+    const content = { pixels, coverage: new Uint8Array(12).fill(255) };
+    const base = { region: rect(0, 0, 256, 256), pixels: new Surface(256, 256) };
+    const withFloat = (e: number) => ({
+      ...plain,
+      layers: plain.layers.map((entry) => ({
+        ...entry,
+        floatPreview: {
+          content,
+          base,
+          transform: { a: 1, b: 0, c: 0, d: 1, e, f: 2 },
+          options: { sampling: "cubic" as const, linearLight: true },
+          shape: [[0, 0, 4, 0, 4, 3]],
+          quality: "antialiased" as const,
+          stamps: [],
+        },
+      })),
+    });
+
+    const sync = mirror.describe(withFloat(1.5));
+    expect(sync.layers[0]?.float?.content?.pixels.length).toBe(48);
+    expect(sync.layers[0]?.float?.base?.region).toEqual(rect(0, 0, 256, 256));
+    const shown = replica.apply(sync);
+    expect(shown.restacked).toBe(false);
+    expect(shown.document).toBe(first);
+    expect(replica.float).toMatchObject({ layerId: 1, index: 0 });
+    expect(replica.float?.placement.transform).toEqual([1, 0, 0, 1, 1.5, 2]);
+    expect(replica.float?.placement.sampling).toBe(4);
+
+    const next = mirror.describe(withFloat(2.5));
+    expect(next.layers[0]?.float?.content).toBeUndefined();
+    expect(next.layers[0]?.float?.base).toBeUndefined();
+    replica.apply(next);
+    expect(replica.float?.placement.transform[4]).toBe(2.5);
+    expect(replica.float?.content.pixels.length).toBe(48);
+
+    // Taken down, the worker keeps the content: shown again, only the placement goes.
+    replica.apply(mirror.describe(plain));
+    expect(replica.float).toBeUndefined();
+    const again = mirror.describe(withFloat(3));
+    expect(again.layers[0]?.float?.content).toBeUndefined();
+    replica.apply(again);
+    expect(replica.float?.placement.transform[4]).toBe(3);
   });
 
   it("empties a layer whose store is replaced, and drops deleted layers", () => {

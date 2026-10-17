@@ -1,4 +1,11 @@
-import { type ResampleOptions, resampleSurface, Surface } from "@openpaint/document";
+import {
+  composeFloating,
+  type FloatingComposeJob,
+  type FloatingComposeResult,
+  type ResampleOptions,
+  resampleSurface,
+  Surface,
+} from "@openpaint/document";
 import type { EffectBinding } from "./binding";
 
 /**
@@ -29,9 +36,30 @@ export interface ResampleCpuJob {
   readonly options: ResampleOptions;
 }
 
-export type CpuJob = EffectCpuJob | ResampleCpuJob;
+/** Pixels as they cross to or from a worker. */
+export interface CpuPixels {
+  readonly width: number;
+  readonly height: number;
+  readonly pixels: Uint8ClampedArray<ArrayBuffer>;
+}
 
-/** The worker's answer to one job: the output pixels, or the message of the error it threw. */
+/**
+ * A Move Selected Pixels commit (`composeFloating`), with copies of the content and the base that
+ * the worker owns. Its reply is the area as recorded, then the base with the stamps drawn into it.
+ */
+export interface FloatCpuJob extends Omit<FloatingComposeJob, "pixels" | "base"> {
+  readonly kind: "float";
+  readonly id: number;
+  readonly content: CpuPixels;
+  readonly baseIn: CpuPixels;
+}
+
+export type CpuJob = EffectCpuJob | ResampleCpuJob | FloatCpuJob;
+
+/**
+ * The worker's answer to one job: the output pixels (and, for jobs with several outputs, the
+ * others in `more`), or the message of the error it threw.
+ */
 export type CpuReply =
   | {
       readonly id: number;
@@ -39,19 +67,43 @@ export type CpuReply =
       readonly width: number;
       readonly height: number;
       readonly pixels: Uint8ClampedArray<ArrayBuffer>;
+      readonly more?: readonly CpuPixels[];
     }
   | { readonly id: number; readonly ok: false; readonly message: string };
 
 /** Runs a job in this realm. The worker calls it with the built-in bindings it has loaded. */
 export function runCpuJob(job: CpuJob, bindings: readonly EffectBinding<unknown>[]): Surface {
+  return runCpuJobOutputs(job, bindings)[0] as Surface;
+}
+
+/** Every output of a job, the main one first. */
+export function runCpuJobOutputs(
+  job: CpuJob,
+  bindings: readonly EffectBinding<unknown>[],
+): Surface[] {
   if (job.kind === "resample") {
     const source = new Surface(job.width, job.height, job.pixels);
-    return resampleSurface(source, job.targetWidth, job.targetHeight, job.options);
+    return [resampleSurface(source, job.targetWidth, job.targetHeight, job.options)];
+  }
+  if (job.kind === "float") {
+    const { content, baseIn, kind: _kind, id: _id, ...rest } = job;
+    const result = composeFloating({
+      ...rest,
+      pixels: new Surface(content.width, content.height, content.pixels),
+      base: new Surface(baseIn.width, baseIn.height, baseIn.pixels),
+    });
+    return job.stamps.length > 0 ? [result.drawn, result.base] : [result.drawn];
   }
   const binding = bindings.find((item) => item.descriptor.id === job.effectId);
   if (binding === undefined) throw new Error(`No CPU implementation for "${job.effectId}".`);
   const input = new Surface(job.width, job.height, job.pixels);
-  return binding.cpu(input, job.params, job.coverage);
+  return [binding.cpu(input, job.params, job.coverage)];
+}
+
+/** `surface`'s pixels as one transferable buffer of their own. */
+export function ownedPixels(surface: Surface): Uint8ClampedArray<ArrayBuffer> {
+  const data = surface.data as Uint8ClampedArray<ArrayBuffer>;
+  return data.byteOffset === 0 && data.byteLength === data.buffer.byteLength ? data : data.slice();
 }
 
 /** Runs CPU effects off the main thread (WEB-GPU-06, PRD-NF-02). */
@@ -82,8 +134,12 @@ export interface WorkerCpuOffloaderOptions {
 }
 
 interface PendingJob {
-  readonly resolve: (surface: Surface) => void;
+  readonly resolve: (surfaces: Surface[]) => void;
   readonly reject: (error: Error) => void;
+}
+
+function first(surfaces: Surface[]): Surface {
+  return surfaces[0] as Surface;
 }
 
 function abortError(): Error {
@@ -134,7 +190,9 @@ export class WorkerCpuOffloader implements CpuOffloader {
     };
     const transfer: Transferable[] = [pixels.buffer];
     if (mask !== undefined) transfer.push(mask.buffer);
-    return this.#dispatch(job, transfer, signal, () => binding.cpu(input, params, coverage));
+    return this.#dispatch(job, transfer, signal, () => [binding.cpu(input, params, coverage)]).then(
+      first,
+    );
   }
 
   /** Resamples `source` in the worker (DOC-IMG-02). The source is copied, so it is unchanged. */
@@ -155,9 +213,29 @@ export class WorkerCpuOffloader implements CpuOffloader {
       targetHeight: height,
       options,
     };
-    return this.#dispatch(job, [pixels.buffer], undefined, () =>
+    return this.#dispatch(job, [pixels.buffer], undefined, () => [
       resampleSurface(source, width, height, options),
-    );
+    ]).then(first);
+  }
+
+  /**
+   * Computes a Move Selected Pixels commit in the worker (`composeFloating`), with the same
+   * reference, so the result is byte-identical to computing it here. The content and the base are
+   * copied, so they are unchanged.
+   */
+  composeFloating(job: FloatingComposeJob): Promise<FloatingComposeResult> {
+    const { pixels, base, ...rest } = job;
+    const content = { width: pixels.width, height: pixels.height, pixels: pixels.data.slice() };
+    const baseIn = { width: base.width, height: base.height, pixels: base.data.slice() };
+    const message: FloatCpuJob = { ...rest, kind: "float", id: this.#takeId(), content, baseIn };
+    const transfer = [content.pixels.buffer, baseIn.pixels.buffer];
+    return this.#dispatch(message, transfer, undefined, () => {
+      const result = composeFloating(job);
+      return [result.drawn, result.base];
+    }).then(([drawn, stamped]) => ({
+      drawn: drawn as Surface,
+      base: job.stamps.length > 0 && stamped !== undefined ? stamped : base,
+    }));
   }
 
   #takeId(): number {
@@ -174,20 +252,20 @@ export class WorkerCpuOffloader implements CpuOffloader {
     job: CpuJob,
     transfer: Transferable[],
     signal: AbortSignal | undefined,
-    inline: () => Surface,
-  ): Promise<Surface> {
+    inline: () => Surface[],
+  ): Promise<Surface[]> {
     try {
       this.#ownWorker().postMessage({ job }, transfer);
     } catch {
-      return new Promise<Surface>((resolve) => resolve(inline()));
+      return new Promise<Surface[]>((resolve) => resolve(inline()));
     }
-    return new Promise<Surface>((resolve, reject) => {
+    return new Promise<Surface[]>((resolve, reject) => {
       const onAbort = () => this.#cancelAll();
       const settle = () => signal?.removeEventListener("abort", onAbort);
       this.#pending.set(job.id, {
-        resolve: (surface) => {
+        resolve: (surfaces) => {
           settle();
-          resolve(surface);
+          resolve(surfaces);
         },
         reject: (error) => {
           settle();
@@ -207,7 +285,10 @@ export class WorkerCpuOffloader implements CpuOffloader {
       if (pending === undefined) return;
       this.#pending.delete(reply.id);
       if (reply.ok) {
-        pending.resolve(new Surface(reply.width, reply.height, reply.pixels));
+        pending.resolve([
+          new Surface(reply.width, reply.height, reply.pixels),
+          ...(reply.more ?? []).map((more) => new Surface(more.width, more.height, more.pixels)),
+        ]);
       } else {
         pending.reject(new Error(reply.message));
       }

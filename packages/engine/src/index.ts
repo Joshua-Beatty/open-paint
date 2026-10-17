@@ -47,12 +47,17 @@ export {
   DocumentMirror,
   DocumentReplica,
   type DocumentSync,
+  type FloatLayer,
+  FloatReplica,
   type MirroredDocument,
   type MirroredLayer,
   type ReplicaChange,
+  type SyncFloat,
+  type SyncPlacement,
 } from "./document-sync";
 export { Engine, type EngineHost } from "./engine";
 export { engineError } from "./engine-host";
+export { engineShowsFloat, FloatDisplay, floatStackSupported } from "./float-display";
 export {
   type CanvasStyle,
   type CanvasTheme,
@@ -81,6 +86,8 @@ export {
 } from "./gpu-effect-protocol";
 export { GPU_RUNNER_IDS, GpuEffectError, GpuEffectQueue, GpuEffects } from "./gpu-effects";
 export { EngineGpuOffloader, type GpuEffectPort } from "./gpu-effects-client";
+export { coveredRect, FloatGpu, floatFits } from "./gpu-float";
+export { checkFloat, FLOAT_CASES } from "./gpu-float-checks";
 export { GpuJulia, GpuMandelbrot } from "./gpu-fractal";
 export { GpuFrostedGlass } from "./gpu-frosted-glass";
 export { GpuGaussianBlur } from "./gpu-gaussian-blur";

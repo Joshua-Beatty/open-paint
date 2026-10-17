@@ -8,6 +8,12 @@ import type { ClipboardImage } from "./clipboard";
 import { rgba8, WHITE } from "./color";
 import { placeByCoverage } from "./coverage-place";
 import { Document } from "./document";
+import {
+  composeFloating,
+  type FloatingComposeJob,
+  type FloatingComposeResult,
+  type FloatingComposer,
+} from "./floating-compose";
 import { rect } from "./geometry";
 import type { Layer } from "./layer";
 import { MemoryAccountant, OutOfMemoryError } from "./memory";
@@ -621,5 +627,160 @@ describe("Move Selected Pixels previews resampled elsewhere (L7)", () => {
     calls[0]?.release();
     await settle();
     expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual(before);
+  });
+});
+
+describe("Move Selected Pixels previews over the layer, committed off the main thread (L2, L7)", () => {
+  const all = (target: Layer) => [...target.pixels.readRegion(target.pixels.bounds).data];
+  const turn = (session: { readonly transform: { e: number; f: number } }, angle = 0.4) => ({
+    a: Math.cos(angle),
+    b: Math.sin(angle),
+    c: -Math.sin(angle),
+    d: Math.cos(angle),
+    e: session.transform.e + 1.3,
+    f: session.transform.f + 0.2,
+  });
+  const display = (available = () => true) => ({ available });
+
+  /** A composer whose jobs wait until `release` runs them with the reference. */
+  function pendingComposer() {
+    const jobs: { readonly job: FloatingComposeJob; readonly release: () => void }[] = [];
+    const composer: FloatingComposer = (job) =>
+      new Promise<FloatingComposeResult>((resolve) => {
+        jobs.push({ job, release: () => resolve(composeFloating(job)) });
+      });
+    return { jobs, composer };
+  }
+
+  function lifted() {
+    const made = selectedDocument();
+    const session = made.doc.liftSelectedPixels();
+    if (session === undefined) throw new Error("nothing lifted");
+    return { ...made, session };
+  }
+
+  it("sends only the transform per preview: the layer keeps its pixels", () => {
+    const { doc, layer, session } = lifted();
+    session.setDisplay(display());
+    const before = all(layer);
+    const m = turn(session);
+    session.preview(m);
+    expect(all(layer)).toEqual(before);
+    const float = layer.floatPreview;
+    expect(float?.transform).toEqual(m);
+    expect(float?.shape.length).toBe(1);
+    expect(float?.base.region).toEqual(rect(0, 0, 256, 256));
+    expect(doc.selection.bounds()).not.toEqual(rect(2, 2, 4, 4));
+    // The content and the base are the same objects from frame to frame.
+    const content = float?.content;
+    session.preview(turn(session, 0.5));
+    expect(layer.floatPreview?.content).toBe(content);
+    expect(layer.floatPreview?.base).toBe(float?.base);
+    // A whole-pixel move needs no shape: the content's own coverage places it.
+    session.preview(translationAffine(5, 6));
+    expect(layer.floatPreview?.shape).toEqual([]);
+  });
+
+  it("records, after the composer lands, exactly what the reference records", async () => {
+    const { doc, layer, session } = lifted();
+    const reference = lifted();
+    const { jobs, composer } = pendingComposer();
+    session.setDisplay(display());
+    session.setComposer(composer);
+    const m = turn(session);
+    session.preview(m);
+    expect(session.commit("Rotate Pixels")).toBe(true);
+    const settling = session.settling();
+    expect(settling).toBeDefined();
+    expect(jobs).toHaveLength(1);
+    // The history is held and the preview stays up until the result lands.
+    expect(() => doc.history.assertIdle()).toThrow();
+    expect(layer.floatPreview).toBeDefined();
+    // A call meanwhile waits for it.
+    session.preview(translationAffine(9, 9));
+    expect(layer.floatPreview?.transform).toEqual(m);
+    jobs[0]?.release();
+    await settling;
+    expect(session.settling()).toBeUndefined();
+    reference.session.preview(m);
+    reference.session.commit("Rotate Pixels");
+    expect(doc.history.undoName).toBe("Rotate Pixels");
+    // The waiting preview ran after the record.
+    expect(layer.floatPreview?.transform).toEqual(translationAffine(9, 9));
+    session.cancel();
+    expect(layer.floatPreview).toBeUndefined();
+    expect(all(layer)).toEqual(all(reference.layer));
+    await doc.history.undo();
+    await reference.doc.history.undo();
+    expect(all(layer)).toEqual(all(reference.layer));
+  });
+
+  it("draws Ctrl-drag copies into the base on commit as the reference does", async () => {
+    const { layer, session } = lifted();
+    const reference = lifted();
+    const { jobs, composer } = pendingComposer();
+    session.setDisplay(display());
+    session.setComposer(composer);
+    for (const target of [session, reference.session]) {
+      target.preview(turn(target, 0.3));
+      target.stamp();
+      target.preview(translationAffine(9, 8));
+      target.commit("Move Pixels");
+    }
+    expect(layer.floatPreview?.stamps).toHaveLength(1);
+    expect(jobs[0]?.job.stamps).toHaveLength(1);
+    jobs[0]?.release();
+    await session.settling();
+    expect(layer.floatPreview).toBeUndefined();
+    expect(all(layer)).toEqual(all(reference.layer));
+    // The stamped base carries on into the next step.
+    for (const target of [session, reference.session]) {
+      target.preview(translationAffine(1, 1));
+      target.commit("Move Pixels");
+    }
+    expect(all(layer)).toEqual(all(reference.layer));
+  });
+
+  it("cancels to the committed state without writing the layer", () => {
+    const { layer, session } = lifted();
+    session.setDisplay(display());
+    const before = all(layer);
+    let writes = 0;
+    const write = layer.pixels.writeRegion.bind(layer.pixels);
+    layer.pixels.writeRegion = (surface, dx, dy) => {
+      writes++;
+      return write(surface, dx, dy);
+    };
+    session.preview(turn(session));
+    session.stamp();
+    session.cancel();
+    expect(writes).toBe(0);
+    expect(layer.floatPreview).toBeUndefined();
+    expect(all(layer)).toEqual(before);
+  });
+
+  it("goes back to writing the layer when the display goes away", () => {
+    const { layer, session } = lifted();
+    const reference = lifted();
+    let available = true;
+    session.setDisplay(display(() => available));
+    session.preview(turn(session));
+    available = false;
+    const m = turn(session, 0.7);
+    session.preview(m);
+    reference.session.preview(m);
+    expect(layer.floatPreview).toBeUndefined();
+    expect(all(layer)).toEqual(all(reference.layer));
+  });
+
+  it("takes the preview down once an undo ends the session", async () => {
+    const { doc, layer, session } = lifted();
+    session.setDisplay(display());
+    session.preview(translationAffine(4, 4));
+    session.commit("Move Pixels");
+    session.preview(turn(session));
+    await doc.history.undo();
+    expect(session.live).toBe(false);
+    expect(layer.floatPreview).toBeUndefined();
   });
 });

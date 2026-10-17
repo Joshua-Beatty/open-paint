@@ -188,6 +188,7 @@ export function serveEngine(
       if (full) running.setDocument(document);
       else if (restacked) running.restack(document);
       else running.render();
+      running.setFloat(replica.float);
       return undefined;
     },
     view: (command) => started().view(command),

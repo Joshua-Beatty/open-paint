@@ -11,7 +11,12 @@ import {
   documentThumbnail,
 } from "@openpaint/document";
 import { builtinEffectBindings, EffectMemory, registerBuiltinEffects } from "@openpaint/effects";
-import { type EngineError, EngineGpuOffloader, type EngineHandle } from "@openpaint/engine";
+import {
+  type EngineError,
+  EngineGpuOffloader,
+  type EngineHandle,
+  engineShowsFloat,
+} from "@openpaint/engine";
 import { EffectRegistry } from "@openpaint/extension-api";
 import { useTranslation } from "@openpaint/i18n/react";
 import {
@@ -627,6 +632,26 @@ export function App({
         ? (source, spec, signal) => gpu.transform(source, spec, signal)
         : undefined;
     },
+    floatDisplay: (session) => ({
+      available: () => {
+        const handle = engineRef.current;
+        const document = images.active?.value.document;
+        if (handle === undefined || document === undefined) return false;
+        const layers = document.layers.map(({ visible, opacity, blendMode }) => ({
+          visible,
+          opacity,
+          mode: blendMode,
+        }));
+        return engineShowsFloat(
+          handle.status,
+          layers,
+          document.layers.indexOf(session.layer),
+          session.size,
+          document,
+        );
+      },
+    }),
+    floatComposer: () => (job) => cpuOffloader().composeFloating(job),
   };
   useEffect(() => {
     settingsRef.current = settings;
