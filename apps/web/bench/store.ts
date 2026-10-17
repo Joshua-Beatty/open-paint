@@ -42,6 +42,12 @@ export const SCENARIO_IDS = [
   "B16",
   "B17",
   "B18",
+  "B19a",
+  "B19b",
+  "B20a",
+  "B20b",
+  "B21",
+  "B22",
 ] as const;
 
 /** Inside Playwright's output folder, which is emptied at the start of every run. */

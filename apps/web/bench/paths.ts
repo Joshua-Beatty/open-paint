@@ -147,6 +147,21 @@ export function circlePath(center: Point, radius: number, turns: number, moves: 
   });
 }
 
+/**
+ * A fast scribble over `area` (CSS pixels): a Lissajous figure with 5 horizontal and 3 vertical
+ * sweeps across 80 % of the area, sent as `moves` moves. It starts and ends at the area's center.
+ */
+export function scribblePath(area: Box, moves: number): Point[] {
+  const center = { x: area.x + area.width / 2, y: area.y + area.height / 2 };
+  return Array.from({ length: moves + 1 }, (_, index) => {
+    const t = (2 * Math.PI * index) / moves;
+    return {
+      x: center.x + area.width * 0.4 * Math.sin(5 * t),
+      y: center.y + area.height * 0.4 * Math.sin(3 * t),
+    };
+  });
+}
+
 /** `count` evenly spaced points from `from` to `to`, after `from` itself. */
 export function linePath(from: Point, to: Point, count: number): Point[] {
   return Array.from({ length: count }, (_, index) => {

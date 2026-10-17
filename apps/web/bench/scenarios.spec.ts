@@ -28,6 +28,7 @@ import {
   imageToCss,
   linePath,
   panPath,
+  scribblePath,
   sliderPath,
   sliderSweepPath,
   spiralPath,
@@ -837,6 +838,149 @@ scenario(
     await page.mouse.up();
     const result = await endGesture(page, from);
     notes.push(await stopSliderWatch(page, sendMs));
+    return result;
+  },
+);
+
+/** B19: the Pencil (default width) scribbled fast over the visible image for 2 s. */
+async function pencilScribble(page: Page, setup: Setup, notes: string[], large: boolean) {
+  const { layout, devicePixelRatio, box } = await openImage(page, setup, large);
+  await page.getByRole("radio", { name: "Pencil", exact: true }).click();
+  const [first, ...moves] = scribblePath(visibleImage(box, layout, devicePixelRatio), DRAG_MOVES);
+  Object.assign(setup, { moves: DRAG_MOVES, inputHz: INPUT_HZ });
+  if (first === undefined) throw new Error("The scribble has no points.");
+  await page.mouse.move(first.x, first.y);
+  const from = await beginGesture(page);
+  await page.mouse.down();
+  setup.sendMs = Math.round(await paceMoves(page, moves, INPUT_HZ));
+  await page.mouse.up();
+  const result = await endGesture(page, from);
+  const step = (await lastHistoryItem(page).textContent()) ?? "";
+  setup.historyStep = step;
+  if (step !== "Pencil") notes.push(`the stroke was not recorded (last history item: ${step})`);
+  return result;
+}
+
+scenario("B19a", "Pencil scribbled fast for 2 s, default image", (page, setup, notes) =>
+  pencilScribble(page, setup, notes, false),
+);
+
+scenario("B19b", "Pencil scribbled fast for 2 s, 4000 x 3000", (page, setup, notes) =>
+  pencilScribble(page, setup, notes, true),
+);
+
+/**
+ * B20: a pending rectangle outline over the middle 40 % of the image, dragged by its body in fast
+ * circles for 2 s, so the whole shape moves on every frame (TL-SHAPE-01).
+ */
+/** A quarter turn more than whole circles, so the shape ends moved and the move is recorded. */
+const BODY_TURNS = 4.25;
+
+async function shapeBodyDrag(page: Page, setup: Setup, notes: string[], large: boolean) {
+  const { layout, devicePixelRatio, box } = await openImage(page, setup, large);
+  await page.getByRole("radio", { name: "Shapes", exact: true }).click();
+  const image = visibleImage(box, layout, devicePixelRatio);
+  const a = { x: image.x + image.width * 0.3, y: image.y + image.height * 0.3 };
+  const b = { x: image.x + image.width * 0.7, y: image.y + image.height * 0.7 };
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await paceMoves(page, linePath(a, b, 20), INPUT_HZ);
+  await page.mouse.up();
+  await idle(page, SETUP_CAP_MS);
+  // Inside the frame, a quarter of the way in from its top-left corner: the body.
+  const press = { x: a.x + (b.x - a.x) * 0.25, y: a.y + (b.y - a.y) * 0.25 };
+  const radius = Math.min(image.width, image.height) * 0.15;
+  const circles = circlePath(
+    { x: press.x - radius, y: press.y },
+    radius,
+    BODY_TURNS,
+    DRAG_MOVES,
+  ).slice(1);
+  Object.assign(setup, { moves: circles.length, turns: BODY_TURNS, inputHz: INPUT_HZ });
+  await page.mouse.move(press.x, press.y);
+  const from = await beginGesture(page);
+  await page.mouse.down();
+  setup.sendMs = Math.round(await paceMoves(page, circles, INPUT_HZ));
+  await page.mouse.up();
+  const result = await endGesture(page, from);
+  const step = (await lastHistoryItem(page).textContent()) ?? "";
+  setup.historyStep = step;
+  if (!step.startsWith("Adjust"))
+    notes.push(`the move was not recorded (last history item: ${step})`);
+  return result;
+}
+
+scenario("B20a", "Pending shape dragged by its body in fast circles, default image", (p, s, n) =>
+  shapeBodyDrag(p, s, n, false),
+);
+
+scenario("B20b", "Pending shape dragged by its body in fast circles, 4000 x 3000", (p, s, n) =>
+  shapeBodyDrag(p, s, n, true),
+);
+
+/**
+ * B21: Rectangle Select drawn from the image's top-left quarter, its far corner circling fast for
+ * 2 s on 4000 x 3000, so the selection outline changes on every frame.
+ */
+scenario(
+  "B21",
+  "Rectangle Select corner dragged in fast circles, 4000 x 3000",
+  async (page, setup, notes) => {
+    const { layout, devicePixelRatio, box } = await openImage(page, setup, true);
+    await page.getByRole("radio", { name: "Rectangle Select", exact: true }).click();
+    const image = visibleImage(box, layout, devicePixelRatio);
+    const start = { x: image.x + image.width * 0.2, y: image.y + image.height * 0.2 };
+    const center = { x: image.x + image.width * 0.6, y: image.y + image.height * 0.6 };
+    const radius = Math.min(image.width, image.height) * 0.2;
+    const moves = [
+      ...linePath(start, { x: center.x + radius, y: center.y }, 12),
+      ...circlePath(center, radius, CIRCLE_TURNS - 2, DRAG_MOVES).slice(1),
+    ];
+    Object.assign(setup, { moves: moves.length, inputHz: INPUT_HZ });
+    await page.mouse.move(start.x, start.y);
+    const from = await beginGesture(page);
+    await page.mouse.down();
+    setup.sendMs = Math.round(await paceMoves(page, moves, INPUT_HZ));
+    await page.mouse.up();
+    const result = await endGesture(page, from);
+    const step = (await lastHistoryItem(page).textContent()) ?? "";
+    setup.historyStep = step;
+    if (step !== "Rectangle Select")
+      notes.push(`the selection was not recorded (last history item: ${step})`);
+    return result;
+  },
+);
+
+/** B22: Move Selection (the outline only) after a rectangle selection, 2 s drag on 4000 x 3000. */
+scenario(
+  "B22",
+  "Move Selection outline, 2 s drag at fit-to-window, 4000 x 3000",
+  async (page, setup, notes) => {
+    const { layout, devicePixelRatio, box } = await openImage(page, setup, true);
+    await page.getByRole("radio", { name: "Rectangle Select", exact: true }).click();
+    const image = visibleImage(box, layout, devicePixelRatio);
+    const a = { x: image.x + image.width * 0.25, y: image.y + image.height * 0.25 };
+    const b = { x: image.x + image.width * 0.6, y: image.y + image.height * 0.6 };
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await paceMoves(page, linePath(a, b, 12), INPUT_HZ);
+    await page.mouse.up();
+    await idle(page, SETUP_CAP_MS);
+    await page.getByRole("radio", { name: "Move Selection", exact: true }).click();
+    const press = { x: a.x + (b.x - a.x) * 0.3, y: a.y + (b.y - a.y) * 0.3 };
+    const [first, ...moves] = dragPath(press, MOVE_DRAG_CSS, DRAG_MOVES);
+    Object.assign(setup, { moves: DRAG_MOVES, inputHz: INPUT_HZ });
+    if (first === undefined) throw new Error("The drag has no points.");
+    await page.mouse.move(first.x, first.y);
+    const from = await beginGesture(page);
+    await page.mouse.down();
+    setup.sendMs = Math.round(await paceMoves(page, moves, INPUT_HZ));
+    await page.mouse.up();
+    const result = await endGesture(page, from);
+    const step = (await lastHistoryItem(page).textContent()) ?? "";
+    setup.historyStep = step;
+    if (step !== "Move Selection")
+      notes.push(`the move was not recorded (last history item: ${step})`);
     return result;
   },
 );

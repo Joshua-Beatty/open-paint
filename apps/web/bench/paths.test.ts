@@ -7,6 +7,7 @@ import {
   imageToCss,
   linePath,
   panPath,
+  scribblePath,
   sliderPath,
   sliderSweepPath,
   strokePath,
@@ -99,6 +100,23 @@ describe("circlePath", () => {
     expect(path[2]?.x).toBeCloseTo(50);
     expect(path[4]?.x).toBeCloseTo(150);
     expect(path.at(-1)?.x).toBeCloseTo(150);
+  });
+});
+
+describe("scribblePath", () => {
+  it("stays inside the area and starts and ends at its center", () => {
+    const area = { x: 10, y: 20, width: 400, height: 300 };
+    const path = scribblePath(area, 240);
+    expect(path).toHaveLength(241);
+    expect(path[0]).toEqual({ x: 210, y: 170 });
+    expect(path.at(-1)?.x).toBeCloseTo(210);
+    expect(path.at(-1)?.y).toBeCloseTo(170);
+    for (const point of path) {
+      expect(point.x).toBeGreaterThanOrEqual(area.x + area.width * 0.1 - 1e-9);
+      expect(point.x).toBeLessThanOrEqual(area.x + area.width * 0.9 + 1e-9);
+      expect(point.y).toBeGreaterThanOrEqual(area.y + area.height * 0.1 - 1e-9);
+      expect(point.y).toBeLessThanOrEqual(area.y + area.height * 0.9 + 1e-9);
+    }
   });
 });
 
