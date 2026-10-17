@@ -176,6 +176,15 @@ const CHROME_BYTES = 80;
 const FRAME_BYTES = 16;
 /** Floats per tile draw in the quad storage buffer: destination and source rectangles. */
 const QUAD_FLOATS = 8;
+/** Tile textures kept for reuse after their tiles leave the view (64 KB each). */
+const MAX_SPARE_TEXTURES = 64;
+
+/** A tile's texture on the GPU, the tile it holds now, and its bind groups per sampling. */
+interface TileTexture {
+  tile: DisplayTile;
+  readonly texture: GPUTexture;
+  readonly groups: Partial<Record<Sampling, GPUBindGroup>>;
+}
 const BLEND = {
   color: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
   alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
@@ -292,7 +301,9 @@ export class GpuPresenter implements Presenter {
   readonly #chromeBuffer: GPUBuffer;
   readonly #frameBuffer: GPUBuffer;
   readonly #samplers: Record<Sampling, GPUSampler>;
-  readonly #textures = new Map<string, { tile: DisplayTile; texture: GPUTexture }>();
+  readonly #textures = new Map<string, TileTexture>();
+  /** Textures of tiles that left the view, reused before new ones are created. */
+  readonly #spare: GPUTexture[] = [];
   #quads: GPUBuffer;
   #quadCapacity = 1;
 
@@ -417,7 +428,8 @@ export class GpuPresenter implements Presenter {
   }
 
   trim(): void {
-    this.#releaseUnused(new Set());
+    this.#releaseUnused(new Set(), false);
+    for (const texture of this.#spare.splice(0)) texture.destroy();
   }
 
   #createQuads(draws: number): GPUBuffer {
@@ -435,39 +447,61 @@ export class GpuPresenter implements Presenter {
     this.#quads = this.#createQuads(this.#quadCapacity);
   }
 
+  /**
+   * The bind group of a tile draw. A tile's texture is uploaded when the tile first shows or its
+   * content changed (a new tile object), into the texture its position already had or a spare one,
+   * so edits and pans do not create and destroy textures every frame. Bind groups are kept per
+   * texture and sampling.
+   */
   #tileGroup(draw: TileDraw): GPUBindGroup {
     const { tile } = draw;
     const key = tileKey(tile.level, tile.tx, tile.ty);
     let entry = this.#textures.get(key);
-    if (!entry || entry.tile !== tile) {
-      entry?.texture.destroy();
-      const size = DISPLAY_TILE_SIZE;
-      const texture = this.#device.createTexture({
-        label: `view tile ${key}`,
-        size: [size, size],
-        format: "rgba8unorm",
-        usage: TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST,
-      });
-      this.#device.queue.writeTexture({ texture }, tile.pixels, { bytesPerRow: size * 4 }, [
-        size,
-        size,
-      ]);
-      entry = { tile, texture };
+    if (!entry) {
+      entry = { tile, texture: this.#spare.pop() ?? this.#createTileTexture(), groups: {} };
       this.#textures.set(key, entry);
+      this.#upload(entry.texture, tile);
+    } else if (entry.tile !== tile) {
+      entry.tile = tile;
+      this.#upload(entry.texture, tile);
     }
-    return this.#device.createBindGroup({
+    const cached = entry.groups[draw.sampling];
+    if (cached) return cached;
+    const group = this.#device.createBindGroup({
       layout: this.#tilePipeline.getBindGroupLayout(1),
       entries: [
         { binding: 0, resource: entry.texture.createView() },
         { binding: 1, resource: this.#samplers[draw.sampling] },
       ],
     });
+    entry.groups[draw.sampling] = group;
+    return group;
   }
 
-  #releaseUnused(inView: ReadonlySet<string>): void {
+  #createTileTexture(): GPUTexture {
+    const size = DISPLAY_TILE_SIZE;
+    return this.#device.createTexture({
+      label: "view tile",
+      size: [size, size],
+      format: "rgba8unorm",
+      usage: TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST,
+    });
+  }
+
+  #upload(texture: GPUTexture, tile: DisplayTile): void {
+    const size = DISPLAY_TILE_SIZE;
+    this.#device.queue.writeTexture({ texture }, tile.pixels, { bytesPerRow: size * 4 }, [
+      size,
+      size,
+    ]);
+  }
+
+  /** Tiles out of view give their textures to the spares, up to `MAX_SPARE_TEXTURES`. */
+  #releaseUnused(inView: ReadonlySet<string>, keepSpares = true): void {
     for (const [key, entry] of this.#textures) {
       if (inView.has(key)) continue;
-      entry.texture.destroy();
+      if (keepSpares && this.#spare.length < MAX_SPARE_TEXTURES) this.#spare.push(entry.texture);
+      else entry.texture.destroy();
       this.#textures.delete(key);
     }
   }

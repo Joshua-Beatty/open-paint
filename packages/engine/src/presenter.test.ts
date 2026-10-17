@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DISPLAY_TILE_SIZE } from "./display-tiles";
 import { DEFAULT_CANVAS_THEME, type FramePlan, frameStyle, type TileDraw } from "./frame";
-import { chromeUniform, currentTexture, straightPixels, tileQuad } from "./presenter";
+import { chromeUniform, currentTexture, GpuPresenter, straightPixels, tileQuad } from "./presenter";
 
 function plan(overrides: Partial<FramePlan> = {}): FramePlan {
   return {
@@ -54,6 +54,85 @@ describe("chromeUniform", () => {
     const style = { ...frameStyle(DEFAULT_CANVAS_THEME, 1), border: [255, 0, 0] as const };
     const uniform = chromeUniform(plan({ style }));
     expect([...uniform.slice(-4)]).toEqual([1, 0, 0, 1]);
+  });
+});
+
+/** A device that counts tile textures and uploads; every other call returns a stub. */
+function countingDevice() {
+  const created: { destroyed: boolean }[] = [];
+  const uploads: unknown[] = [];
+  const stub = (): object =>
+    new Proxy(
+      {},
+      {
+        get: (_target, name) => (name === "then" ? undefined : () => stub()),
+      },
+    );
+  const device = new Proxy(
+    {},
+    {
+      get: (_target, name) => {
+        if (name === "then") return undefined;
+        if (name === "createTexture") {
+          return () => {
+            const texture = {
+              destroyed: false,
+              destroy() {
+                texture.destroyed = true;
+              },
+              createView: () => ({}),
+            };
+            created.push(texture);
+            return texture;
+          };
+        }
+        if (name === "popErrorScope") return () => Promise.resolve(null);
+        if (name === "queue") {
+          return {
+            writeBuffer: () => {},
+            writeTexture: (destination: { texture: unknown }) => uploads.push(destination.texture),
+            submit: () => {},
+          };
+        }
+        return () => stub();
+      },
+    },
+  ) as GPUDevice;
+  return { device, created, uploads };
+}
+
+describe("GpuPresenter tile textures", () => {
+  const tile = (tx: number) => ({ level: 0, tx, ty: 0, pixels: new Uint8Array(128 * 128 * 4) });
+  const draw = (t: ReturnType<typeof tile>): TileDraw => ({
+    tile: t,
+    sampling: "nearest",
+    src: { x: 0, y: 0, width: 128, height: 128 },
+    dst: { x: 0, y: 0, width: 128, height: 128 },
+  });
+
+  it("uploads an edited tile into its texture and reuses the textures of tiles that left the view", async () => {
+    const { device, created, uploads } = countingDevice();
+    const canvas = { width: 800, height: 600 } as OffscreenCanvas;
+    const context = { configure: () => {}, getCurrentTexture: () => ({ createView: () => ({}) }) };
+    const presenter = new GpuPresenter(
+      { kind: "direct", canvas, context: context as unknown as GPUCanvasContext },
+      device,
+      "bgra8unorm",
+    );
+    await presenter.present(plan({ tiles: [draw(tile(0)), draw(tile(1))] }));
+    expect(created).toHaveLength(2);
+    // Tile 0 edited (a new tile object): same texture, uploaded again.
+    await presenter.present(plan({ tiles: [draw(tile(0)), draw(tile(1))] }));
+    expect(created).toHaveLength(2);
+    expect(uploads).toHaveLength(4);
+    expect(uploads[2]).toBe(created[0]);
+    // Tile 1 leaves the view and tile 2 comes in: it takes tile 1's texture.
+    await presenter.present(plan({ tiles: [draw(tile(0))] }));
+    await presenter.present(plan({ tiles: [draw(tile(0)), draw(tile(2))] }));
+    expect(created).toHaveLength(2);
+    expect(created.some((texture) => texture.destroyed)).toBe(false);
+    presenter.trim();
+    expect(created.every((texture) => texture.destroyed)).toBe(true);
   });
 });
 
