@@ -298,6 +298,22 @@ describe("Line / Curve (TL-LINE-01)", () => {
     expect(lineCurveHandles.state.curve).toBe("Bezier");
   });
 
+  it("keeps a Bezier a Bezier when a control point is dragged with the left button (owner report)", () => {
+    settings.values["tools.shapes.curveType"] = "Bezier";
+    drag([5.5, 20.5], [35.5, 20.5]);
+    drag([15.5, 20.5], [15.5, 10.5]);
+    expect(lineCurveHandles.state.curve).toBe("Bezier");
+    drag([25.5, 20.5], [25.5, 30.5]);
+    expect(lineCurveHandles.state.curve).toBe("Bezier");
+  });
+
+  it("keeps the Curve option's Bezier chosen on a pending line through a left-button drag", () => {
+    drag([5.5, 20.5], [35.5, 20.5]);
+    settings.set("tools.shapes.curveType", "Bezier");
+    drag([15.5, 20.5], [15.5, 10.5]);
+    expect(lineCurveHandles.state.curve).toBe("Bezier");
+  });
+
   it("finishes the line with Finish Line / Curve on commit", () => {
     drag([5.5, 10.5], [25.5, 10.5]);
     runtime.commit?.();

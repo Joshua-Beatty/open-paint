@@ -114,6 +114,16 @@ function curveOf(value: unknown): CurveKind {
   return CURVE_KINDS.find((kind) => kind === value) ?? "Spline";
 }
 
+/**
+ * The curve type after a control point is dragged (TL-LINE-01). The right button makes a Bezier.
+ * The left button keeps the line's type, which the Curve option sets, so a Bezier stays a Bezier
+ * (owner report); only a straight line becomes a spline when it is first bent.
+ */
+export function curveForControlDrag(from: CurveKind, rightButton: boolean): CurveKind {
+  if (rightButton) return "Bezier";
+  return from === "Straight" ? "Spline" : from;
+}
+
 function dashOf(value: unknown): DashStyle {
   return DASH_STYLES.find((style) => style === value) ?? "Solid";
 }
@@ -440,7 +450,7 @@ class LineCurveRuntime implements ToolRuntime {
       return;
     }
     session.line = moveControl(line, handle, point);
-    session.curve = drag.rightButton ? "Bezier" : "Spline";
+    session.curve = curveForControlDrag(drag.fromCurve, drag.rightButton);
   }
 
   /**
