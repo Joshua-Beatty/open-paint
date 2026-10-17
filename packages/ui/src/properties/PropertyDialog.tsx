@@ -36,6 +36,11 @@ export interface PropertyDialogProps {
   readonly onValuesChange?: (values: PropertyValues) => void;
   /** An inline notice shown under the controls, such as "nothing to align". */
   readonly notice?: string;
+  /**
+   * The page behind the dialog: dimmed, or left clear when the dialog previews on the canvas. The
+   * dialog stays modal either way.
+   */
+  readonly backdrop?: "dim" | "clear";
 }
 
 /**
@@ -53,13 +58,14 @@ export function PropertyDialog({
   onCancel,
   onValuesChange,
   notice,
+  backdrop = "dim",
 }: PropertyDialogProps) {
   const t = useTranslation();
   const settings = dialogSettings(schema);
   const heading = settings.title === undefined ? title : t(settings.title);
   return (
     <ModalOverlay
-      className="modal-overlay"
+      className={backdrop === "clear" ? "modal-overlay is-clear" : "modal-overlay"}
       isOpen={isOpen}
       onOpenChange={(open) => {
         if (!open) onCancel();

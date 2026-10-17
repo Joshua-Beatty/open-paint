@@ -1213,6 +1213,11 @@ body {
   background: rgb(0 0 0 / 0.35);
 }
 
+/* Dialogs that preview on the canvas leave it undimmed, so the preview shows as it will apply. */
+.modal-overlay.is-clear {
+  background: transparent;
+}
+
 .modal {
   max-width: min(480px, 90vw);
   max-height: 90vh;
