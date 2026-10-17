@@ -1,7 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { GPU_TOLERANCE } from "../src/compare";
 
-async function check(page: Page, id: "cpu" | "gpu") {
+async function check(page: Page, id: "cpu" | "gpu" | "gpu-bitmap") {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
@@ -25,4 +25,5 @@ async function check(page: Page, id: "cpu" | "gpu") {
 test.describe("canvas presentation: the image covers the checkerboard to its edge (UI-VIEW-02)", () => {
   test("Canvas 2D presenter", ({ page }) => check(page, "cpu"));
   test("WebGPU presenter", ({ page }) => check(page, "gpu"));
+  test("WebGPU presenter through a bitmap copy", ({ page }) => check(page, "gpu-bitmap"));
 });

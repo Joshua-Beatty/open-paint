@@ -69,6 +69,13 @@ export interface EngineStatus {
   deviceLossCount: number;
   /** The engine running: v2 only when it was asked for and WebGPU is in use. v1 when absent. */
   engine?: EngineVersion;
+  /**
+   * Engine v1: the canvas is bound to the other backend's context (WebGPU for the CPU backend, or a
+   * bitmap renderer for the GPU one), so the page should start the engine again on a new canvas
+   * with this status's backend setting and error flags. Until then it shows the last frame (CPU),
+   * or presents through a slower bitmap copy (GPU).
+   */
+  restartCanvas?: boolean;
 }
 
 export type EngineProtocol = {

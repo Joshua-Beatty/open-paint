@@ -3,7 +3,7 @@ import { createRenderCanvas } from "./canvas";
 import type { CompositeDocument } from "./composite";
 import { DisplayTileBuilder, DisplayTileCache } from "./display-tiles";
 import { DEFAULT_CANVAS_THEME, type FramePlan, planFrame } from "./frame";
-import { CpuPresenter, GpuPresenter, type Presenter } from "./presenter";
+import { CpuPresenter, GpuPresenter, type Presenter, webgpuContext } from "./presenter";
 import type { CheckResult } from "./v2/gpu-checks";
 import { FIT_VIEW } from "./view";
 
@@ -45,11 +45,14 @@ function settledPlan(
   return plan();
 }
 
-/** Presents `plan` and reads back the pixels the visible canvas received. */
-async function presented(
-  make: (output: ImageBitmapRenderingContext) => Presenter,
-  plan: FramePlan,
-) {
+/** A presenter under test and how to read what its visible canvas shows. */
+interface PresenterUnderTest {
+  readonly presenter: Presenter;
+  shown(): ImageBitmap | undefined;
+}
+
+/** A presenter that shows its frames through a bitmap renderer, which records the last one. */
+function throughBitmap(make: (output: ImageBitmapRenderingContext) => Presenter) {
   let shown: ImageBitmap | undefined;
   const output = {
     canvas: createRenderCanvas(1, 1),
@@ -57,11 +60,42 @@ async function presented(
       shown = bitmap ?? undefined;
     },
   } as unknown as ImageBitmapRenderingContext;
-  const presenter = make(output);
+  return { presenter: make(output), shown: () => shown };
+}
+
+/** A GPU presenter drawing straight into a canvas's WebGPU context, read back as a bitmap. */
+function direct(device: GPUDevice, format: GPUTextureFormat): PresenterUnderTest {
+  const canvas = createRenderCanvas(1, 1);
+  const context = webgpuContext(canvas);
+  if (!context) throw new Error("WebGPU canvas context is unavailable.");
+  const presenter = new GpuPresenter({ kind: "direct", canvas, context }, device, format);
+  let shown: ImageBitmap | undefined;
+  return {
+    presenter: {
+      resize: (width, height) => presenter.resize(width, height),
+      trim: () => presenter.trim(),
+      present: async (frame) => {
+        await presenter.present(frame);
+        shown =
+          "transferToImageBitmap" in canvas
+            ? canvas.transferToImageBitmap()
+            : await createImageBitmap(canvas);
+      },
+    },
+    shown: () => shown,
+  };
+}
+
+/** Presents `plan` and reads back the pixels the visible canvas received. */
+async function presented(make: () => PresenterUnderTest, plan: FramePlan) {
+  const { presenter, shown: current } = make();
   presenter.resize(plan.width, plan.height);
   await presenter.present(plan);
   // The HTML canvas fallback hands the bitmap over a task later.
-  for (let i = 0; i < 10 && shown === undefined; i++) await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 10 && current() === undefined; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const shown = current();
   if (shown === undefined) throw new Error("The presenter showed nothing.");
   const canvas = createRenderCanvas(plan.width, plan.height);
   const context = canvas.getContext("2d") as OffscreenCanvasRenderingContext2D | null;
@@ -74,9 +108,13 @@ async function presented(
  * Presents an opaque, odd-sized image fitted at several zooms below 100 % and compares every
  * device pixel of its canvas rectangle with the image's color (UI-VIEW-02). A seam of
  * checkerboard at the image's edge, from rounding or from filtering transparency in, shows as a
- * large difference. `device` selects the WebGPU presenter, and undefined the Canvas 2D one.
+ * large difference. `device` selects the WebGPU presenter, and undefined the Canvas 2D one; the
+ * WebGPU presenter draws into its canvas's own context (`direct`) or through a bitmap copy.
  */
-export async function checkPresentedEdges(device?: GPUDevice): Promise<CheckResult> {
+export async function checkPresentedEdges(
+  device?: GPUDevice,
+  target: "direct" | "bitmap" = "direct",
+): Promise<CheckResult> {
   const store = new TiledPixelStore(IMAGE.width, IMAGE.height);
   store.fill(rgba8(COLOR[0], COLOR[1], COLOR[2], 255));
   const doc: CompositeDocument = {
@@ -85,8 +123,11 @@ export async function checkPresentedEdges(device?: GPUDevice): Promise<CheckResu
     layers: [{ store, mode: 0, opacity: 255, visible: true }],
   };
   const format = device ? navigator.gpu.getPreferredCanvasFormat() : undefined;
-  const make = (output: ImageBitmapRenderingContext): Presenter =>
-    device && format ? new GpuPresenter(output, device, format) : new CpuPresenter(output);
+  const make = (): PresenterUnderTest => {
+    if (!device || !format) return throughBitmap((output) => new CpuPresenter(output));
+    if (target === "direct") return direct(device, format);
+    return throughBitmap((output) => new GpuPresenter({ kind: "bitmap", output }, device, format));
+  };
   let maxDifference = 0;
   let differingChannels = 0;
   try {

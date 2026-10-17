@@ -1,4 +1,5 @@
-import { bitmapContext, type RenderCanvas } from "./canvas";
+import type { RenderCanvas } from "./canvas";
+import { bindPresenter } from "./canvas-binding";
 import { initCpu } from "./cpu";
 import { DocumentReplica } from "./document-sync";
 import { Engine } from "./engine";
@@ -6,7 +7,6 @@ import { GpuEffectQueue } from "./gpu-effects";
 import { type EnginePerfReport, type PresentBatch, PresentRecorder } from "./perf";
 import { benchmarkPerformanceClass } from "./performance-class";
 import { presentFault as presentFaultError } from "./present-failures";
-import { CpuPresenter, GpuPresenter } from "./presenter";
 import type {
   EngineError,
   EngineProtocol,
@@ -44,6 +44,8 @@ export function serveEngine(
   let frameCallback: (() => void) | undefined;
   let recorder: PresentRecorder | undefined;
   let presentFault = false;
+  /** Adds engine v1's `restartCanvas` to a status it returns. */
+  let canvasStatus = (status: EngineStatus): EngineStatus => status;
   const reported = new Set<string>();
   /** Sends a worker error to the page once per distinct message (no flood from a per-frame error). */
   const reportError = (cause: unknown) => {
@@ -91,24 +93,31 @@ export function serveEngine(
     gpu: GPU | undefined,
     settings: EngineSettings & EngineSize,
   ): Promise<EngineStatus> {
-    const output = bitmapContext(canvas);
-    if (!output) throw new Error("The canvas cannot present bitmaps.");
+    /** Whether the last presenter found the canvas bound to the other backend's context. */
+    let restartCanvas = false;
+    const withCanvas = (status: EngineStatus): EngineStatus =>
+      restartCanvas ? { ...status, restartCanvas } : status;
     engine = new Engine(
       {
         gpu,
         now: () => performance.now(),
         benchmark: benchmarkPerformanceClass,
         createPresenter: (device) => {
-          if (!device || !gpu) return new CpuPresenter(output);
-          const presenter = new GpuPresenter(output, device, gpu.getPreferredCanvasFormat());
-          if (presentFault) {
+          const bound = bindPresenter(
+            canvas,
+            gpu ? device : undefined,
+            gpu?.getPreferredCanvasFormat() ?? "rgba8unorm",
+          );
+          restartCanvas = bound.restartCanvas;
+          const { presenter } = bound;
+          if (presentFault && device && gpu) {
             presenter.present = () => {
               throw presentFaultError();
             };
           }
           return presenter;
         },
-        emitStatus: (status) => server.emit("status", status),
+        emitStatus: (status) => server.emit("status", withCanvas(status)),
         reportError,
         emitView,
         requestFrame,
@@ -116,7 +125,8 @@ export function serveEngine(
       },
       settings,
     );
-    return engine.start();
+    canvasStatus = withCanvas;
+    return engine.start().then(withCanvas);
   }
 
   const server = serveRpc<EngineProtocol>(endpoint, {
@@ -153,7 +163,7 @@ export function serveEngine(
       }
       return startV1(canvas, gpu, settings);
     },
-    setBackend: (setting) => started().setBackend(setting),
+    setBackend: (setting) => started().setBackend(setting).then(canvasStatus),
     setCanvasStyle(style) {
       started().setCanvasStyle(style);
       return undefined;

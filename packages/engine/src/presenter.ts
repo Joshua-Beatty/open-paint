@@ -13,10 +13,11 @@ import { CHROME_WGSL, TILE_WGSL } from "./view-wgsl";
 
 /**
  * Draws planned frames onto the on-screen canvas (ARC-03-02). Both backends draw the same
- * `FramePlan` (background, shadow, checkerboard, display tiles, border) and render into a private
- * `OffscreenCanvas`, then hand the result to the transferred canvas's `bitmaprenderer` context. The
- * visible canvas therefore survives backend switches and GPU device loss, since a canvas cannot
- * change its context type.
+ * `FramePlan` (background, shadow, checkerboard, display tiles, border). The CPU backend renders
+ * into a private `OffscreenCanvas` and hands the result to the visible canvas's `bitmaprenderer`
+ * context. The GPU backend draws into the visible canvas's WebGPU context, which survives device
+ * loss (it is configured again with the new device); since a canvas cannot change its context
+ * type, moving to the other backend's context needs a new canvas (`EngineStatus.restartCanvas`).
  */
 export interface Presenter {
   resize(width: number, height: number): void;
@@ -219,6 +220,17 @@ export function tileQuad(draw: TileDraw): number[] {
   ];
 }
 
+/** The WebGPU context of `canvas`, or null when it is bound to another context type. */
+export function webgpuContext(canvas: RenderCanvas): GPUCanvasContext | null {
+  try {
+    return (
+      "transferToImageBitmap" in canvas ? canvas.getContext("webgpu") : canvas.getContext("webgpu")
+    ) as GPUCanvasContext | null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The context's texture for this frame. Firefox drops an `OffscreenCanvas`'s WebGPU configuration
  * when `transferToImageBitmap` takes its frame, so the context is configured again whenever it
@@ -242,11 +254,36 @@ export function currentTexture(
 }
 
 /**
- * GPU backend: the chrome and the display tiles are drawn with WebGPU into a WebGPU context on the
- * private canvas. Each tile is uploaded once as a premultiplied `rgba8unorm` texture and reused
- * while the same tile object stays in the cache. Textures no longer in view are released.
+ * Where a GPU presenter draws. `direct`: straight into the WebGPU context of the visible canvas.
+ * `bitmap`: into a private canvas whose frames go to the visible canvas's `bitmaprenderer`, which
+ * Firefox pays for with a synchronous GPU readback per frame (`transferToImageBitmap`), so it is
+ * used only when the visible canvas is already bound to a bitmap renderer.
  */
-export class GpuPresenter extends SurfacePresenter implements Presenter {
+export type GpuPresentTarget =
+  | { readonly kind: "direct"; readonly canvas: RenderCanvas; readonly context: GPUCanvasContext }
+  | { readonly kind: "bitmap"; readonly output: ImageBitmapRenderingContext };
+
+/**
+ * Draws nothing. It stands in on a canvas bound to WebGPU when the engine moves to the CPU backend,
+ * until the page replaces the canvas (`EngineStatus.restartCanvas`).
+ */
+export class BlankPresenter implements Presenter {
+  resize(): void {}
+  present(): void {}
+  trim(): void {}
+}
+
+/**
+ * GPU backend: the chrome and the display tiles are drawn with WebGPU into a WebGPU context, the
+ * visible canvas's own when it can have one (`GpuPresentTarget`). Each tile is uploaded once as a
+ * premultiplied `rgba8unorm` texture and reused while the same tile object stays in the cache.
+ * Textures no longer in view are released.
+ */
+export class GpuPresenter implements Presenter {
+  /** The canvases sized with the view: the visible one, and the private one on the bitmap path. */
+  readonly #canvases: readonly RenderCanvas[];
+  /** Hands the private canvas's frame to the visible one; undefined when drawing directly. */
+  readonly #show: (() => void) | undefined;
   readonly #device: GPUDevice;
   readonly #context: GPUCanvasContext;
   readonly #configuration: GPUCanvasConfiguration;
@@ -259,14 +296,19 @@ export class GpuPresenter extends SurfacePresenter implements Presenter {
   #quads: GPUBuffer;
   #quadCapacity = 1;
 
-  constructor(output: ImageBitmapRenderingContext, device: GPUDevice, format: GPUTextureFormat) {
-    super(output);
-    const surface = this.surface;
-    const context = (
-      "transferToImageBitmap" in surface
-        ? surface.getContext("webgpu")
-        : surface.getContext("webgpu")
-    ) as GPUCanvasContext | null;
+  constructor(target: GpuPresentTarget, device: GPUDevice, format: GPUTextureFormat) {
+    let context: GPUCanvasContext | null;
+    if (target.kind === "direct") {
+      context = target.context;
+      this.#canvases = [target.canvas];
+      this.#show = undefined;
+    } else {
+      const { output } = target;
+      const surface = createRenderCanvas(1, 1);
+      context = webgpuContext(surface);
+      this.#canvases = [surface, output.canvas];
+      this.#show = () => presentSurface(output, surface);
+    }
     if (!context) throw new Error("WebGPU canvas context is unavailable.");
     this.#configuration = { device, format, alphaMode: "premultiplied" };
     context.configure(this.#configuration);
@@ -310,9 +352,16 @@ export class GpuPresenter extends SurfacePresenter implements Presenter {
     return presentChecked(this.#device, () => this.#present(frame));
   }
 
+  resize(width: number, height: number): void {
+    for (const canvas of this.#canvases) {
+      canvas.width = Math.max(1, width);
+      canvas.height = Math.max(1, height);
+    }
+  }
+
   #present(frame: FramePlan): void {
     const device = this.#device;
-    const { width, height } = this.surface;
+    const { width, height } = this.#canvases[0] as RenderCanvas;
     const bg = frame.style.background;
     device.queue.writeBuffer(this.#chromeBuffer, 0, chromeUniform(frame));
     device.queue.writeBuffer(this.#frameBuffer, 0, new Float32Array([width, height, 0, 0]));
@@ -364,7 +413,7 @@ export class GpuPresenter extends SurfacePresenter implements Presenter {
     });
     pass.end();
     device.queue.submit([encoder.finish()]);
-    this.show();
+    this.#show?.();
   }
 
   trim(): void {

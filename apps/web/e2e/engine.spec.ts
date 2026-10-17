@@ -124,6 +124,55 @@ test("starts the engine and resolves a backend", async ({ page }) => {
   await expect.poll(centerPixel).toEqual([255, 255, 255]);
 });
 
+test("switching the backend in Settings moves the canvas to the CPU and back (SET-DLG-07)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const adapter = await page.evaluate(
+    async () => (await navigator.gpu?.requestAdapter().catch(() => null)) != null,
+  );
+  test.skip(!adapter, "no WebGPU adapter: only the CPU backend runs");
+  const viewport = page.locator("[data-backend]");
+  await expect(viewport).toHaveAttribute("data-backend", "webgpu");
+  const canvas = viewport.locator("canvas:not(.app-canvas-overlay)");
+  const centerPixel = async () => {
+    const box = await canvas.boundingBox();
+    if (box === null) throw new Error("the engine canvas has no box");
+    const png = await page.screenshot({
+      clip: { x: box.x + box.width / 2 - 2, y: box.y + box.height / 2 - 2, width: 4, height: 4 },
+    });
+    return page.evaluate(async (data) => {
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = document.createElement("canvas").getContext("2d");
+      if (context === null) throw new Error("no 2D context");
+      context.drawImage(bitmap, 0, 0);
+      return [...context.getImageData(1, 1, 1, 1).data.slice(0, 3)];
+    }, png.toString("base64"));
+  };
+  await expect.poll(centerPixel).toEqual([255, 255, 255]);
+
+  // The GPU backend draws into the canvas's own WebGPU context, so the CPU needs a new canvas.
+  const choose = async (option: string) => {
+    await page.getByRole("button", { name: "Settings" }).click();
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await dialog.getByRole("option", { name: "Graphics" }).click();
+    await dialog.locator('button[aria-label="Rendering backend"]').click();
+    await page.getByRole("option", { name: option, exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+  };
+  await choose("CPU only");
+  await expect(viewport).toHaveAttribute("data-backend", "cpu");
+  await expect(canvas).toHaveCount(1);
+  await expect.poll(centerPixel).toEqual([255, 255, 255]);
+
+  await choose("WebGPU");
+  await expect(viewport).toHaveAttribute("data-backend", "webgpu");
+  await expect(canvas).toHaveCount(1);
+  await expect.poll(centerPixel).toEqual([255, 255, 255]);
+});
+
 for (const engine of ["v1", "v2"]) {
   test(`engine ${engine}: a GPU canvas that cannot present falls back to the CPU and shows the image (WEB-GPU-05)`, async ({
     page,

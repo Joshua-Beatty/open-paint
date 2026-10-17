@@ -1212,15 +1212,18 @@ async function runV2SyncCase(id: string): Promise<GoldenResult | null> {
 window.runV2SyncCase = runV2SyncCase;
 
 /**
- * The canvas edge check (UI-VIEW-02): `gpu` presents with WebGPU and is null without an adapter;
- * `cpu` presents with Canvas 2D.
+ * The canvas edge check (UI-VIEW-02): `gpu` presents with WebGPU into the canvas's own context and
+ * `gpu-bitmap` through a bitmap copy, both null without an adapter; `cpu` presents with Canvas 2D.
  */
 async function runPresentEdgeCase(id: string): Promise<GoldenResult | null> {
   await ensureCpu();
   if (id === "cpu") return { id, ...(await checkPresentedEdges()) };
   const device = await getDevice();
   if (!device) return null;
-  return { id, ...(await checkPresentedEdges(device)) };
+  return {
+    id,
+    ...(await checkPresentedEdges(device, id === "gpu-bitmap" ? "bitmap" : "direct")),
+  };
 }
 
 window.runPresentEdgeCase = runPresentEdgeCase;

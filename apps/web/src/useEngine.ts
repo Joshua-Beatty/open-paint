@@ -3,6 +3,7 @@ import {
   DEFAULT_ENGINE_SETTINGS,
   type EngineError,
   type EngineHandle,
+  type EngineSettings,
   type EngineSize,
   type EngineStatus,
   engineError,
@@ -48,6 +49,26 @@ export interface EngineState {
  */
 export function needsCpuRestart(status: EngineStatus): boolean {
   return status.engine === "v2" && status.backend === "cpu";
+}
+
+/**
+ * The settings engine v1 starts again with on a new canvas, when the running engine's canvas is
+ * bound to the other backend's context (`EngineStatus.restartCanvas`, e.g. after a GPU fallback or
+ * a backend change in Settings) or engine v2 gave up its GPU. Undefined when no restart is needed.
+ */
+export function canvasRestartSettings(status: EngineStatus): EngineSettings | undefined {
+  if (needsCpuRestart(status)) {
+    return {
+      ...DEFAULT_ENGINE_SETTINGS,
+      errorFlags: status.errorFlags | GraphicsErrorFlags.CpuFallbackAfterDeviceLoss,
+    };
+  }
+  if (status.restartCanvas !== true) return undefined;
+  return {
+    backend: status.setting,
+    errorFlags: status.errorFlags,
+    performanceCache: status.performanceCache,
+  };
 }
 
 /** How far Ctrl+Arrow scrolls in pan mode, in CSS pixels (UI-KEY-02). */
@@ -111,8 +132,10 @@ function devicePoint(canvas: HTMLCanvasElement, clientX: number, clientY: number
  *
  * Errors the worker caught or recovered from go to `onEngineError` (stable, like `onWorkerError`).
  * When engine v2 gives up its GPU (`needsCpuRestart`), the canvas and worker are replaced by v1 on
- * the CPU backend, with the fallback flag, so the device-loss notice shows; the document binding
- * follows the new handle. When no engine starts at all, `failed` is set.
+ * the CPU backend, with the fallback flag, so the device-loss notice shows. The same happens when
+ * v1 moves to the backend its canvas's context cannot show (`EngineStatus.restartCanvas`), with
+ * the status's settings. The document binding follows the new handle. When no engine starts at
+ * all, `failed` is set.
  */
 export function useEngine(
   container: RefObject<HTMLElement | null>,
@@ -125,8 +148,8 @@ export function useEngine(
   const [status, setStatus] = useState<EngineStatus>();
   const [engineHandle, setEngineHandle] = useState<EngineHandle>();
   const [failed, setFailed] = useState(false);
-  /** The `graphics.errorFlags` v1 restarts with after v2 gave up its GPU. */
-  const [cpuRestart, setCpuRestart] = useState<number>();
+  /** The settings v1 restarts with on a new canvas (`canvasRestartSettings`). */
+  const [cpuRestart, setCpuRestart] = useState<EngineSettings>();
 
   useEffect(() => {
     const host = container.current;
@@ -249,10 +272,13 @@ export function useEngine(
       ...(engineVersion && { engine: engineVersion }),
       ...(PERF_FLAGS.gpuFault && { fault: PERF_FLAGS.gpuFault }),
     };
-    const settings =
-      cpuRestart === undefined ? undefined : { ...DEFAULT_ENGINE_SETTINGS, errorFlags: cpuRestart };
-    const restartOnCpu = (errorFlags: number) => {
-      if (!disposed) setCpuRestart(errorFlags | GraphicsErrorFlags.CpuFallbackAfterDeviceLoss);
+    const settings = cpuRestart;
+    /** Starts v1 again on a new canvas when `status` asks for it. Returns whether it does. */
+    const restartIfNeeded = (status: EngineStatus): boolean => {
+      const next = canvasRestartSettings(status);
+      if (next === undefined) return false;
+      if (!disposed) setCpuRestart(next);
+      return true;
     };
     const started = (handle: EngineHandle) => {
       engine = handle;
@@ -281,8 +307,7 @@ export function useEngine(
       setFailed(false);
       setStatus(handle.status);
       handle.onStatus((next) => {
-        if (needsCpuRestart(next)) restartOnCpu(next.errorFlags);
-        else setStatus(next);
+        if (!restartIfNeeded(next)) setStatus(next);
       });
       handle.onLayout((next) => views.reported(next));
       observer = new ResizeObserver(([entry]) => {
@@ -304,9 +329,8 @@ export function useEngine(
           return;
         }
         if (onEngineError) handle.onError(onEngineError);
-        if (needsCpuRestart(handle.status)) {
+        if (restartIfNeeded(handle.status)) {
           handle.terminate();
-          restartOnCpu(handle.status.errorFlags);
           return;
         }
         started(handle);
@@ -314,8 +338,12 @@ export function useEngine(
       (cause: unknown) => {
         if (disposed) return;
         onEngineError?.(engineError(cause));
-        if (engineVersion === "v2") restartOnCpu(0);
-        else setFailed(true);
+        if (engineVersion === "v2") {
+          setCpuRestart({
+            ...DEFAULT_ENGINE_SETTINGS,
+            errorFlags: GraphicsErrorFlags.CpuFallbackAfterDeviceLoss,
+          });
+        } else setFailed(true);
       },
     );
 

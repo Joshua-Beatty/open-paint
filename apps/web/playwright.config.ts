@@ -39,6 +39,16 @@ export default defineConfig({
       name: "webkit",
       use: { ...devices["Desktop Safari"] },
     },
+    // E2E_FIREFOX_DESKTOP=1 adds the installed desktop Firefox (headed, since headless it finds no
+    // WebGPU adapter), to run the suite on Firefox's own WebGPU.
+    ...(process.env.E2E_FIREFOX_DESKTOP
+      ? [
+          {
+            name: "firefox-desktop",
+            use: { browserName: "firefox" as const, channel: "moz-firefox", headless: false },
+          },
+        ]
+      : []),
   ],
   // E2E runs against the built PWA, served by `vite preview` with the production headers.
   webServer: {
