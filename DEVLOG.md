@@ -2852,3 +2852,6 @@ Short entries appended after each change (newest at the bottom). Record what was
 ## Move tool handles, Line/Curve Bezier
 - Move Selection and Move Selected Pixels show the selection's scale handles, rotation anchor and reset button as soon as they are active with a selection, following selection changes, undo and redo; showing them lifts and records nothing. They draw only the handles, not the frame outline, since the marching ants show the selection (owner request; overrides TL-MOVE-01's frame and TL-FRAME-01's handles-only-when-dirty). The reset button does nothing when the anchor is already centred.
 - Line/Curve: dragging a control point with the left button keeps the line's curve type, so a Bezier no longer turns into a spline; the right button still makes a Bezier.
+
+## Draggable dialogs
+- Every modal dialog can be dragged by its title bar (shared dialog chrome; pointer capture, once per frame, no re-render per move). The title bar stays reachable (whole height, 96 px across) and is pulled back on resize; double-click recentres. Positions are remembered per dialog title for the session. Dialogs that preview on the canvas (effects, adjustments, Levels, Curves, Layer Properties) no longer dim it; they stay modal (owner request).
