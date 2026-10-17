@@ -112,6 +112,7 @@ function pixelTarget(session: FloatingPixels, options: () => TransformOptions): 
     rerender: (name) => {
       if (session.preview(session.transform, options())) session.commit(name);
     },
+    settling: () => session.settling(),
   };
 }
 
@@ -191,18 +192,24 @@ export function movePixelsToolRuntime(host: PaintHost, handoff: FloatingHandoff)
       ? { sampling: "cubic", linearLight: true }
       : transformOptionsOf((name) => settings.get(`tools.${name}`));
   };
+  /** Previews on the engine's GPU when it can draw them, resampled steps computed off this thread. */
+  const equip = (session: FloatingPixels) => {
+    session.setResampler(host.transformResampler?.());
+    session.setDisplay(host.floatDisplay?.(session));
+    session.setComposer(host.floatComposer?.());
+  };
   return frameToolRuntime({
     host,
     names: PIXEL_NAMES,
     start: () => {
       const session = host.document()?.liftSelectedPixels();
       if (session === undefined) return undefined;
-      session.setResampler(host.transformResampler?.());
+      equip(session);
       return pixelTarget(session, options);
     },
     connect: (adopt) =>
       handoff.connect((session) => {
-        session.setResampler(host.transformResampler?.());
+        equip(session);
         adopt(pixelTarget(session, options));
       }),
     optionNames: PIXEL_OPTION_NAMES,

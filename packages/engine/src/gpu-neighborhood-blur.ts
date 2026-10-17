@@ -14,13 +14,16 @@ import {
   surfaceBlurSlope,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { borrowBuffer, readBack } from "./gpu-pool";
 
 /** Pixels per side of one tile. Each tile is one dispatch, so no single submission runs long (WEB-GPU-05). */
 export const NEIGHBORHOOD_TILE_PIXELS = 128;
 const WORKGROUP_SIZE = 8;
+/** Tiles submitted together; at most two such batches are queued at a time. */
+export const TILES_PER_BATCH = 16;
+/** The uniform offset alignment WebGPU guarantees (`minUniformBufferOffsetAlignment`). */
+const UNIFORM_STRIDE = 256;
 const RGBA8_BYTES_PER_PIXEL = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * Median Blur (FX-BLUR-MEDIAN) on WebGPU. The shader is the WGSL twin of `median_blur_rgba8`, and it
@@ -127,9 +130,8 @@ export class GpuSketchBlur {
  * Runs a neighborhood blur over the image, one tile per dispatch. The shaders bind the `Params`
  * uniform at 0, the source at 1 and the output at 2. A shader that reads a scan table (Sketch Blur) also
  * binds `scan` at 3 (Sketch Blur's offsets and Add Noise's deviate table). `uniformAt` gives each tile's
- * uniform, and the tile's origin is in it. Each tile is
- * submitted and awaited before the next, so the GPU never holds a long submission. Returns the output as
- * straight RGBA8.
+ * uniform, and the tile's origin is in it. Tiles are submitted in batches of `TILES_PER_BATCH`, each
+ * tile its own command buffer, with at most two batches queued. Returns the output as straight RGBA8.
  */
 export async function runTiledBlur(
   device: GPUDevice,
@@ -141,24 +143,30 @@ export async function runTiledBlur(
 ): Promise<Surface> {
   const { width, height } = input;
   const bytes = width * height * RGBA8_BYTES_PER_PIXEL;
-  const source = device.createBuffer({
-    label: "source",
-    size: bytes,
-    usage: BufferUsage.STORAGE | BufferUsage.COPY_DST,
-  });
-  const output = device.createBuffer({
-    label: "output",
-    size: bytes,
-    usage: BufferUsage.STORAGE | BufferUsage.COPY_SRC,
-  });
-  const readback = device.createBuffer({
-    label: "readback",
-    size: bytes,
-    usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-  });
+  // The source and output are the same size on every preview of a session: lent from the pool.
+  const lentSource = borrowBuffer(
+    device,
+    "source",
+    bytes,
+    BufferUsage.STORAGE | BufferUsage.COPY_DST,
+  );
+  const lentOutput = borrowBuffer(
+    device,
+    "output",
+    bytes,
+    BufferUsage.STORAGE | BufferUsage.COPY_SRC,
+  );
+  const source = lentSource.buffer;
+  const output = lentOutput.buffer;
+  const tiles: { x: number; y: number }[] = [];
+  for (let y = 0; y < height; y += NEIGHBORHOOD_TILE_PIXELS) {
+    for (let x = 0; x < width; x += NEIGHBORHOOD_TILE_PIXELS) tiles.push({ x, y });
+  }
+  // Every tile's uniform sits at its own offset of one buffer, written once.
+  const stride = Math.ceil(uniformBytes / UNIFORM_STRIDE) * UNIFORM_STRIDE;
   const params = device.createBuffer({
     label: "params",
-    size: uniformBytes,
+    size: stride * tiles.length,
     usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
   });
   const scanBuffer = scan
@@ -171,43 +179,52 @@ export async function runTiledBlur(
   try {
     device.queue.writeBuffer(source, 0, input.data);
     if (scan && scanBuffer) device.queue.writeBuffer(scanBuffer, 0, scan);
-    const entries: GPUBindGroupEntry[] = [
-      { binding: 0, resource: { buffer: params } },
-      { binding: 1, resource: { buffer: source } },
-      { binding: 2, resource: { buffer: output } },
-    ];
-    if (scanBuffer) entries.push({ binding: 3, resource: { buffer: scanBuffer } });
-    const group = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries,
+    const uniforms = new Uint8Array(stride * tiles.length);
+    tiles.forEach((tile, index) => {
+      uniforms.set(new Uint8Array(uniformAt(tile)), index * stride);
     });
-    for (let y = 0; y < height; y += NEIGHBORHOOD_TILE_PIXELS) {
-      for (let x = 0; x < width; x += NEIGHBORHOOD_TILE_PIXELS) {
-        const tileWidth = Math.min(NEIGHBORHOOD_TILE_PIXELS, width - x);
-        const tileHeight = Math.min(NEIGHBORHOOD_TILE_PIXELS, height - y);
-        device.queue.writeBuffer(params, 0, uniformAt({ x, y }));
-        const encoder = device.createCommandEncoder();
-        const pass = encoder.beginComputePass();
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, group);
-        pass.dispatchWorkgroups(
-          Math.ceil(tileWidth / WORKGROUP_SIZE),
-          Math.ceil(tileHeight / WORKGROUP_SIZE),
-        );
-        pass.end();
-        device.queue.submit([encoder.finish()]);
-        await device.queue.onSubmittedWorkDone();
+    device.queue.writeBuffer(params, 0, uniforms);
+    const layout = pipeline.getBindGroupLayout(0);
+    const encodeTile = (index: number): GPUCommandBuffer => {
+      const { x, y } = tiles[index] as { x: number; y: number };
+      const entries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: { buffer: params, offset: index * stride, size: uniformBytes } },
+        { binding: 1, resource: { buffer: source } },
+        { binding: 2, resource: { buffer: output } },
+      ];
+      if (scanBuffer) entries.push({ binding: 3, resource: { buffer: scanBuffer } });
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, device.createBindGroup({ layout, entries }));
+      pass.dispatchWorkgroups(
+        Math.ceil(Math.min(NEIGHBORHOOD_TILE_PIXELS, width - x) / WORKGROUP_SIZE),
+        Math.ceil(Math.min(NEIGHBORHOOD_TILE_PIXELS, height - y) / WORKGROUP_SIZE),
+      );
+      pass.end();
+      return encoder.finish();
+    };
+    // Each tile is its own command buffer, so no single one runs long (WEB-GPU-05). Tiles go in
+    // batches with at most two batches queued: the queue never holds the whole image's work ahead
+    // of the engine's frames, and the wait for a batch overlaps the next one's work instead of
+    // costing a round trip per tile (Firefox reports submitted work done far later than Chromium).
+    let waiting: Promise<void> | undefined;
+    for (let start = 0; start < tiles.length; start += TILES_PER_BATCH) {
+      const batch: GPUCommandBuffer[] = [];
+      for (let index = start; index < Math.min(tiles.length, start + TILES_PER_BATCH); index++) {
+        batch.push(encodeTile(index));
       }
+      device.queue.submit(batch);
+      await waiting;
+      waiting = device.queue.onSubmittedWorkDone();
     }
     const encoder = device.createCommandEncoder();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, bytes);
-    device.queue.submit([encoder.finish()]);
-    await readback.mapAsync(MAP_READ_MODE);
-    const pixels = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const pixels = await readBack(device, encoder, output, bytes);
     return new Surface(width, height, pixels);
   } finally {
-    for (const created of [source, output, readback, params, scanBuffer]) created?.destroy();
+    for (const created of [params, scanBuffer]) created?.destroy();
+    lentSource.release();
+    lentOutput.release();
   }
 }
 

@@ -347,9 +347,13 @@ export {
 export {
   type CpuJob,
   type CpuOffloader,
+  type CpuPixels,
   type CpuReply,
   type CpuWorkerLike,
+  type FloatCpuJob,
+  ownedPixels,
   runCpuJob,
+  runCpuJobOutputs,
   WorkerCpuOffloader,
   type WorkerCpuOffloaderOptions,
 } from "./framework/cpu-offload";

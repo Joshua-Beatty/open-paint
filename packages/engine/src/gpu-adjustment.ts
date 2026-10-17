@@ -8,6 +8,7 @@ import {
   HIGHLIGHTS_SHADOWS_OP,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 /** Pixels per workgroup; must match `@workgroup_size` in `ADJUSTMENTS_WGSL`. */
 const WORKGROUP_SIZE = 256;
@@ -27,8 +28,6 @@ export const PARAMS_BYTES = CURVES_OFFSET + CURVE_TABLES * CURVE_LUT_SIZE * 4;
 const PIXEL_BYTES = 4;
 /** Bytes per value of the f32 scratch buffers of the blur. */
 const FLOAT_BYTES = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /** A buffer bound at one slot of the entry point's bind group. */
 interface Binding {
@@ -97,11 +96,6 @@ export class GpuAdjustment {
       size: scratch,
       usage: BufferUsage.STORAGE,
     });
-    const readback = device.createBuffer({
-      label: "adjustment readback",
-      size: bytes,
-      usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    });
     device.queue.writeBuffer(pixels, 0, input.data);
     device.queue.writeBuffer(uniform, 0, paramsBytes(count, groupsX * WORKGROUP_SIZE, width, plan));
 
@@ -136,13 +130,8 @@ export class GpuAdjustment {
       { binding: 3, buffer: blurred },
     ]);
     pass.end();
-    encoder.copyBufferToBuffer(pixels, 0, readback, 0, bytes);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const out = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
-    for (const buffer of [pixels, uniform, horizontal, blurred, readback]) buffer.destroy();
+    const out = await readBack(device, encoder, pixels, bytes);
+    for (const buffer of [pixels, uniform, horizontal, blurred]) buffer.destroy();
     return new Surface(width, height, out);
   }
 }

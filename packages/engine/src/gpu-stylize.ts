@@ -21,6 +21,7 @@ import {
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
 import { runTiledBlur } from "./gpu-neighborhood-blur";
+import { readBack } from "./gpu-pool";
 import { entryPipelines, runPackedStage } from "./gpu-stage";
 
 const EDGE_ENTRIES = ["premultiply", "blur_h", "blur_v", "edge"] as const;
@@ -35,8 +36,6 @@ const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
 /** Bytes per pixel of the `vec4<f32>` planes. */
 const PLANE_BYTES_PER_PIXEL = 16;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * Edge Detect (FX-STYL-EDGE) on WebGPU. Four stages run in one compute pass: the premultiply, the
@@ -71,12 +70,6 @@ export class GpuEdgeDetect {
     const planeB = storage("plane B", pixels * PLANE_BYTES_PER_PIXEL, 0);
     const weights = storage("weights", plan.weights.byteLength, BufferUsage.COPY_DST);
     const output = storage("output", pixels * RGBA8_BYTES_PER_PIXEL, BufferUsage.COPY_SRC);
-    const readback = device.createBuffer({
-      label: "readback",
-      size: pixels * RGBA8_BYTES_PER_PIXEL,
-      usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    });
-    buffers.push(readback);
     const uniform = device.createBuffer({
       label: "params",
       size: ARTISTIC_PARAMS_BYTES,
@@ -113,12 +106,7 @@ export class GpuEdgeDetect {
     }
     dispatch("edge", { src: source, plane_a: planeA, dst: output });
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, pixels * RGBA8_BYTES_PER_PIXEL);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const bytes = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const bytes = await readBack(device, encoder, output, pixels * RGBA8_BYTES_PER_PIXEL);
     for (const buffer of buffers) buffer.destroy();
     return new Surface(width, height, bytes);
   }

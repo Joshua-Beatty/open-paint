@@ -5,7 +5,9 @@ import { createRequire } from "node:module";
 import initWasm from "@openpaint/cpu";
 import {
   type ClipboardImage,
+  composeFloating,
   Document,
+  type Layer,
   rect,
   rectPolygon,
   Selection,
@@ -164,6 +166,57 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
     expect(doc.history.undoName).toBe("history.movePixels");
     expect(doc.history.appliedCommands.length).toBe(before + 1);
     expect(doc.selection.bounds()).toEqual(rect(10, 4, 40, 40));
+  });
+
+  it("previews a rotation over the layer and records it once the worker's result lands", async () => {
+    const reference = selectedBlock();
+    const plain = movePixelsToolRuntime({ ...host(), document: () => reference }, handoff);
+    plain.activate();
+    const jobs: (() => void)[] = [];
+    runtime.deactivate();
+    runtime = movePixelsToolRuntime(
+      {
+        ...host(),
+        floatDisplay: () => ({ available: () => true }),
+        floatComposer: () => (job) =>
+          new Promise((resolve) => {
+            jobs.push(() => resolve(composeFloating(job)));
+          }),
+      },
+      handoff,
+    );
+    runtime.activate();
+    const layer = doc.activeLayer as Layer;
+    const before = [...layer.pixels.readRegion(layer.pixels.bounds).data];
+    const to = { x: SE_HANDLE.x + 4, y: 10 };
+    runtime.pointer(event("down", SE_HANDLE.x + 4, 30, 2));
+    runtime.pointer(event("move", to.x, to.y, 2));
+    // The drag writes nothing: the canvas draws the float.
+    expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual(before);
+    expect(layer.floatPreview).toBeDefined();
+    runtime.pointer(event("up", to.x, to.y, 2));
+    const settling = runtime.settling?.();
+    expect(settling).toBeDefined();
+    // Enter finishes while the rotation is still computed: the tool keeps settling until both land.
+    runtime.commit?.();
+    expect(runtime.settling?.()).toBe(settling);
+    jobs.shift()?.();
+    await settling;
+    expect(runtime.settling?.()).toBeUndefined();
+    expect(doc.history.entries.map((entry) => entry.name).slice(-2)).toEqual([
+      "history.rotatePixels",
+      "history.finishPixels",
+    ]);
+    plain.pointer(event("down", SE_HANDLE.x + 4, 30, 2));
+    plain.pointer(event("move", to.x, to.y, 2));
+    plain.pointer(event("up", to.x, to.y, 2));
+    plain.commit?.();
+    const refLayer = reference.activeLayer as Layer;
+    expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual([
+      ...refLayer.pixels.readRegion(refLayer.pixels.bounds).data,
+    ]);
+    expect(layer.floatPreview).toBeUndefined();
+    plain.deactivate();
   });
 
   describe("a layer switch (TL-FRAME-01)", () => {

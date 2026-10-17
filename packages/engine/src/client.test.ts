@@ -57,6 +57,7 @@ const NO_STROKES = {
   },
   effectCancel: () => undefined,
   effectRelease: () => undefined,
+  effectConfirm: () => true,
 };
 
 describe("connectEngine", () => {

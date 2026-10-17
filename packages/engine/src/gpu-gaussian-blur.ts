@@ -7,6 +7,7 @@ import {
   planGaussianBlur,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { StageChain } from "./gpu-stage";
 
 const ENTRY_POINTS = ["prepare", "resample", "blur_h", "blur_v", "finish"] as const;
 type EntryPoint = (typeof ENTRY_POINTS)[number];
@@ -19,11 +20,7 @@ type Slot = keyof typeof SLOT;
 const PARAMS_BYTES = 32;
 /** Bytes per pixel of the `vec4<f32>` planes. */
 const PLANE_BYTES_PER_PIXEL = 16;
-/** Bytes per pixel of packed RGBA8 input and output. */
-const RGBA8_BYTES_PER_PIXEL = 4;
 const WORKGROUP_SIZE = 8;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /** The `Params` uniform of one dispatch (see `GAUSSIAN_BLUR_WGSL`). */
 interface Stage {
@@ -85,44 +82,55 @@ export class GpuGaussianBlur {
   async runPlan(input: Surface, plan: GaussianBlurPlan): Promise<Surface> {
     const { width, height } = input;
     if (width === 0 || height === 0) return new Surface(width, height);
+    const chain = new StageChain(this.#device, width, height);
+    try {
+      return await chain.read(this.encodePlan(chain, chain.upload(input.data), plan));
+    } finally {
+      chain.destroy();
+    }
+  }
 
-    const device = this.#device;
+  /**
+   * Records the blur of `input`, an image of `chain`, into a new image of it, so a multi-stage effect
+   * keeps the blurred copy on the GPU. A radius of 0 copies the input.
+   */
+  encode(
+    chain: StageChain,
+    input: GPUBuffer,
+    params: GaussianBlurParams,
+    border: GaussianBorder = "mirror",
+  ): GPUBuffer {
+    const plan = planGaussianBlur(params, border);
+    if (plan) return this.encodePlan(chain, input, plan);
+    const copy = chain.image("blur copy");
+    chain.encoder.copyBufferToBuffer(input, 0, copy, 0, chain.bytes);
+    return copy;
+  }
+
+  /** `encode` from a plan (see `runPlan`). */
+  encodePlan(chain: StageChain, inputBuffer: GPUBuffer, plan: GaussianBlurPlan): GPUBuffer {
+    const { device, width, height, encoder } = chain;
     const pixels = width * height;
-    const buffers: GPUBuffer[] = [];
-    const storage = (label: string, size: number, usage: number) => {
-      const buffer = device.createBuffer({ label, size, usage: BufferUsage.STORAGE | usage });
-      buffers.push(buffer);
-      return buffer;
-    };
+    const storage = (label: string, size: number, usage: number) =>
+      chain.buffer(label, size, BufferUsage.STORAGE | usage);
     const planeA = storage("plane A", pixels * PLANE_BYTES_PER_PIXEL, 0);
     const planeB = storage("plane B", pixels * PLANE_BYTES_PER_PIXEL, 0);
-    const inputBuffer = storage("input", pixels * RGBA8_BYTES_PER_PIXEL, BufferUsage.COPY_DST);
     const weights = storage("weights", plan.kernel.byteLength, BufferUsage.COPY_DST);
-    const output = storage("output", pixels * RGBA8_BYTES_PER_PIXEL, BufferUsage.COPY_SRC);
-    const readback = device.createBuffer({
-      label: "readback",
-      size: pixels * RGBA8_BYTES_PER_PIXEL,
-      usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    });
-    buffers.push(readback);
-    device.queue.writeBuffer(inputBuffer, 0, input.data);
+    const output = chain.image("blurred");
     device.queue.writeBuffer(weights, 0, plan.kernel);
 
-    const encoder = device.createCommandEncoder();
     const pass = encoder.beginComputePass();
-    const uniforms: GPUBuffer[] = [];
     const dispatch = (
       entryPoint: EntryPoint,
       stage: Stage,
       resources: Partial<Record<Slot, GPUBuffer>>,
       extent: readonly [number, number],
     ) => {
-      const uniform = device.createBuffer({
-        label: `${entryPoint} params`,
-        size: PARAMS_BYTES,
-        usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
-      });
-      uniforms.push(uniform);
+      const uniform = chain.buffer(
+        `${entryPoint} params`,
+        PARAMS_BYTES,
+        BufferUsage.UNIFORM | BufferUsage.COPY_DST,
+      );
       device.queue.writeBuffer(uniform, 0, paramsBytes({ ...stage, clamp: plan.clamp }));
       const pipeline = this.#pipelines[entryPoint];
       const entries: GPUBindGroupEntry[] = [{ binding: 0, resource: { buffer: uniform } }];
@@ -196,14 +204,7 @@ export class GpuGaussianBlur {
       [width, height],
     );
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, pixels * RGBA8_BYTES_PER_PIXEL);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const bytes = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
-    for (const buffer of [...buffers, ...uniforms]) buffer.destroy();
-    return new Surface(width, height, bytes);
+    return output;
   }
 }
 

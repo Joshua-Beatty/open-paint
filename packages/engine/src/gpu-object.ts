@@ -15,6 +15,7 @@ import {
   planDropShadow,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 import { entryPipelines } from "./gpu-stage";
 
 const SHADOW_ENTRIES = ["blur_h", "blur_v", "composite"] as const;
@@ -29,8 +30,6 @@ const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
 /** Bytes per pixel of the `f32` alpha planes. */
 const PLANE_BYTES_PER_PIXEL = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * Drop Shadow (FX-OBJ-DROPSHADOW) on WebGPU. Three stages run in one compute pass: the blur of the
@@ -65,12 +64,6 @@ export class GpuDropShadow {
     const planeB = storage("plane B", pixels * PLANE_BYTES_PER_PIXEL, 0);
     const weights = storage("weights", plan.weights.byteLength, BufferUsage.COPY_DST);
     const output = storage("output", pixels * RGBA8_BYTES_PER_PIXEL, BufferUsage.COPY_SRC);
-    const readback = device.createBuffer({
-      label: "readback",
-      size: pixels * RGBA8_BYTES_PER_PIXEL,
-      usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    });
-    buffers.push(readback);
     const uniform = device.createBuffer({
       label: "params",
       size: DROP_SHADOW_PARAMS_BYTES,
@@ -104,12 +97,7 @@ export class GpuDropShadow {
     dispatch("blur_v", { plane_a: planeA, plane_b: planeB, weights });
     dispatch("composite", { src: source, plane_b: planeB, dst: output });
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, pixels * RGBA8_BYTES_PER_PIXEL);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const bytes = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const bytes = await readBack(device, encoder, output, pixels * RGBA8_BYTES_PER_PIXEL);
     for (const buffer of buffers) buffer.destroy();
     return new Surface(width, height, bytes);
   }
@@ -157,7 +145,6 @@ export class GpuAlignObject {
       BufferUsage.STORAGE | BufferUsage.COPY_DST,
     );
     const output = buffer("output", bytes, BufferUsage.STORAGE | BufferUsage.COPY_SRC);
-    const readback = buffer("readback", bytes, BufferUsage.MAP_READ | BufferUsage.COPY_DST);
     const uniform = buffer(
       "params",
       ALIGN_OBJECT_PARAMS_BYTES,
@@ -188,12 +175,7 @@ export class GpuAlignObject {
     );
     pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, bytes);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const out = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const out = await readBack(device, encoder, output, bytes);
     for (const created of buffers) created.destroy();
     return new Surface(width, height, out);
   }
@@ -237,7 +219,6 @@ export class GpuFlipObject {
       BufferUsage.STORAGE | BufferUsage.COPY_DST,
     );
     const output = buffer("output", bytes, BufferUsage.STORAGE | BufferUsage.COPY_SRC);
-    const readback = buffer("readback", bytes, BufferUsage.MAP_READ | BufferUsage.COPY_DST);
     const uniform = buffer(
       "params",
       FLIP_OBJECT_PARAMS_BYTES,
@@ -269,12 +250,7 @@ export class GpuFlipObject {
     );
     pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, bytes);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const out = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const out = await readBack(device, encoder, output, bytes);
     for (const created of buffers) created.destroy();
     return new Surface(width, height, out);
   }

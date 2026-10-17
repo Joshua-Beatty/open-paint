@@ -74,6 +74,47 @@ async function redPixels(
   }, png.toString("base64"));
 }
 
+/** The bounds of the pure red pixels of a page region, from a screenshot, in CSS pixels. */
+async function redBounds(
+  page: Page,
+  clip: { x: number; y: number; width: number; height: number },
+): Promise<{ left: number; top: number; right: number; bottom: number }> {
+  const png = await page.screenshot({ clip, style: CANVAS_ONLY });
+  return page.evaluate(
+    async ({ data, cssWidth }) => {
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
+      if (context === null) throw new Error("no 2D context");
+      context.drawImage(bitmap, 0, 0);
+      const {
+        data: pixels,
+        width,
+        height,
+      } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      let left = width;
+      let top = height;
+      let right = -1;
+      let bottom = -1;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          const red =
+            (pixels[i] ?? 0) > 200 && (pixels[i + 1] ?? 0) < 60 && (pixels[i + 2] ?? 0) < 60;
+          if (!red) continue;
+          left = Math.min(left, x);
+          top = Math.min(top, y);
+          right = Math.max(right, x);
+          bottom = Math.max(bottom, y);
+        }
+      }
+      const scale = width / cssWidth;
+      return { left: left / scale, top: top / scale, right: right / scale, bottom: bottom / scale };
+    },
+    { data: png.toString("base64"), cssWidth: clip.width },
+  );
+}
+
 /** The bounds of the dark pixels of a page region, from a screenshot, in CSS pixels of the region. */
 async function darkBounds(
   page: Page,
@@ -492,6 +533,68 @@ test("Move Selected Pixels moves the selection contents and Enter finishes them"
   await page.keyboard.press("Enter");
   await expect(page.locator(LAST_STEP)).toHaveText("Finish Pixels");
 });
+
+for (const engine of ["v1", "v2"]) {
+  test(`Move Selected Pixels rotates the selection contents live, records Rotate Pixels and undoes it (engine ${engine})`, async ({
+    page,
+  }) => {
+    if (engine === "v2") {
+      await page.goto("/?engine=v2");
+      await expect(page.locator(".app-status-zoom")).toHaveText(/\d+%/);
+      await page.locator(".app-canvas-area").click({ position: { x: 4, y: 4 } });
+      await page.keyboard.press("Control+B");
+      await expect(page.locator(".app-status-zoom")).toHaveText("100%");
+    }
+    await rotatesSelectedPixels(page);
+  });
+}
+
+/** A red block rotated a quarter turn with Move Selected Pixels: live, recorded, and undone. */
+async function rotatesSelectedPixels(page: Page) {
+  const center = await canvasCenter(page);
+  const clip = { x: center.x - 200, y: center.y - 200, width: 400, height: 400 };
+  const size = async () => {
+    const bounds = await redBounds(page, clip);
+    return { width: bounds.right - bounds.left, height: bounds.bottom - bounds.top };
+  };
+  // A red 240 x 80 block: the third default swatch is pure red.
+  await page.locator(".color-palette-swatch").nth(2).click();
+  await selectTool(page, "Rectangle Select");
+  await drag(page, [offset(center, -120, -40), offset(center, 120, 40)]);
+  await selectTool(page, "Paint Bucket");
+  await click(page, center);
+  await expect(page.locator(LAST_STEP)).toHaveText("Paint Bucket");
+  await page.mouse.move(center.x + 400, center.y + 300);
+  const before = await size();
+  expect(before.width).toBeGreaterThan(200);
+  expect(before.height).toBeLessThan(120);
+
+  await selectTool(page, "Move Selected Pixels");
+  // A right-button drag rotates about the anchor at the centre; with Shift a quarter turn snaps to
+  // 90 degrees.
+  const press = offset(center, 100, 0);
+  await page.mouse.move(press.x, press.y);
+  await page.keyboard.down("Shift");
+  await page.mouse.down({ button: "right" });
+  await page.mouse.move(center.x + 70, center.y + 70, { steps: 4 });
+  await page.mouse.move(center.x, center.y + 100, { steps: 4 });
+  // The preview shows the block standing upright while the button is still held.
+  await expect.poll(async () => (await size()).height, { timeout: 10_000 }).toBeGreaterThan(200);
+  expect((await size()).width).toBeLessThan(120);
+  await page.mouse.up({ button: "right" });
+  await page.keyboard.up("Shift");
+  await expect(page.locator(LAST_STEP)).toHaveText("Rotate Pixels", { timeout: 15_000 });
+  await page.mouse.move(center.x + 400, center.y + 300);
+  const rotated = await size();
+  expect(Math.abs(rotated.width - before.height)).toBeLessThanOrEqual(4);
+  expect(Math.abs(rotated.height - before.width)).toBeLessThanOrEqual(4);
+
+  await page.keyboard.press("Control+Z");
+  await expect.poll(async () => (await size()).width, { timeout: 10_000 }).toBeGreaterThan(200);
+  const undone = await size();
+  expect(Math.abs(undone.width - before.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(undone.height - before.height)).toBeLessThanOrEqual(1);
+}
 
 test("Move Selected Pixels shows the move cursor over the selection (TL-MOVE-01)", async ({
   page,

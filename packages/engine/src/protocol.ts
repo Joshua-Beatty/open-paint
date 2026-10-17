@@ -117,6 +117,11 @@ export type EngineProtocol = {
     effectCancel: { params: number; result: undefined };
     /** Forgets an effect source the worker keeps between previews. */
     effectRelease: { params: number; result: undefined };
+    /**
+     * After the runs queued so far, whether the GPU reported no error for an effect's runs since
+     * its last confirmation: runs return their pixels before the GPU reports.
+     */
+    effectConfirm: { params: string; result: boolean };
   };
   events: {
     /** Engine v2 lost its GPU document (device loss) and needs a full `syncDocument`. */

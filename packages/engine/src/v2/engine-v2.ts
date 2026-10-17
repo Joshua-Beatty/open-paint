@@ -9,7 +9,7 @@ import {
 import type { RenderCanvas } from "../canvas";
 import type { CompositeDocument } from "../composite";
 import { DeviceLossTracker } from "../device-loss";
-import type { DocumentSync } from "../document-sync";
+import type { DocumentSync, FloatLayer } from "../document-sync";
 import type { EngineHost } from "../engine";
 import {
   type CanvasStyle,
@@ -19,6 +19,7 @@ import {
   frameStyle,
 } from "../frame";
 import { adapterKey } from "../gpu-device";
+import { FloatGpu, floatFits } from "../gpu-float";
 import {
   PresentFailureTracker,
   presentChecked,
@@ -74,6 +75,9 @@ interface DeviceState {
   readonly presenter: PresenterV2;
   readonly pipelines: StrokePipelines;
   readonly slots: SlotBuffer;
+  /** The floating content's GPU side, and the float it last drew. */
+  readonly float: FloatGpu;
+  floatShown: FloatLayer | undefined;
 }
 
 /**
@@ -303,6 +307,7 @@ export class EngineV2 {
       document.pool.flushMips(encoder);
       const plan = planComposite(this.#view, doc, viewport);
       state.compositor.setLive(document.live);
+      this.#encodeFloat(state, encoder, doc);
       const slots = state.compositor.encode(
         encoder,
         plan.draws,
@@ -337,6 +342,22 @@ export class EngineV2 {
       );
     }
     this.host.presented?.(start, this.host.now());
+  }
+
+  /**
+   * Draws the document's floating content when it changed (TL-MOVE-PIX-01), and tells the
+   * compositor where it is. A float the device cannot hold is not drawn; its layer shows its tiles.
+   */
+  #encodeFloat(state: DeviceState, encoder: GPUCommandEncoder, doc: Size): void {
+    const float = state.document.float;
+    if (float === state.floatShown) return;
+    state.floatShown = float;
+    if (float === undefined || !floatFits(state.device.limits, float.content, float.base.region)) {
+      state.compositor.setFloat(undefined, undefined);
+      return;
+    }
+    state.float.encode(encoder, float, doc);
+    state.compositor.setFloat(state.float.texture, float.base.region);
   }
 
   /**
@@ -434,6 +455,8 @@ export class EngineV2 {
       presenter: new PresenterV2(device, context, gpu.getPreferredCanvasFormat()),
       pipelines: new StrokePipelines(device),
       slots: new SlotBuffer(device),
+      float: new FloatGpu(device),
+      floatShown: undefined,
     };
     watchUncapturedErrors(device, (error) => this.host.reportError?.(error));
     void device.lost.then(() => {
@@ -451,6 +474,7 @@ export class EngineV2 {
     state.compositor.destroy();
     state.presenter.destroy();
     state.slots.destroy();
+    state.float.destroy();
     state.device.destroy();
   }
 

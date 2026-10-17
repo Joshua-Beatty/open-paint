@@ -62,6 +62,7 @@ export function serveEngine(
   const replica = new DocumentReplica();
   /** Effects run on whichever device the running engine holds now (one device per app). */
   const effects = new GpuEffectQueue(() => (v2 ?? engine)?.gpuDevice);
+  effects.onLateError = (_effectId, error) => reportError(error);
   /** The layout the engine reported last, which is the one its next present shows. */
   let layout: ViewLayout | undefined;
   const emitView = (next: ViewLayout) => {
@@ -188,6 +189,7 @@ export function serveEngine(
       if (full) running.setDocument(document);
       else if (restacked) running.restack(document);
       else running.render();
+      running.setFloat(replica.float);
       return undefined;
     },
     view: (command) => started().view(command),
@@ -235,6 +237,7 @@ export function serveEngine(
       effects.release(source);
       return undefined;
     },
+    effectConfirm: (effectId) => effects.confirm(effectId),
   });
   return server;
 }

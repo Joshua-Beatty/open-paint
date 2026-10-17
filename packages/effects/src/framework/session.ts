@@ -120,6 +120,8 @@ export class EffectSession<P = unknown> {
   #previewShown = false;
   /** Whether the last finished render left the layer unchanged (`binding.unchanged`). */
   #renderedUnchanged = false;
+  /** Whether the last render ran on the GPU, whose errors arrive after its pixels (`confirm`). */
+  #renderedOnGpu = false;
   readonly #instanceSeed: number;
 
   constructor(options: EffectSessionOptions<P>) {
@@ -283,6 +285,16 @@ export class EffectSession<P = unknown> {
     } else {
       await this.preview(committed);
     }
+    if (this.#phase === "ready" && this.#renderedOnGpu) {
+      const confirmed = await this.#options.gpu?.confirm?.(
+        this.#options.binding as EffectBinding<unknown>,
+      );
+      if (confirmed === false && this.#phase === "ready") {
+        // The GPU reported an error after its pixels came back: rendered again on the CPU.
+        this.#renderedKey = undefined;
+        await this.preview(committed);
+      }
+    }
     if (this.#phase === "failed") throw this.#error;
     if (this.#phase !== "ready") throw new RangeError("The effect was canceled.");
     this.#commit(committed);
@@ -392,6 +404,7 @@ export class EffectSession<P = unknown> {
     }
     this.#renderedUnchanged = false;
     this.#previewShown = true;
+    this.#renderedOnGpu = this.#onGpu;
     try {
       const outcome = await renderRegion({
         binding,

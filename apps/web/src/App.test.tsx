@@ -89,6 +89,7 @@ describe("App", () => {
     effectRun: vi.fn(),
     effectCancel: vi.fn(),
     effectRelease: vi.fn(),
+    effectConfirm: vi.fn(async () => true),
   } satisfies EngineHandle;
 
   beforeEach(() => {

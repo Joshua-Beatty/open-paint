@@ -6,13 +6,12 @@ import {
   morphologyCode,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
 /** One premultiplied `vec4<f32>` per pixel in the scratch buffer. */
 const SCRATCH_BYTES_PER_PIXEL = 16;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * Morphology (FX-DIST-MORPH) on WebGPU, as two compute passes. `horizontal` writes each pixel's
@@ -64,11 +63,6 @@ export class GpuMorphology {
       pixels * RGBA8_BYTES_PER_PIXEL,
       BufferUsage.STORAGE | BufferUsage.COPY_SRC,
     );
-    const readback = buffer(
-      "readback",
-      pixels * RGBA8_BYTES_PER_PIXEL,
-      BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    );
     const uniform = buffer(
       "params",
       MORPHOLOGY_PARAMS_BYTES,
@@ -106,12 +100,7 @@ export class GpuMorphology {
     verticalPass.setBindGroup(0, verticalGroup);
     verticalPass.dispatchWorkgroups(groupsX, groupsY);
     verticalPass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, pixels * RGBA8_BYTES_PER_PIXEL);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const bytes = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const bytes = await readBack(device, encoder, output, pixels * RGBA8_BYTES_PER_PIXEL);
     for (const created of buffers) created.destroy();
     return new Surface(width, height, bytes);
   }

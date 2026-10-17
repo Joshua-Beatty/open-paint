@@ -56,6 +56,15 @@ type Premultiplied = [f32; 4];
 
 /// Resamples `spec.src` through the transform and returns straight-alpha RGBA8 of the destination size.
 pub fn transform_rgba8(spec: &Spec) -> Result<Vec<u8>, String> {
+    transform_rows_rgba8(spec, 0, spec.dst_height)
+}
+
+/// Rows `first .. first + rows` of `transform_rgba8`'s result, byte for byte: each pixel takes the
+/// same arithmetic as in the whole result, so bands computed apart join into it exactly.
+pub fn transform_rows_rgba8(spec: &Spec, first: usize, rows: usize) -> Result<Vec<u8>, String> {
+    if first + rows > spec.dst_height {
+        return Err("the rows lie outside the destination".to_owned());
+    }
     if spec.src.len() != spec.src_width * spec.src_height * 4 {
         return Err("the source pixels do not match its size".to_owned());
     }
@@ -67,8 +76,9 @@ pub fn transform_rgba8(spec: &Spec) -> Result<Vec<u8>, String> {
     let v1 = (a, b);
     let v2 = (c, d);
     let (grid_x, grid_y) = footprint_grid(spec.sampling, v1, v2);
-    let mut out = vec![0u8; spec.dst_width * spec.dst_height * 4];
-    for y in 0..spec.dst_height {
+    let mut out = vec![0u8; spec.dst_width * rows * 4];
+    for row in 0..rows {
+        let y = first + row;
         for x in 0..spec.dst_width {
             let cx = x as f64 + 0.5;
             let cy = y as f64 + 0.5;
@@ -81,7 +91,7 @@ pub fn transform_rgba8(spec: &Spec) -> Result<Vec<u8>, String> {
                     footprint_average(&source, spec, center, v1, v2, grid_x, grid_y)
                 }
             };
-            let index = (y * spec.dst_width + x) * 4;
+            let index = (row * spec.dst_width + x) * 4;
             out[index..index + 4].copy_from_slice(&encode(color, spec.linear_light));
         }
     }
@@ -285,6 +295,25 @@ mod tests {
             }
         }
         px
+    }
+
+    #[test]
+    fn row_bands_join_into_the_whole_result_byte_for_byte() {
+        let src = gradient(9, 7);
+        let (cos, sin) = (0.4f64.cos(), 0.4f64.sin());
+        for sampling in [Sampling::Nearest, Sampling::Multisample, Sampling::Cubic] {
+            let mut turned = spec(&src, 9, 7, [cos, -sin, sin, cos, 1.3, -0.7], sampling);
+            turned.dst_width = 11;
+            turned.dst_height = 10;
+            turned.linear_light = true;
+            let whole = transform_rgba8(&turned).unwrap();
+            let mut joined = Vec::new();
+            for (first, rows) in [(0, 3), (3, 1), (4, 6)] {
+                joined.extend(transform_rows_rgba8(&turned, first, rows).unwrap());
+            }
+            assert_eq!(joined, whole, "{sampling:?}");
+        }
+        assert!(transform_rows_rgba8(&spec(&src, 9, 7, IDENTITY, Sampling::Nearest), 5, 3).is_err());
     }
 
     #[test]

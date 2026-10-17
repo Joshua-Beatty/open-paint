@@ -1,38 +1,13 @@
 import { Surface } from "@openpaint/document";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 /**
- * WGSL twin of `crates/opaint-cpu/src/transform.rs` (TL-MOVE-PIX-01, TL-OPT-RESAMP, TL-OPT-GAMMA):
- * each destination pixel maps back through the inverse transform and mixes premultiplied source
- * pixels (in linear light when asked) with the chosen filter, in the reference's order. Source
- * coordinates are f32 here and f64 in the reference, so the results agree within ±1 per channel,
- * except that Nearest Neighbor can pick the neighbor of a sample that falls within about 1e-3 px
- * of a pixel edge.
+ * The sampling functions of `TRANSFORM_WGSL`, shared with the floating preview: they read the
+ * packed RGBA8 source `src` of `p.src_w` x `p.src_h` pixels, with `p.linear_light`, and the
+ * footprint grid `p.grid_x` x `p.grid_y`.
  */
-export const TRANSFORM_WGSL = /* wgsl */ `
-struct Params {
-  src_w: u32,
-  src_h: u32,
-  dst_w: u32,
-  dst_h: u32,
-  sampling: u32,
-  linear_light: u32,
-  grid_x: u32,
-  grid_y: u32,
-  a: f32,
-  b: f32,
-  c: f32,
-  d: f32,
-  e: f32,
-  f: f32,
-  pad0: f32,
-  pad1: f32,
-};
-
-@group(0) @binding(0) var<uniform> p: Params;
-@group(0) @binding(1) var<storage, read> src: array<u32>;
-@group(0) @binding(2) var<storage, read_write> dst: array<u32>;
-
+export const TRANSFORM_SAMPLING_WGSL = /* wgsl */ `
 fn to_linear(v: f32) -> f32 {
   if (v <= 0.04045) {
     return v / 12.92;
@@ -143,7 +118,41 @@ fn encode(color: vec4<f32>) -> u32 {
   }
   return to_u8(rgb.x) | (to_u8(rgb.y) << 8u) | (to_u8(rgb.z) << 16u) | (to_u8(alpha) << 24u);
 }
+`;
 
+/**
+ * WGSL twin of `crates/opaint-cpu/src/transform.rs` (TL-MOVE-PIX-01, TL-OPT-RESAMP, TL-OPT-GAMMA):
+ * each destination pixel maps back through the inverse transform and mixes premultiplied source
+ * pixels (in linear light when asked) with the chosen filter, in the reference's order. Source
+ * coordinates are f32 here and f64 in the reference, so the results agree within ±1 per channel,
+ * except that Nearest Neighbor can pick the neighbor of a sample that falls within about 1e-3 px
+ * of a pixel edge.
+ */
+export const TRANSFORM_WGSL = /* wgsl */ `
+struct Params {
+  src_w: u32,
+  src_h: u32,
+  dst_w: u32,
+  dst_h: u32,
+  sampling: u32,
+  linear_light: u32,
+  grid_x: u32,
+  grid_y: u32,
+  a: f32,
+  b: f32,
+  c: f32,
+  d: f32,
+  e: f32,
+  f: f32,
+  pad0: f32,
+  pad1: f32,
+};
+
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var<storage, read> src: array<u32>;
+@group(0) @binding(2) var<storage, read_write> dst: array<u32>;
+
+${TRANSFORM_SAMPLING_WGSL}
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= p.dst_w || id.y >= p.dst_h) {
@@ -178,8 +187,6 @@ const MAX_ANISOTROPIC_AXIS = 16;
 const PARAMS_BYTES = 64;
 const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * One resampling: the destination size, the inverse transform `a, b, c, d, e, f` from destination
@@ -195,7 +202,9 @@ export interface GpuTransformSpec {
 }
 
 /** The footprint grid of the reference: computed in f64 on the CPU, so both use the same counts. */
-function footprintGrid(spec: GpuTransformSpec): readonly [number, number] {
+export function footprintGrid(
+  spec: Pick<GpuTransformSpec, "inverse" | "sampling">,
+): readonly [number, number] {
   const [a = 0, b = 0, c = 0, d = 0] = spec.inverse;
   if (spec.sampling === 2) return [MULTISAMPLE_GRID, MULTISAMPLE_GRID];
   if (spec.sampling !== 3) return [1, 1];
@@ -252,11 +261,6 @@ export class GpuTransform {
       size: bytes,
       usage: BufferUsage.STORAGE | BufferUsage.COPY_SRC,
     });
-    const readback = device.createBuffer({
-      label: "transform readback",
-      size: bytes,
-      usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    });
     device.queue.writeBuffer(params, 0, uniform.buffer);
     if (input.data.byteLength > 0) device.queue.writeBuffer(source, 0, input.data);
     const encoder = device.createCommandEncoder({ label: "transform" });
@@ -275,12 +279,8 @@ export class GpuTransform {
     );
     pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, bytes);
-    device.queue.submit([encoder.finish()]);
-    await readback.mapAsync(MAP_READ_MODE);
-    const pixels = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
-    for (const buffer of [params, source, output, readback]) buffer.destroy();
+    const pixels = await readBack(device, encoder, output, bytes);
+    for (const buffer of [params, source, output]) buffer.destroy();
     return new Surface(width, height, pixels);
   }
 }

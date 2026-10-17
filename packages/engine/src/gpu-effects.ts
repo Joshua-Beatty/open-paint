@@ -138,6 +138,7 @@ import {
   GpuVignette,
 } from "./gpu-photo";
 import { GpuPixelate } from "./gpu-pixelate";
+import { releasePool } from "./gpu-pool";
 import { GpuRadialBlur, GpuZoomBlur } from "./gpu-radial-zoom-blur";
 import { GpuRedEye } from "./gpu-red-eye";
 import { GpuClouds, GpuTurbulence } from "./gpu-render";
@@ -363,6 +364,14 @@ export class GpuEffects {
   /** The device the runners get, with the source copy in place of its upload. */
   readonly #runnerDevice: GPUDevice;
   #resident: { readonly data: Uint8ClampedArray; readonly buffer: GPUBuffer } | undefined;
+  /** Error reports still to come, of runs that have returned. */
+  readonly #checks: Promise<void>[] = [];
+  /** Effects whose runs the GPU reported an error for, after they returned. */
+  readonly #failedLate = new Set<string>();
+  /** Of those, the ones `confirm` has not answered for yet. */
+  readonly #unconfirmed = new Set<string>();
+  /** Called when the GPU reports an error for a run that has already returned. */
+  onLateError: ((effectId: string, error: GPUError | Error) => void) | undefined;
 
   constructor(readonly device: GPUDevice) {
     this.#runnerDevice = this.#withResidentSource(device);
@@ -373,11 +382,14 @@ export class GpuEffects {
     if (this.#resident?.data !== source.data) return;
     this.#resident.buffer.destroy();
     this.#resident = undefined;
+    // The pooled buffers fit this session's region; the next session sizes its own.
+    releasePool(this.#runnerDevice);
   }
 
   /** Keeps `input` on the GPU, replacing the source kept before. */
   #keep(input: Surface): void {
     if (this.#resident?.data === input.data) return;
+    if (this.#resident !== undefined) releasePool(this.#runnerDevice);
     this.#resident?.buffer.destroy();
     const buffer = this.device.createBuffer({
       label: "effect source",
@@ -431,6 +443,9 @@ export class GpuEffects {
     const effect = FACTORIES.get(effectId);
     const factory = effect ?? TOOL_JOBS.get(effectId);
     if (factory === undefined) throw new GpuEffectError(`"${effectId}" has no GPU implementation.`);
+    if (this.#failedLate.has(effectId)) {
+      throw new GpuEffectError(`"${effectId}" failed on the GPU earlier in this session.`);
+    }
     if (!this.fits(input.width, input.height)) {
       throw new GpuEffectError(
         `A ${input.width}x${input.height} region is larger than the GPU's buffer limits.`,
@@ -452,19 +467,46 @@ export class GpuEffects {
     } catch (cause) {
       failure = cause;
     }
-    const validation = await device.popErrorScope();
-    const memory = await device.popErrorScope();
-    const error = validation ?? memory;
-    if (failure !== undefined || error !== null || result === undefined) {
+    // The scopes are popped now, in order, but their answers are not waited for: a browser can take
+    // long to report (Firefox), and the pixels are already here. An error that arrives later drops
+    // the runner, refuses the effect from then on, and is reported to `confirm`.
+    const reported = Promise.all([device.popErrorScope(), device.popErrorScope()]).then(
+      ([validation, memory]) => validation ?? memory,
+      (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
+    );
+    if (failure !== undefined || result === undefined) {
+      void reported;
       this.#runners.delete(effectId);
       this.forget(input);
       if (failure !== undefined) throw failure;
-      throw new GpuEffectError(error?.message ?? "The GPU returned no result.");
+      throw new GpuEffectError("The GPU returned no result.");
     }
+    const check = reported.then((error) => {
+      if (error === null) return;
+      this.#runners.delete(effectId);
+      this.#failedLate.add(effectId);
+      this.#unconfirmed.add(effectId);
+      this.onLateError?.(effectId, error);
+    });
+    this.#checks.push(check);
+    void check.finally(() => {
+      this.#checks.splice(this.#checks.indexOf(check), 1);
+    });
     if (effect !== undefined && (result.width !== input.width || result.height !== input.height)) {
       throw new GpuEffectError(`"${effectId}" returned ${result.width}x${result.height}.`);
     }
     return result;
+  }
+
+  /**
+   * Waits until the GPU has reported on every run so far, and resolves with whether `effectId`'s
+   * runs since the last confirmation were free of errors.
+   */
+  async confirm(effectId: string): Promise<boolean> {
+    await Promise.all([...this.#checks]);
+    const failed = this.#unconfirmed.has(effectId);
+    this.#unconfirmed.delete(effectId);
+    return !failed;
   }
 }
 
@@ -491,6 +533,8 @@ export class GpuEffectQueue {
   readonly #canceled = new Set<number>();
   #tail: Promise<unknown> = Promise.resolve();
   #effects: GpuEffects | undefined;
+  /** Called when the GPU reports an error for a run that has already returned its pixels. */
+  onLateError: ((effectId: string, error: GPUError | Error) => void) | undefined;
 
   constructor(
     readonly device: () => GPUDevice | undefined,
@@ -526,6 +570,16 @@ export class GpuEffectQueue {
     if (this.#pending.has(id)) this.#canceled.add(id);
   }
 
+  /**
+   * After the jobs queued so far, whether the GPU reported no error for `effectId`'s runs since the
+   * last confirmation (`GpuEffects.confirm`).
+   */
+  confirm(effectId: string): Promise<boolean> {
+    const answer = this.#tail.then(() => this.#effects?.confirm(effectId) ?? true);
+    this.#tail = answer.catch(() => undefined);
+    return answer;
+  }
+
   /** Forgets a source, and its copy on the GPU. */
   release(source: number): void {
     const held = this.#sources.get(source);
@@ -543,7 +597,10 @@ export class GpuEffectQueue {
     }
     const device = this.device();
     if (device === undefined) throw new GpuEffectError("The engine has no GPU device.");
-    if (this.#effects?.device !== device) this.#effects = new GpuEffects(device);
+    if (this.#effects?.device !== device) {
+      this.#effects = new GpuEffects(device);
+      this.#effects.onLateError = (effectId, error) => this.onLateError?.(effectId, error);
+    }
     const out = await this.#effects.run(job.effectId, source.surface, job.params, source.coverage);
     if (this.#canceled.has(job.id)) throw abort();
     // The source stays here for the next preview, so its buffer must not move.

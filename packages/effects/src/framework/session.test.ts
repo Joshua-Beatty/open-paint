@@ -482,6 +482,31 @@ describe("EffectSession on the GPU offloader (WEB-GPU-01)", () => {
     expect(doc.history.undoName).toBe("Gaussian Blur");
   });
 
+  it("renders again on the CPU when the GPU reports an error after its pixels came back", async () => {
+    const { doc, layer } = setup();
+    const reference = setup();
+    let failed = false;
+    const gpu: GpuOffloader = {
+      canRun: () => !failed,
+      // Blank pixels, as a run whose memory ran out returns.
+      run: async (_binding, input) => new Surface(input.width, input.height),
+      confirm: async () => {
+        failed = true;
+        return false;
+      },
+    };
+    const session = new EffectSession(
+      options(doc, layer, blurBinding(), new EffectMemory(memoryStore()), { backend: "gpu", gpu }),
+    );
+    await session.ok(blurValues(2));
+    const plain = new EffectSession(
+      options(reference.doc, reference.layer, blurBinding(), new EffectMemory(memoryStore())),
+    );
+    await plain.ok(blurValues(2));
+    expect([...readOf(layer).data]).toEqual([...readOf(reference.layer).data]);
+    expect(doc.history.undoName).toBe("Gaussian Blur");
+  });
+
   it("releases the source when the session is canceled", async () => {
     const { doc, layer } = setup();
     const released: Surface[] = [];

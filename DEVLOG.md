@@ -2836,3 +2836,10 @@ Short entries appended after each change (newest at the bottom). Record what was
 
 ## Blank image on every start
 - Every start with no session to restore opens the default blank image (owner request), not only the first run. An untouched start image is replaced when the app is launched with files.
+
+## Firefox performance
+- The GPU backend draws straight into the canvas's WebGPU context; Firefox's transferToImageBitmap on a WebGPU OffscreenCanvas waited for the GPU every frame (18-25 ms). Switching backend restarts the engine on a new canvas. The presenter reuses its tile textures; the CPU backend blurs the drop shadow once per size; compositing runs one loop per blend mode. Desktop Firefox (WebGPU) went from 30-50 to about 105-140 presents/s on strokes, Pencil, shape drag and resize.
+- Overlays, rulers and pan steps use the engine canvas's own pixel scale instead of window.devicePixelRatio (handles were misplaced at display scales other than the browser's reported ratio).
+- Firefox reads back an idle worker WebGPU canvas on every page repaint. The status bar's cursor/hint text and the ruler markers are drawn into small canvases, the pointer-focus attribute is set only on change, and the unsaved-tab dot no longer fades in, so the page doesn't repaint while hovering. Stroke start after hovering the canvas went from 190-350 ms to 26-44 ms with real mouse input. Open: hover styles crossed just before a stroke still cost a readback each.
+- Move Selected Pixels rotate/scale previews stay on the GPU (content uploaded once, a transform per frame; v1 overlay, v2 compositor), and the commit runs the Rust reference in up to four CPU workers. Median/Surface/Sketch Blur batch their tiles; multi-stage effects chain in one encoder with one readback; readback buffers are pooled and error scopes no longer block results; the startup GPU speed test uses timestamps where available. B17 rotate in desktop Firefox: 0 to 91 presents/s.
+- Bench runs in the bundled Firefox (CPU) and desktop Firefox (WebGPU); new scenarios B19-B26 (Pencil, shape body drag, selections, stroke start, effect previews).

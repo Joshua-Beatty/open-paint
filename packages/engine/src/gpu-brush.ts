@@ -2,6 +2,7 @@ import { Surface } from "@openpaint/document";
 import { BRUSH_WGSL } from "./brush-wgsl";
 import { type BrushSettings, brushDabs, brushTipSprite } from "./cpu";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 /** `GPUShaderStage.COMPUTE`; the DOM lib types WebGPU interfaces but not these globals. */
 const COMPUTE_STAGE = 0x4;
@@ -9,8 +10,6 @@ const COMPUTE_STAGE = 0x4;
 const DAB_BYTES = 64;
 const WORKGROUP_SIZE = 8;
 const BYTES_PER_PIXEL = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 /** The brush blend value that replaces the destination (TL-OPT-BLEND "Overwrite"). */
 const OVERWRITE_BLEND = 14;
 /** `paint_mode` values of the shader's `Dab` uniform. */
@@ -184,11 +183,6 @@ export class GpuBrush {
       pixels * BYTES_PER_PIXEL,
       BufferUsage.STORAGE | BufferUsage.COPY_DST,
     );
-    const readback = buffer(
-      "readback",
-      pixels * BYTES_PER_PIXEL,
-      BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    );
     device.queue.writeBuffer(pixelBuffer, 0, words);
     device.queue.writeBuffer(tipBuffer, 0, sprite);
     device.queue.writeBuffer(dabBuffer, 0, params);
@@ -216,12 +210,7 @@ export class GpuBrush {
     pass.setPipeline(this.#apply);
     dispatch(bounds);
     pass.end();
-    encoder.copyBufferToBuffer(pixelBuffer, 0, readback, 0, pixels * BYTES_PER_PIXEL);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const bytes = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const bytes = await readBack(device, encoder, pixelBuffer, pixels * BYTES_PER_PIXEL);
     for (const created of buffers) created.destroy();
     return new Surface(width, height, bytes);
   }

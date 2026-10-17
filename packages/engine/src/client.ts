@@ -65,6 +65,8 @@ export interface EngineHandle {
   effectRun(job: GpuEffectJob): Promise<GpuEffectOutput>;
   effectCancel(id: number): Promise<void>;
   effectRelease(source: number): Promise<void>;
+  /** Whether the GPU reported no error for an effect's runs since the last confirmation. */
+  effectConfirm(effectId: string): Promise<boolean>;
   /** Drains the engine's recorded presents and reports whether it is idle (`?perf=1` harness). */
   perf(): Promise<EnginePerfReport>;
   /** Called with each batch of presents the engine sends on its own (`?perf=1` harness). */
@@ -178,6 +180,7 @@ export async function connectEngine(
     },
     effectCancel: (id) => rpc.call("effectCancel", id),
     effectRelease: (source) => rpc.call("effectRelease", source),
+    effectConfirm: (effectId) => rpc.call("effectConfirm", effectId),
     perf: () => rpc.call("perf", undefined),
     onPerf(listener) {
       perfListeners.add(listener);

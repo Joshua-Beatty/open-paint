@@ -32,9 +32,11 @@ import {
   turbulenceCpu,
 } from "@openpaint/effects";
 import {
+  benchmarkPerformanceClass,
   type ComposedTile,
   type CompositeDocument,
   checkCompositeV2,
+  checkFloat,
   checkPartialSyncV2,
   checkPresentedEdges,
   checkStrokeV2,
@@ -81,6 +83,7 @@ import {
   GpuVignette,
   GpuZoomBlur,
   initCpu,
+  requestDevice as requestEngineDevice,
   V2_COMPOSITE_CASES,
   V2_STROKE_CASES,
 } from "@openpaint/engine";
@@ -194,6 +197,11 @@ declare global {
     runV2StrokeCase: (id: string) => Promise<GoldenResult | null>;
     runV2SyncCase: (id: string) => Promise<GoldenResult | null>;
     runPresentEdgeCase: (id: string) => Promise<GoldenResult | null>;
+    runFloatCase: (id: string) => Promise<GoldenResult | null>;
+    runPerformanceClass: () => Promise<{
+      readonly performanceClass: string;
+      readonly errors: string[];
+    } | null>;
   }
 }
 
@@ -1227,3 +1235,33 @@ async function runPresentEdgeCase(id: string): Promise<GoldenResult | null> {
 }
 
 window.runPresentEdgeCase = runPresentEdgeCase;
+
+/** The floating preview of Move Selected Pixels on the GPU against the reference (TL-MOVE-PIX-01). */
+async function runFloatCase(id: string): Promise<GoldenResult | null> {
+  const device = await getDevice();
+  if (!device) return null;
+  await ensureCpu();
+  return { id, ...(await checkFloat(device, id)) };
+}
+
+window.runFloatCase = runFloatCase;
+
+/**
+ * The startup GPU benchmark on a device as the engine requests it (timestamps when the adapter has
+ * them), with the GPU errors it caused.
+ */
+async function runPerformanceClass() {
+  const adapter = await navigator.gpu?.requestAdapter();
+  if (!adapter) return null;
+  const device = await requestEngineDevice(adapter);
+  const errors: string[] = [];
+  device.addEventListener("uncapturederror", (event) => {
+    errors.push((event as GPUUncapturedErrorEvent).error.message);
+  });
+  const performanceClass = await benchmarkPerformanceClass(device);
+  await device.queue.onSubmittedWorkDone();
+  device.destroy();
+  return { performanceClass, errors };
+}
+
+window.runPerformanceClass = runPerformanceClass;

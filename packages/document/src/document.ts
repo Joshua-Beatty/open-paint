@@ -32,6 +32,7 @@ import {
 } from "./clipboard";
 import { type ColorRgba8, TRANSPARENT, WHITE } from "./color";
 import type { FloatingContent } from "./coverage-place";
+import type { LayerFloatPreview } from "./float-preview";
 import type { FormatExtras } from "./format-extras";
 import { intersectRects, isEmptyRect, type Point, type Rect, rect, type Size } from "./geometry";
 import {
@@ -1488,6 +1489,17 @@ export class Document {
   setLayerLivePreview(layer: Layer, preview: LayerLivePreview | undefined): void {
     if (layer.livePreview === preview) return;
     layer.setLivePreview(preview);
+    if (this.#layers.includes(layer)) this.#notify("preview");
+  }
+
+  /**
+   * Shows floating content over `layer` on the canvas, or stops showing it (undefined), without
+   * touching its pixels (TL-MOVE-PIX-01). Nothing is recorded. Like `setLayerLivePreview`, it works
+   * while the history is busy. Listeners are notified.
+   */
+  setLayerFloatPreview(layer: Layer, preview: LayerFloatPreview | undefined): void {
+    if (layer.floatPreview === preview) return;
+    layer.setFloatPreview(preview);
     if (this.#layers.includes(layer)) this.#notify("preview");
   }
 

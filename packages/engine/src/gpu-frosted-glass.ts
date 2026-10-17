@@ -7,11 +7,10 @@ import {
   frostedGlassSeeds,
 } from "@openpaint/effects";
 import { BufferUsage } from "./gpu-device";
+import { readBack } from "./gpu-pool";
 
 const WORKGROUP_SIZE = 8;
 const RGBA8_BYTES_PER_PIXEL = 4;
-/** `GPUMapMode.READ`. */
-const MAP_READ_MODE = 1;
 
 /**
  * Frosted Glass (FX-DIST-FROST) on WebGPU. The shader is the WGSL twin of `frost_rgba8`, so the same
@@ -65,11 +64,6 @@ export class GpuFrostedGlass {
       pixels * RGBA8_BYTES_PER_PIXEL,
       BufferUsage.STORAGE | BufferUsage.COPY_SRC,
     );
-    const readback = buffer(
-      "readback",
-      pixels * RGBA8_BYTES_PER_PIXEL,
-      BufferUsage.MAP_READ | BufferUsage.COPY_DST,
-    );
     const uniform = buffer(
       "params",
       FROSTED_GLASS_PARAMS_BYTES,
@@ -98,12 +92,7 @@ export class GpuFrostedGlass {
     pass.setBindGroup(0, bindGroup);
     pass.dispatchWorkgroups(Math.ceil(width / WORKGROUP_SIZE), Math.ceil(height / WORKGROUP_SIZE));
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, pixels * RGBA8_BYTES_PER_PIXEL);
-    device.queue.submit([encoder.finish()]);
-
-    await readback.mapAsync(MAP_READ_MODE);
-    const bytes = new Uint8ClampedArray(readback.getMappedRange().slice(0));
-    readback.unmap();
+    const bytes = await readBack(device, encoder, output, pixels * RGBA8_BYTES_PER_PIXEL);
     for (const created of buffers) created.destroy();
     return new Surface(width, height, bytes);
   }

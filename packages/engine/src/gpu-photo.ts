@@ -26,7 +26,48 @@ import {
   type VignetteParams,
 } from "@openpaint/effects";
 import { GpuGaussianBlur } from "./gpu-gaussian-blur";
-import { entryPipelines, runPackedStage, runStage } from "./gpu-stage";
+import {
+  entryPipelines,
+  runPackedStage,
+  runStage,
+  StageChain,
+  type StageFields,
+} from "./gpu-stage";
+
+/**
+ * The clamped Gaussian of `input`, then one stage over the source and the blurred copy with the
+ * plan's `shift, mul, div` and `fields`, recorded together with one readback (Glow, Soften
+ * Portrait).
+ */
+async function blurThenStage(
+  device: GPUDevice,
+  gaussian: GpuGaussianBlur,
+  pipeline: GPUComputePipeline,
+  input: Surface,
+  plan: {
+    readonly blurRadius: number;
+    readonly blurQuality: number;
+    readonly plan: readonly number[] | Float32Array;
+  },
+  fields: StageFields,
+): Promise<Surface> {
+  const chain = new StageChain(device, input.width, input.height);
+  try {
+    const source = chain.upload(input.data);
+    const blurred = gaussian.encode(
+      chain,
+      source,
+      { radius: plan.blurRadius, gammaBoost: 0, quality: plan.blurQuality },
+      "clamp",
+    );
+    const [shift = 0, mul = 0, div = 0] = plan.plan;
+    return await chain.read(
+      chain.stage(pipeline, { ...fields, f0: shift, f1: mul, f2: div }, [source, blurred]),
+    );
+  } finally {
+    chain.destroy();
+  }
+}
 
 /**
  * Glow (FX-PHOTO-GLOW) on WebGPU: the clamped Gaussian, then the Brightness / Contrast and screen of
@@ -51,16 +92,7 @@ export class GpuGlow {
     const { width, height } = input;
     if (width === 0 || height === 0) return new Surface(width, height);
 
-    const blurred = await this.#gaussian.run(
-      input,
-      { radius: plan.blurRadius, gammaBoost: 0, quality: plan.blurQuality },
-      "clamp",
-    );
-    const [shift, mul, div] = plan.plan;
-    return runStage(this.#device, this.#pipeline, width, height, { f0: shift, f1: mul, f2: div }, [
-      input.data,
-      blurred.data,
-    ]);
+    return blurThenStage(this.#device, this.#gaussian, this.#pipeline, input, plan, {});
   }
 }
 
@@ -87,20 +119,9 @@ export class GpuSoftenPortrait {
     const { width, height } = input;
     if (width === 0 || height === 0) return new Surface(width, height);
 
-    const blurred = await this.#gaussian.run(
-      input,
-      { radius: plan.blurRadius, gammaBoost: 0, quality: plan.blurQuality },
-      "clamp",
-    );
-    const [shift, mul, div] = plan.plan;
-    return runStage(
-      this.#device,
-      this.#pipeline,
-      width,
-      height,
-      { f0: shift, f1: mul, f2: div, i0: plan.warmth },
-      [input.data, blurred.data],
-    );
+    return blurThenStage(this.#device, this.#gaussian, this.#pipeline, input, plan, {
+      i0: plan.warmth,
+    });
   }
 }
 

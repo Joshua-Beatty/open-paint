@@ -5,8 +5,11 @@ import { defineConfig, devices, type Project } from "@playwright/test";
 import { BENCH_BROWSER } from "./bench/browser.ts";
 import { CHROMIUM_WEBGPU_ARGS } from "./playwright.config.ts";
 
-/** A port of its own, so the bench never reuses an e2e server running an older build. */
-const port = 4183;
+/**
+ * A port of its own, so the bench never reuses an e2e server running an older build. `BENCH_PORT`
+ * moves it, so benches of two checkouts can run side by side.
+ */
+const port = Number(process.env.BENCH_PORT ?? 4183);
 
 const viewport = { width: 1440, height: 900 };
 
