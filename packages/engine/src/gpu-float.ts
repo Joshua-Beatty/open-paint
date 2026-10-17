@@ -313,9 +313,9 @@ export class FloatGpu {
 
   /**
    * Records the commands that show `float` in a `doc`-sized image: uploads of a new content or
-   * base, new stamps, then the placement and its mips.
+   * base, new stamps, then the placement and, unless `mips` is false, its mip chain.
    */
-  encode(encoder: GPUCommandEncoder, float: FloatLayer, doc: Size): void {
+  encode(encoder: GPUCommandEncoder, float: FloatLayer, doc: Size, mips = true): void {
     this.#upload(float);
     const stamps = float.stamps;
     for (let i = this.#stamped.length; i < stamps.length; i++) {
@@ -333,7 +333,7 @@ export class FloatGpu {
     }
     this.#stamped = stamps;
     this.#frame = this.#draw(encoder, float.placement, float, doc, this.#frame);
-    this.#mips(encoder);
+    if (mips) this.#mips(encoder);
   }
 
   destroy(): void {

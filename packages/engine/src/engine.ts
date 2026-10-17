@@ -1,4 +1,4 @@
-import { rect, rectFromEdges, type Size } from "@openpaint/document";
+import { type Rect, rect, type Size } from "@openpaint/document";
 import {
   type BackendSetting,
   GraphicsErrorFlags,
@@ -13,12 +13,11 @@ import {
   DisplayTileCache,
   displayLevels,
   mipLevel,
-  samplingFor,
   type TileRef,
   tileEdge,
 } from "./display-tiles";
 import type { FloatLayer } from "./document-sync";
-import { FloatDisplay, type PresentOverlay } from "./float-display";
+import { FloatDisplay } from "./float-display";
 import {
   type CanvasStyle,
   type CanvasTheme,
@@ -30,7 +29,7 @@ import {
 import { adapterKey } from "./gpu-device";
 import type { PerformanceClass } from "./performance-class";
 import { PresentFailureTracker, watchUncapturedErrors } from "./present-failures";
-import type { FrameOverlay, Presenter } from "./presenter";
+import type { Presenter, TileOverrides } from "./presenter";
 import type { EngineSettings, EngineSize, EngineStatus } from "./protocol";
 import {
   applyCommand,
@@ -44,6 +43,12 @@ import {
   viewStatus,
   type WheelInput,
 } from "./view";
+
+/** Display tiles drawn from floating content, and the image region the content can change. */
+interface FloatTiles {
+  readonly tiles: TileOverrides;
+  readonly region: Rect;
+}
 
 /** Platform services the engine runs on; the worker supplies real ones, tests supply fakes. */
 export interface EngineHost {
@@ -117,9 +122,9 @@ export class Engine {
   /** The floating content shown over its layer, and what draws it on the current device. */
   #float: FloatLayer | undefined;
   #floatDisplay: { readonly device: GPUDevice; readonly display: FloatDisplay } | undefined;
-  /** The overlay the last frame drew, and the one kept after the float went until tiles are fresh. */
-  #shownOverlay: PresentOverlay | undefined;
-  #retiring: PresentOverlay | undefined;
+  /** The float tiles the last frame drew, and the ones kept after the float went until tiles are fresh. */
+  #shownTiles: FloatTiles | undefined;
+  #retiring: FloatTiles | undefined;
 
   constructor(
     readonly host: EngineHost,
@@ -281,7 +286,7 @@ export class Engine {
     }
     this.#retryPresent = false;
     try {
-      const checked = presenter.present(plan, this.#overlay(plan, doc));
+      const checked = presenter.present(plan, this.#floatTiles(plan, doc));
       if (checked) {
         checked.then(
           () => this.#presented(presenter),
@@ -304,21 +309,25 @@ export class Engine {
    */
   setFloat(float: FloatLayer | undefined): void {
     if (float === this.#float) return;
-    if (float === undefined && this.#float !== undefined) this.#retiring = this.#shownOverlay;
+    if (float === undefined && this.#float !== undefined) this.#retiring = this.#shownTiles;
     if (float !== undefined) this.#retiring = undefined;
     this.#float = float;
     this.#frame();
   }
 
-  /** The overlay of this frame: the float, or the last one until the tiles under it are fresh. */
-  #overlay(plan: FramePlan, doc: Size): FrameOverlay | undefined {
+  /**
+   * The display tiles this frame draws from the float (`FloatDisplay`), or the last ones after the
+   * float went, until the cached tiles under it are up to date again.
+   */
+  #floatTiles(plan: FramePlan, doc: Size): TileOverrides | undefined {
     const device = this.gpuDevice;
     const float = this.#float;
     if (device === undefined || (float === undefined && this.#retiring === undefined)) {
-      this.#shownOverlay = undefined;
+      this.#shownTiles = undefined;
       return undefined;
     }
-    let shown: PresentOverlay | undefined;
+    const level = mipLevel(plan.zoom, displayLevels(doc.width, doc.height));
+    let shown: FloatTiles | undefined;
     if (float !== undefined) {
       if (this.#floatDisplay?.device !== device) {
         this.#floatDisplay?.display.destroy();
@@ -326,13 +335,16 @@ export class Engine {
       }
       const { display } = this.#floatDisplay;
       if (display.supports(this.#document, float)) {
-        const level = mipLevel(plan.zoom, displayLevels(doc.width, doc.height));
-        shown = display.overlay(this.#document, float, level);
+        const visible = plan.tiles.map((draw) => draw.tile);
+        const tiles = display.tiles(this.#document, float, level, visible, (ref) =>
+          this.#builder.final(ref),
+        );
+        shown = { tiles, region: float.base.region };
       }
     } else {
       shown = this.#retiring;
       const region = shown?.region;
-      const edge = tileEdge(mipLevel(plan.zoom, displayLevels(doc.width, doc.height)));
+      const edge = tileEdge(level);
       const waiting =
         region !== undefined &&
         plan.wanted.some(
@@ -348,27 +360,9 @@ export class Engine {
         shown = undefined;
       }
     }
-    this.#shownOverlay = shown;
-    if (shown === undefined) return undefined;
-    const { region } = shown;
-    const { canvas, zoom } = plan;
-    const right = Math.min(region.x + region.width, doc.width);
-    const bottom = Math.min(region.y + region.height, doc.height);
-    const dst = rectFromEdges(
-      Math.round(canvas.x + region.x * zoom),
-      Math.round(canvas.y + region.y * zoom),
-      Math.min(canvas.x + canvas.width, Math.round(canvas.x + right * zoom)),
-      Math.min(canvas.y + canvas.height, Math.round(canvas.y + bottom * zoom)),
-    );
-    const level = mipLevel(zoom, displayLevels(doc.width, doc.height));
-    return {
-      texture: shown.texture,
-      dst,
-      uv: [0, 0, (right - region.x) / region.width, (bottom - region.y) / region.height],
-      sampling: samplingFor(level, zoom),
-    };
+    this.#shownTiles = shown;
+    return shown?.tiles;
   }
-
   #presented(presenter: Presenter): void {
     if (presenter === this.#presenter) this.#presentFailures.succeeded();
   }

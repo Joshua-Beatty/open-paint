@@ -1,4 +1,3 @@
-import type { Rect } from "@openpaint/document";
 import {
   context2d,
   createRenderCanvas,
@@ -10,7 +9,7 @@ import { DISPLAY_TILE_SIZE, type DisplayTile, type Sampling, tileKey } from "./d
 import type { FramePlan, FrameStyle, Rgb, TileDraw } from "./frame";
 import { BufferUsage, TextureUsage } from "./gpu-device";
 import { presentChecked } from "./present-failures";
-import { CHROME_WGSL, OVERLAY_WGSL, TILE_WGSL } from "./view-wgsl";
+import { CHROME_WGSL, TILE_WGSL } from "./view-wgsl";
 
 /**
  * Draws planned frames onto the on-screen canvas (ARC-03-02). Both backends draw the same
@@ -26,21 +25,16 @@ export interface Presenter {
    * Draws `frame`. Throws when it cannot draw; a GPU presenter also returns a promise that rejects
    * when the GPU reports an error for the frame's commands, which only shows up later.
    */
-  present(frame: FramePlan, overlay?: FrameOverlay): void | Promise<void>;
+  present(frame: FramePlan, overrides?: TileOverrides): void | Promise<void>;
   /** Releases cached drawing resources. The next `present` rebuilds whatever it needs (ARC-03-10). */
   trim(): void;
 }
 
 /**
- * A texture the GPU presenter draws over the display tiles, replacing them in its device rectangle
- * (`dst`): `uv` is the part of the texture (0-1) that the rectangle shows.
+ * Textures the GPU presenter draws in place of display tiles, by tile key (`tileKey`), with the
+ * tiles' own quads and sampling: the floating content of Move Selected Pixels on engine v1.
  */
-export interface FrameOverlay {
-  readonly texture: GPUTexture;
-  readonly dst: Rect;
-  readonly uv: readonly [number, number, number, number];
-  readonly sampling: Sampling;
-}
+export type TileOverrides = ReadonlyMap<string, GPUTexture>;
 
 class SurfacePresenter {
   protected readonly surface: RenderCanvas = createRenderCanvas(1, 1);
@@ -215,8 +209,6 @@ export class CpuPresenter extends SurfacePresenter implements Presenter {
 
 /** Bytes of the chrome shader's uniform: five vec4 (rect, viewport, checker, shadow, border). */
 const CHROME_BYTES = 80;
-/** Bytes of the overlay shader's uniform: three vec4 (dst, uv, frame size). */
-const OVERLAY_BYTES = 48;
 /** Bytes of the tile shader's frame uniform: one vec4. */
 const FRAME_BYTES = 16;
 /** Floats per tile draw in the quad storage buffer: destination and source rectangles. */
@@ -351,8 +343,8 @@ export class GpuPresenter implements Presenter {
   readonly #spare: GPUTexture[] = [];
   #quads: GPUBuffer;
   #quadCapacity = 1;
-  /** The overlay's pipeline and uniform, made on the first frame that has one. */
-  #overlay: { readonly pipeline: GPURenderPipeline; readonly uniform: GPUBuffer } | undefined;
+  /** Bind groups of override textures (`TileOverrides`), per sampling. */
+  readonly #overrideGroups = new WeakMap<GPUTexture, Partial<Record<Sampling, GPUBindGroup>>>();
 
   constructor(target: GpuPresentTarget, device: GPUDevice, format: GPUTextureFormat) {
     let context: GPUCanvasContext | null;
@@ -406,32 +398,8 @@ export class GpuPresenter implements Presenter {
     this.#quads = this.#createQuads(this.#quadCapacity);
   }
 
-  present(frame: FramePlan, overlay?: FrameOverlay): Promise<void> {
-    return presentChecked(this.#device, () => this.#present(frame, overlay));
-  }
-
-  #overlayPipeline(): GPURenderPipeline {
-    if (this.#overlay) return this.#overlay.pipeline;
-    const device = this.#device;
-    const module = device.createShaderModule({ label: "view overlay", code: OVERLAY_WGSL });
-    const pipeline = device.createRenderPipeline({
-      label: "view overlay",
-      layout: "auto",
-      vertex: { module, entryPoint: "overlay_vs" },
-      fragment: {
-        module,
-        entryPoint: "overlay_fs",
-        targets: [{ format: this.#configuration.format }],
-      },
-      primitive: { topology: "triangle-list" },
-    });
-    const uniform = device.createBuffer({
-      label: "view overlay uniform",
-      size: OVERLAY_BYTES,
-      usage: BufferUsage.UNIFORM | BufferUsage.COPY_DST,
-    });
-    this.#overlay = { pipeline, uniform };
-    return pipeline;
+  present(frame: FramePlan, overrides?: TileOverrides): Promise<void> {
+    return presentChecked(this.#device, () => this.#present(frame, overrides));
   }
 
   resize(width: number, height: number): void {
@@ -441,7 +409,7 @@ export class GpuPresenter implements Presenter {
     }
   }
 
-  #present(frame: FramePlan, overlay: FrameOverlay | undefined): void {
+  #present(frame: FramePlan, overrides: TileOverrides | undefined): void {
     const device = this.#device;
     const { width, height } = this.#canvases[0] as RenderCanvas;
     const bg = frame.style.background;
@@ -452,7 +420,10 @@ export class GpuPresenter implements Presenter {
       const quads = frame.tiles.flatMap((draw) => tileQuad(draw));
       device.queue.writeBuffer(this.#quads, 0, new Float32Array(quads));
     }
-    const groups = frame.tiles.map((draw) => this.#tileGroup(draw));
+    const groups = frame.tiles.map((draw) => {
+      const override = overrides?.get(tileKey(draw.tile.level, draw.tile.tx, draw.tile.ty));
+      return override === undefined ? this.#tileGroup(draw) : this.#overrideGroup(override, draw);
+    });
     this.#releaseUnused(
       new Set(frame.tiles.map((draw) => tileKey(draw.tile.level, draw.tile.tx, draw.tile.ty))),
     );
@@ -493,30 +464,6 @@ export class GpuPresenter implements Presenter {
       pass.setBindGroup(1, group);
       pass.draw(6, 1, 0, i);
     });
-    if (overlay !== undefined && overlay.dst.width > 0 && overlay.dst.height > 0) {
-      const pipeline = this.#overlayPipeline();
-      const uniform = (this.#overlay as { uniform: GPUBuffer }).uniform;
-      const { dst, uv } = overlay;
-      device.queue.writeBuffer(
-        uniform,
-        0,
-        new Float32Array([dst.x, dst.y, dst.width, dst.height, ...uv, width, height, 0, 0]),
-      );
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(
-        0,
-        device.createBindGroup({
-          layout: pipeline.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: { buffer: this.#chromeBuffer } },
-            { binding: 1, resource: { buffer: uniform } },
-            { binding: 2, resource: overlay.texture.createView() },
-            { binding: 3, resource: this.#samplers[overlay.sampling] },
-          ],
-        }),
-      );
-      pass.draw(6);
-    }
     pass.end();
     device.queue.submit([encoder.finish()]);
     this.#show?.();
@@ -570,6 +517,26 @@ export class GpuPresenter implements Presenter {
       ],
     });
     entry.groups[draw.sampling] = group;
+    return group;
+  }
+
+  /** The bind group of a tile drawn from an override texture, kept per texture and sampling. */
+  #overrideGroup(texture: GPUTexture, draw: TileDraw): GPUBindGroup {
+    let groups = this.#overrideGroups.get(texture);
+    if (groups === undefined) {
+      groups = {};
+      this.#overrideGroups.set(texture, groups);
+    }
+    const cached = groups[draw.sampling];
+    if (cached) return cached;
+    const group = this.#device.createBindGroup({
+      layout: this.#tilePipeline.getBindGroupLayout(1),
+      entries: [
+        { binding: 0, resource: texture.createView() },
+        { binding: 1, resource: this.#samplers[draw.sampling] },
+      ],
+    });
+    groups[draw.sampling] = group;
     return group;
   }
 

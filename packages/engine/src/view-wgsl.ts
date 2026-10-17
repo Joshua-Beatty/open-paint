@@ -59,68 +59,6 @@ fn chrome_fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
 }
 `;
 
-/**
- * Draws a premultiplied texture over the display tiles in its device rectangle, over the
- * transparency checkerboard of `CHROME_WGSL`, replacing what was drawn there: the floating content
- * of Move Selected Pixels on engine v1 (TL-MOVE-PIX-01).
- */
-export const OVERLAY_WGSL = /* wgsl */ `
-struct Chrome {
-  rect: vec4<f32>,
-  viewport: vec4<f32>,
-  checker: vec4<f32>,
-  shadow: vec4<f32>,
-  border: vec4<f32>,
-}
-
-// dst: device rectangle; uv: the texture's part it shows; size: the frame's width and height.
-struct Overlay {
-  dst: vec4<f32>,
-  uv: vec4<f32>,
-  size: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> chrome: Chrome;
-@group(0) @binding(1) var<uniform> overlay: Overlay;
-@group(0) @binding(2) var overlay_tex: texture_2d<f32>;
-@group(0) @binding(3) var overlay_sampler: sampler;
-
-struct OverlayOut {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-}
-
-const OVERLAY_CORNERS = array<vec2<f32>, 6>(
-  vec2<f32>(0.0, 0.0),
-  vec2<f32>(1.0, 0.0),
-  vec2<f32>(0.0, 1.0),
-  vec2<f32>(0.0, 1.0),
-  vec2<f32>(1.0, 0.0),
-  vec2<f32>(1.0, 1.0),
-);
-
-@vertex
-fn overlay_vs(@builtin(vertex_index) index: u32) -> OverlayOut {
-  let corner = OVERLAY_CORNERS[index];
-  let px = overlay.dst.xy + corner * overlay.dst.zw;
-  var out: OverlayOut;
-  out.position = vec4<f32>(px.x / overlay.size.x * 2.0 - 1.0, 1.0 - px.y / overlay.size.y * 2.0, 0.0, 1.0);
-  out.uv = mix(overlay.uv.xy, overlay.uv.zw, corner);
-  return out;
-}
-
-@fragment
-fn overlay_fs(in: OverlayOut) -> @location(0) vec4<f32> {
-  let r = chrome.rect;
-  let size = chrome.viewport.z;
-  let cx = i32(floor((in.position.x - r.x) / size));
-  let cy = i32(floor((in.position.y - r.y) / size));
-  let gray = select(chrome.checker.y, chrome.checker.x, ((cx + cy) & 1) == 0) / 255.0;
-  let c = textureSample(overlay_tex, overlay_sampler, in.uv);
-  return vec4<f32>(c.rgb + vec3<f32>(gray) * (1.0 - c.a), 1.0);
-}
-`;
-
 export const TILE_WGSL = /* wgsl */ `
 struct Frame {
   size: vec4<f32>,
