@@ -13,7 +13,12 @@ import type {
 export interface PerfIdle {
   readonly idle: boolean;
   readonly at: number;
+  /** When it gave up: what was still busy the last time it looked ("engine", or a check's reason). */
+  readonly busy?: readonly string[];
 }
+
+/** An idle check: true when idle, false or what is busy (e.g. "effect render") otherwise. */
+export type IdleCheck = () => boolean | string;
 
 /** `window.__openpaintPerf`, present only with `?perf=1`. */
 export interface PerfApi {
@@ -88,7 +93,7 @@ export class PerfMonitor {
   #tracking: { frame: number; channel: MessageChannel } | undefined;
   #marks: Record<string, number> = {};
   #engine: EngineHandle | undefined;
-  readonly #idleChecks = new Set<() => boolean>();
+  readonly #idleChecks = new Set<IdleCheck>();
 
   constructor(readonly engineName: string) {}
 
@@ -180,7 +185,7 @@ export class PerfMonitor {
   }
 
   /** Adds a check that must pass for `idle()`, e.g. "no history step in flight". */
-  addIdleCheck(check: () => boolean): () => void {
+  addIdleCheck(check: IdleCheck): () => void {
     this.#idleChecks.add(check);
     return () => {
       this.#idleChecks.delete(check);
@@ -240,18 +245,24 @@ export class PerfMonitor {
   async idle(timeoutMs = IDLE_TIMEOUT_MS): Promise<PerfIdle> {
     const deadline = performance.now() + timeoutMs;
     let since: number | undefined;
+    let busy: string[] = [];
     while (performance.now() < deadline) {
       await nextFrame();
       const engineIdle = await this.#drain();
       const now = performance.now();
-      if (engineIdle && [...this.#idleChecks].every((check) => check())) {
+      busy = engineIdle ? [] : ["engine"];
+      for (const check of this.#idleChecks) {
+        const result = check();
+        if (result !== true) busy.push(result === false ? "app" : result);
+      }
+      if (busy.length === 0) {
         if (since !== undefined) return { idle: true, at: since };
         since = now;
       } else {
         since = undefined;
       }
     }
-    return { idle: false, at: performance.now() };
+    return { idle: false, at: performance.now(), busy };
   }
 
   /** Collects the engine's recorded presents and returns whether it is idle. */

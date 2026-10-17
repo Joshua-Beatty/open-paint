@@ -813,14 +813,16 @@ export function App({
   useEffect(
     () =>
       perfMonitor?.addIdleCheck(() => {
-        if (effectRuntime.rendering || session?.saving === true) return false;
-        if (engineStrokesPending() > 0 || engineSyncPending()) return false;
+        if (effectRuntime.rendering) return "effect render";
+        if (session?.saving === true) return "session checkpoint";
+        if (engineStrokesPending() > 0) return "engine stroke";
+        if (engineSyncPending()) return "engine sync";
         try {
           // Throws while an undo or redo runs or a background job (a resize) holds the document.
           images.active?.value.document.history.assertIdle();
           return true;
         } catch {
-          return false;
+          return "history";
         }
       }),
     [images, effectRuntime, session],

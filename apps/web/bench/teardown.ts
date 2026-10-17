@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { mkdirSync, writeFileSync } from "node:fs";
+import { resultsKey } from "./browser.ts";
 import { ENGINE } from "./harness.ts";
 import { type BenchResults, formatTable, resultsFileName, type ScenarioResult } from "./report.ts";
 import { loadScenarios, RESULTS_DIR, SCENARIO_IDS } from "./store.ts";
@@ -25,13 +26,20 @@ export default function teardown(): void {
     adapter: first?.adapter,
     viewport: { width: 1440, height: 900 },
     devicePixelRatio: first?.devicePixelRatio ?? 1,
+    ranEngine: first?.engine,
+    crossOriginIsolated: first?.crossOriginIsolated,
+    userAgent: first?.userAgent,
     scenarios,
   };
   mkdirSync(RESULTS_DIR, { recursive: true });
-  const path = `${RESULTS_DIR}${resultsFileName(ENGINE, date)}`;
+  const path = `${RESULTS_DIR}${resultsFileName(resultsKey(ENGINE), date)}`;
   writeFileSync(path, `${JSON.stringify(results, null, 2)}\n`);
-  const backends = [...new Set(saved.map((entry) => entry.backend ?? "unknown"))].join(", ");
+  const distinct = (values: readonly unknown[]) =>
+    [...new Set(values.map((value) => String(value ?? "unknown")))].join(", ");
+  const backends = distinct(saved.map((entry) => entry.backend));
+  const engines = distinct(saved.map((entry) => entry.engine));
+  const isolated = distinct(saved.map((entry) => entry.crossOriginIsolated));
   console.log(
-    `\nOpenPaint bench, engine ${ENGINE}, backend ${backends}, ${results.browser}\n\n${formatTable(results)}\n\nSaved ${path}\n`,
+    `\nOpenPaint bench, engine ${ENGINE} (ran ${engines}), backend ${backends}, crossOriginIsolated ${isolated}, ${results.browser}\n\n${formatTable(results)}\n\nSaved ${path}\n`,
   );
 }

@@ -1,4 +1,4 @@
-import type { ScenarioMetrics } from "../src/perf/stats.ts";
+import type { FrameStats, ScenarioMetrics } from "../src/perf/stats.ts";
 
 /** One scenario's entry in the results file. */
 export interface ScenarioResult {
@@ -7,6 +7,8 @@ export interface ScenarioResult {
   /** What the scenario actually did: zoom, stroke length, input counts and the like. */
   readonly setup: Readonly<Record<string, number | string | boolean>>;
   readonly metrics: ScenarioMetrics | null;
+  /** The page's animation frames during the gesture. Absent from older results. */
+  readonly frames?: FrameStats;
   /** True when the app did not settle within the cap; the metrics then cover up to the cap. */
   readonly timedOut: boolean;
   /** Set when the scenario could not run, with the reason. */
@@ -24,6 +26,10 @@ export interface BenchResults {
   readonly adapter: unknown;
   readonly viewport: { readonly width: number; readonly height: number };
   readonly devicePixelRatio: number;
+  /** The engine that actually ran, cross-origin isolation and the user agent, when reported. */
+  readonly ranEngine?: string | undefined;
+  readonly crossOriginIsolated?: boolean | undefined;
+  readonly userAgent?: string | undefined;
   readonly scenarios: readonly ScenarioResult[];
 }
 
@@ -49,12 +55,14 @@ export function formatTable(results: BenchResults): string {
     "Longest task (ms)",
     "Long tasks total (ms)",
     "Settle (ms)",
+    "Page frames/s, gap p95 / max (ms), gaps >= 50 ms (total ms)",
     "Notes",
   ];
   const rows = results.scenarios.map((scenario) => {
     const m = scenario.metrics;
-    if (m === null) return [scenario.id, scenario.error ?? "not run", "", "", "", "", "", ""];
+    if (m === null) return [scenario.id, scenario.error ?? "not run", "", "", "", "", "", "", ""];
     const settle = scenario.timedOut ? "> cap" : ms(m.settleMs);
+    const f = scenario.frames;
     return [
       scenario.id,
       m.presentsPerSecond.toFixed(1),
@@ -63,6 +71,9 @@ export function formatTable(results: BenchResults): string {
       ms(m.longestTaskMs),
       ms(m.totalLongTaskMs),
       settle,
+      f === undefined
+        ? "-"
+        : `${f.framesPerSecond.toFixed(0)}, ${ms(f.interval.p95)} / ${ms(f.interval.max)}, ${f.long} (${ms(f.longMs)})`,
       (scenario.notes ?? []).join("; "),
     ];
   });

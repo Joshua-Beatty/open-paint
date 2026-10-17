@@ -109,7 +109,9 @@ describe("PerfMonitor", () => {
     const { engine } = fakeEngine([]);
     const monitor = new PerfMonitor("v1");
     monitor.attachEngine(engine);
-    monitor.addIdleCheck(() => false);
-    expect((await monitor.idle(30)).idle).toBe(false);
+    monitor.addIdleCheck(() => "effect render");
+    const result = await monitor.idle(30);
+    expect(result.idle).toBe(false);
+    expect(result.busy).toEqual(["effect render"]);
   });
 });

@@ -2,7 +2,12 @@
 import { expect, type Page } from "@playwright/test";
 import type { BenchInfo } from "../src/perf/bench-hook.ts";
 import type { PerfIdle } from "../src/perf/perf-monitor.ts";
-import { type ScenarioMetrics, scenarioMetrics } from "../src/perf/stats.ts";
+import {
+  type FrameStats,
+  frameStats,
+  type ScenarioMetrics,
+  scenarioMetrics,
+} from "../src/perf/stats.ts";
 import type { Box, Point } from "./paths.ts";
 import { GestureProfile } from "./profile.ts";
 
@@ -95,26 +100,58 @@ export function nameProfile(name: string): void {
   profileName = name;
 }
 
-/** Forgets earlier recordings and returns the gesture's start mark. */
+interface FrameWatch {
+  readonly frames: number[];
+  running: boolean;
+}
+
+/**
+ * Forgets earlier recordings, starts recording the page's animation frames (the frame rate the user
+ * sees, in every browser) and returns the gesture's start mark.
+ */
 export async function beginGesture(page: Page): Promise<number> {
   profile = await GestureProfile.start(page);
   return page.evaluate(() => {
     const perf = window.__openpaintPerf;
     if (perf === undefined) throw new Error("The page runs without ?perf=1.");
     perf.reset();
+    const watch: FrameWatch = { frames: [], running: true };
+    (window as unknown as { __benchFrames: FrameWatch }).__benchFrames = watch;
+    const frame = () => {
+      if (!watch.running) return;
+      // The callback's own clock: Firefox passes the frame's vsync time, Chromium the frame start.
+      watch.frames.push(performance.now());
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+    // Shows in browser profiles (the Firefox profile summary windows its samples with these).
+    performance.mark("bench:gesture-start");
     return perf.mark("gestureStart");
   });
 }
 
 export interface GestureResult {
   readonly metrics: ScenarioMetrics;
+  /** The page's frames during the gesture. */
+  readonly frames: FrameStats;
   readonly timedOut: boolean;
+  /** When it did not settle: what was still busy. */
+  readonly busy?: readonly string[];
 }
 
 /** Marks the gesture's end, waits until the app is idle (up to the cap) and measures it. */
 export async function endGesture(page: Page, from: number): Promise<GestureResult> {
-  const to = await page.evaluate(() => window.__openpaintPerf?.mark("gestureEnd") ?? 0);
+  const { to, frames } = await page.evaluate(() => {
+    const watch = (window as unknown as { __benchFrames?: FrameWatch }).__benchFrames;
+    if (watch !== undefined) watch.running = false;
+    performance.mark("bench:gesture-end");
+    return {
+      to: window.__openpaintPerf?.mark("gestureEnd") ?? 0,
+      frames: watch?.frames ?? [],
+    };
+  });
   const settled = await idle(page, SETTLE_CAP_MS);
+  await page.evaluate(() => performance.mark("bench:settled"));
   await profile?.stop(profileName);
   profile = undefined;
   const snapshot = await page.evaluate(() => {
@@ -128,7 +165,9 @@ export async function endGesture(page: Page, from: number): Promise<GestureResul
       to,
       idleAt: settled.idle ? settled.at : undefined,
     }),
+    frames: frameStats(frames, from, to),
     timedOut: !settled.idle,
+    ...(settled.busy !== undefined && { busy: settled.busy }),
   };
 }
 

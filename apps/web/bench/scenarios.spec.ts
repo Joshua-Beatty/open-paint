@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import { BENCH_BROWSER } from "./browser.ts";
 import {
   actualSize,
   beginGesture,
@@ -67,7 +68,7 @@ function scenario(
   test(`${id}: ${title}`, async ({ page, browser }) => {
     nameProfile(id);
     const setup: Setup = {};
-    const browserName = `Chromium ${browser.version()}`;
+    const browserName = `${BENCH_BROWSER} ${browser.version()}`;
     // Replaced below. It stays if the test is killed by its timeout.
     saveScenario({
       result: {
@@ -89,6 +90,7 @@ function scenario(
       await openApp(page);
       const gesture = await run(page, setup, notes);
       if (gesture.metrics.presents === 0) notes.push("nothing was presented during the gesture");
+      if (gesture.busy !== undefined) notes.push(`still busy: ${gesture.busy.join(", ")}`);
       const previews = gesture.metrics.previewLatency;
       if (previews.count > 0) {
         const ms = (value: number | null) => (value === null ? "-" : value.toFixed(0));
@@ -97,7 +99,15 @@ function scenario(
         );
       }
       for (const title of await errorLogTitles(page)) notes.push(`app error: ${title}`);
-      result = { id, title, setup, metrics: gesture.metrics, timedOut: gesture.timedOut, notes };
+      result = {
+        id,
+        title,
+        setup,
+        metrics: gesture.metrics,
+        frames: gesture.frames,
+        timedOut: gesture.timedOut,
+        notes,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       result = { id, title, setup, metrics: null, timedOut: false, error: message.split("\n")[0] };
@@ -109,6 +119,10 @@ function scenario(
       backend: (await page.locator("[data-backend]").getAttribute("data-backend")) ?? undefined,
       adapter: environment?.adapter,
       devicePixelRatio: environment?.devicePixelRatio ?? 1,
+      engine: environment?.engine,
+      crossOriginIsolated: environment?.crossOriginIsolated,
+      hardwareConcurrency: environment?.hardwareConcurrency,
+      userAgent: environment?.userAgent,
     });
     expect(result.error).toBeUndefined();
   });

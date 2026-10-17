@@ -237,6 +237,32 @@ function overlayMatches(
   return matches;
 }
 
+/** The page's own frame rate during a gesture, from `requestAnimationFrame` times. */
+export interface FrameStats {
+  readonly framesPerSecond: number;
+  /** Gaps between frames, with the window's edges as boundaries (as `presentIntervals`). */
+  readonly interval: Distribution;
+  /** Gaps of 50 ms or more: frames the main thread missed, in browsers without `longtask`. */
+  readonly long: number;
+  /** The time spent in those gaps. */
+  readonly longMs: number;
+}
+
+/** The main thread's frames during `[start, end]`, given every animation frame's time. */
+export function frameStats(frames: readonly number[], start: number, end: number): FrameStats {
+  const inside = frames.filter((time) => time >= start && time <= end).sort((a, b) => a - b);
+  const edges = [start, ...inside, end];
+  const gaps = edges.slice(1).map((time, index) => time - (edges[index] as number));
+  const long = gaps.filter((gap) => gap >= 50);
+  const seconds = (end - start) / 1000;
+  return {
+    framesPerSecond: seconds > 0 ? inside.length / seconds : 0,
+    interval: distribution(gaps),
+    long: long.length,
+    longMs: long.reduce((sum, gap) => sum + gap, 0),
+  };
+}
+
 /** The tasks that overlap `[start, end]`. */
 export function tasksDuring(tasks: readonly PerfTask[], start: number, end: number): PerfTask[] {
   return tasks.filter((task) => task.start < end && task.start + task.duration > start);

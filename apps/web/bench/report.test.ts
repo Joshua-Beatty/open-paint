@@ -47,15 +47,29 @@ describe("formatTable", () => {
       viewport: { width: 1440, height: 900 },
       devicePixelRatio: 1,
       scenarios: [
-        { id: "B1", title: "stroke", setup: {}, metrics, timedOut: false },
+        {
+          id: "B1",
+          title: "stroke",
+          setup: {},
+          metrics,
+          frames: {
+            framesPerSecond: 60,
+            interval: { count: 3, p50: 16, p95: 16, max: 52 },
+            long: 1,
+            longMs: 52,
+          },
+          timedOut: false,
+        },
         { id: "B2", title: "stroke", setup: {}, metrics, timedOut: true, notes: ["a", "b"] },
         { id: "B3", title: "stroke", setup: {}, metrics: null, timedOut: false, error: "crashed" },
       ],
     };
     const lines = formatTable(results).split("\n");
     expect(lines).toHaveLength(5);
-    expect(lines[2]).toBe("| B1 | 100.0 | 10.0 / 10.0 / 10.0 | 5.0 / 9.5 | 0.0 | 0.0 | 40.0 |  |");
-    expect(lines[3]).toContain("| > cap | a; b |");
+    expect(lines[2]).toBe(
+      "| B1 | 100.0 | 10.0 / 10.0 / 10.0 | 5.0 / 9.5 | 0.0 | 0.0 | 40.0 | 60, 16.0 / 52.0, 1 (52.0) |  |",
+    );
+    expect(lines[3]).toContain("| > cap | - | a; b |");
     expect(lines[4]).toContain("| B3 | crashed |");
   });
 });

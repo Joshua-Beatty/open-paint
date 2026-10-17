@@ -10,10 +10,39 @@ export interface SavedScenario {
   readonly backend: string | undefined;
   readonly adapter: unknown;
   readonly devicePixelRatio: number;
+  /** The engine that ran (`v1` when `?engine=v2` fell back), when the page reported it. */
+  readonly engine?: string | undefined;
+  readonly crossOriginIsolated?: boolean | undefined;
+  readonly hardwareConcurrency?: number | undefined;
+  readonly userAgent?: string | undefined;
 }
 
 /** The benchmark scenarios, in report order. */
-export const SCENARIO_IDS = ["B1", "B2", "B3", "B4", "B5", "B6"] as const;
+export const SCENARIO_IDS = [
+  "B1",
+  "B2",
+  "B3",
+  "B4",
+  "B5",
+  "B6",
+  "B7",
+  "B8",
+  "B9a",
+  "B9b",
+  "B9c",
+  "B10a",
+  "B10b",
+  "B11",
+  "B12a",
+  "B12b",
+  "B13a",
+  "B13b",
+  "B14",
+  "B15",
+  "B16",
+  "B17",
+  "B18",
+] as const;
 
 /** Inside Playwright's output folder, which is emptied at the start of every run. */
 const SCENARIO_DIR = fileURLToPath(new URL("../test-results/bench-scenarios/", import.meta.url));

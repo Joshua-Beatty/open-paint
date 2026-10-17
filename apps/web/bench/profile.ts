@@ -2,6 +2,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CDPSession, Page } from "@playwright/test";
+import { HAS_CDP } from "./browser.ts";
 
 /**
  * With `BENCH_PROFILE=<dir>`, a scenario records a main-thread CPU profile of its gesture into
@@ -34,7 +35,7 @@ export class GestureProfile {
 
   /** Starts a profile when `BENCH_PROFILE` is set. */
   static async start(page: Page): Promise<GestureProfile | undefined> {
-    if (PROFILE_DIR === undefined) return undefined;
+    if (PROFILE_DIR === undefined || !HAS_CDP) return undefined;
     const session = await page.context().newCDPSession(page);
     await session.send("Profiler.enable");
     await session.send("Profiler.setSamplingInterval", { interval: 250 });

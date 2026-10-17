@@ -23,6 +23,12 @@ export interface BenchInfo {
   readonly adapter: EngineStatus["adapter"];
   readonly devicePixelRatio: number;
   readonly layout: ViewLayout | undefined;
+  /** The engine running (`v1` unless v2 was asked for and WebGPU is in use). */
+  readonly engine: string | undefined;
+  /** Whether the page is cross-origin isolated (SharedArrayBuffer, WASM threads). */
+  readonly crossOriginIsolated: boolean;
+  readonly hardwareConcurrency: number;
+  readonly userAgent: string;
 }
 
 /** `window.__openpaintBench`, present only with `?bench=1`. */
@@ -128,6 +134,10 @@ export function installBenchHook(target: Window, host: BenchHost): () => void {
       adapter: host.status()?.adapter,
       devicePixelRatio: target.devicePixelRatio,
       layout: host.layout(),
+      engine: host.status() === undefined ? undefined : (host.status()?.engine ?? "v1"),
+      crossOriginIsolated: target.crossOriginIsolated === true,
+      hardwareConcurrency: target.navigator?.hardwareConcurrency ?? 0,
+      userAgent: target.navigator?.userAgent ?? "",
     }),
   };
   return () => {

@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resultsKey } from "./browser.ts";
 import { type BenchResults, formatComparison } from "./report.ts";
 import { RESULTS_DIR } from "./store.ts";
 
@@ -28,14 +29,22 @@ if (run) {
 /** The newest results file of an engine. Names sort by date, as they hold the UTC time. */
 function newest(engine: string): BenchResults {
   const name = readdirSync(RESULTS_DIR)
-    .filter((file) => file.startsWith(`${engine}-`) && file.endsWith(".json"))
+    .filter(
+      (file) =>
+        file.startsWith(`${engine}-`) &&
+        /^\d/.test(file.slice(engine.length + 1)) &&
+        file.endsWith(".json"),
+    )
     .sort()
     .at(-1);
   if (name === undefined) throw new Error(`No ${engine} results in ${RESULTS_DIR}.`);
   return JSON.parse(readFileSync(`${RESULTS_DIR}${name}`, "utf8")) as BenchResults;
 }
 
-const [base, next] = ENGINES.map(newest) as [BenchResults, BenchResults];
+const [base, next] = ENGINES.map((engine) => newest(resultsKey(engine))) as [
+  BenchResults,
+  BenchResults,
+];
 const table = formatComparison(base, next);
 const path = `${RESULTS_DIR}compare-${next.date.replace(/\.\d+Z$/, "Z").replaceAll(":", "-")}.md`;
 writeFileSync(

@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   distribution,
+  frameStats,
   inputLatencies,
   overlayFrameLags,
   overlayLags,
@@ -14,6 +15,24 @@ import {
 } from "./stats";
 
 const present = (end: number, work = 2) => ({ start: end - work, end });
+
+describe("frameStats", () => {
+  it("counts the frames inside the window and the gaps of 50 ms or more", () => {
+    const stats = frameStats([0, 116, 132, 148, 164, 300, 400], 100, 300);
+    expect(stats.framesPerSecond).toBe(25);
+    expect(stats.interval.count).toBe(6);
+    expect(stats.interval.max).toBe(136);
+    expect(stats.long).toBe(1);
+    expect(stats.longMs).toBe(136);
+  });
+
+  it("is one long gap without frames", () => {
+    const stats = frameStats([], 0, 80);
+    expect(stats.framesPerSecond).toBe(0);
+    expect(stats.long).toBe(1);
+    expect(stats.longMs).toBe(80);
+  });
+});
 
 describe("percentile", () => {
   it("interpolates between the closest ranks of the sorted values", () => {
