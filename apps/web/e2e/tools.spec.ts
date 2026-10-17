@@ -80,30 +80,40 @@ async function darkBounds(
   clip: { x: number; y: number; width: number; height: number },
 ): Promise<{ left: number; top: number; right: number; bottom: number }> {
   const png = await page.screenshot({ clip, style: CANVAS_ONLY });
-  return page.evaluate(async (data) => {
-    const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
-    const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
-    if (context === null) throw new Error("no 2D context");
-    context.drawImage(bitmap, 0, 0);
-    const { data: pixels, width, height } = context.getImageData(0, 0, bitmap.width, bitmap.height);
-    let left = width;
-    let top = height;
-    let right = -1;
-    let bottom = -1;
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = (y * width + x) * 4;
-        if (Math.max(pixels[i] ?? 0, pixels[i + 1] ?? 0, pixels[i + 2] ?? 0) > 60) continue;
-        left = Math.min(left, x);
-        top = Math.min(top, y);
-        right = Math.max(right, x);
-        bottom = Math.max(bottom, y);
+  return page.evaluate(
+    async ({ data, cssWidth }) => {
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
+      if (context === null) throw new Error("no 2D context");
+      context.drawImage(bitmap, 0, 0);
+      const {
+        data: pixels,
+        width,
+        height,
+      } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      let left = width;
+      let top = height;
+      let right = -1;
+      let bottom = -1;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          // Darker than the grey around the image, which a small image leaves inside the region.
+          if (Math.max(pixels[i] ?? 0, pixels[i + 1] ?? 0, pixels[i + 2] ?? 0) > 30) continue;
+          left = Math.min(left, x);
+          top = Math.min(top, y);
+          right = Math.max(right, x);
+          bottom = Math.max(bottom, y);
+        }
       }
-    }
-    // Screenshots are at the page's device pixel ratio, which is 1 here.
-    return { left, top, right, bottom };
-  }, png.toString("base64"));
+      // Screenshots are at the screen's scale, which can be 2 even where the page reports 1
+      // (desktop Firefox over WebDriver BiDi on a high-DPI screen).
+      const scale = width / cssWidth;
+      return { left: left / scale, top: top / scale, right: right / scale, bottom: bottom / scale };
+    },
+    { data: png.toString("base64"), cssWidth: clip.width },
+  );
 }
 
 // The tool gestures are sized for a fitted image, so the canvas needs room beyond the default 720 px.

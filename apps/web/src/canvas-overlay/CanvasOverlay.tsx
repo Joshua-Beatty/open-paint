@@ -1,6 +1,7 @@
 import type { Document } from "@openpaint/document";
 import { useTranslation } from "@openpaint/i18n/react";
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { canvasScale } from "../canvas-scale";
 import { type MeasureUnit, unitAbbreviation, unitsPerPixel } from "../status/status-model";
 import type { StatusStore } from "../status/status-store";
 import { cloneSourceMarker } from "../tools/clone-source";
@@ -54,7 +55,7 @@ export function PixelGridOverlay({ store, showGrid }: { store: StatusStore; show
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!showGrid || layout === undefined) return;
-    const opacity = gridOpacity(layout.zoom, devicePixelRatio);
+    const opacity = gridOpacity(layout.zoom, size.scale);
     if (opacity > 0) paintGrid(ctx, gridLines(layout, size), opacity);
   }, [layout, showGrid, size]);
   return (
@@ -111,7 +112,7 @@ export function CloneSourceOverlay({ store }: { store: StatusStore }) {
     paintCloneSource(ctx, {
       x: pointer.x + marker.offset.x * layout.zoom,
       y: pointer.y + marker.offset.y * layout.zoom,
-      dpr: devicePixelRatio,
+      dpr: size.scale,
     });
   }, [layout, pointer, marker, size]);
   return (
@@ -141,7 +142,7 @@ export function WandHandlesOverlay({ store }: { store: StatusStore }) {
       : undefined;
     const move = handles.move ? viewPoint(layout, handles.move) : undefined;
     if (seed === undefined && move === undefined) return;
-    paintWandHandles(ctx, { seed, move, dpr: devicePixelRatio });
+    paintWandHandles(ctx, { seed, move, dpr: size.scale });
   }, [layout, handles, size]);
   const busy = handles.busy ? viewPoint(layout, handles.busy) : undefined;
   return (
@@ -151,7 +152,7 @@ export function WandHandlesOverlay({ store }: { store: StatusStore }) {
         <div
           className="app-tool-busy"
           aria-hidden="true"
-          style={{ left: busy.x / devicePixelRatio, top: busy.y / devicePixelRatio }}
+          style={{ left: busy.x / size.scale, top: busy.y / size.scale }}
         />
       )}
     </>
@@ -180,7 +181,7 @@ export function GradientHandlesOverlay({ store }: { store: StatusStore }) {
     const end = at(handles.end);
     const move = at(handles.move);
     if (start === undefined && end === undefined && move === undefined) return;
-    paintGradientHandles(ctx, { start, end, move, dpr: devicePixelRatio });
+    paintGradientHandles(ctx, { start, end, move, dpr: size.scale });
   }, [layout, handles, size]);
   return (
     <canvas ref={ref} className="app-canvas-overlay" width={size.width} height={size.height} />
@@ -208,14 +209,14 @@ export function TransformFrameOverlay({ store }: { store: StatusStore }) {
       y: layout.originY + point.y * layout.zoom,
     });
     const anchor = at(frame.anchor);
-    const resetOffset = RESET_OFFSET_CSS_PX * devicePixelRatio;
+    const resetOffset = RESET_OFFSET_CSS_PX * size.scale;
     paintTransformFrame(ctx, {
       corners: frame.corners.map(at),
       handles: FRAME_HANDLES.map((handle) => at(frame.handles[handle])),
       anchor,
       reset: { x: anchor.x + resetOffset, y: anchor.y + resetOffset },
       outline: frame.outline !== false,
-      dpr: devicePixelRatio,
+      dpr: size.scale,
     });
   }, [layout, frame, size]);
   return (
@@ -245,7 +246,7 @@ export function ZoomRectangleOverlay({ store }: { store: StatusStore }) {
     paintZoomRectangle(
       ctx,
       { x: start.x, y: start.y, width: end.x - start.x, height: end.y - start.y },
-      devicePixelRatio,
+      size.scale,
     );
   }, [layout, rect, size]);
   return (
@@ -331,7 +332,7 @@ export function TextFrameOverlay({ store }: { store: StatusStore }) {
         ? {}
         : { caret: { ...at(caret), height: caret.height * layout.zoom } }),
       ...(handle === undefined ? {} : { handle: at(handle) }),
-      dpr: devicePixelRatio,
+      dpr: size.scale,
     });
   }, [layout, handles, size]);
   return (
@@ -376,7 +377,7 @@ function Ruler({
         return;
       }
       const at =
-        Math.round(orientation === "horizontal" ? pointer.x : pointer.y) / devicePixelRatio;
+        Math.round(orientation === "horizontal" ? pointer.x : pointer.y) / canvasScale.value;
       marker.style.display = "";
       marker.style.transform =
         orientation === "horizontal" ? `translateX(${at}px)` : `translateY(${at}px)`;
@@ -392,7 +393,7 @@ function Ruler({
     const horizontal = orientation === "horizontal";
     const length = horizontal ? size.width : size.height;
     const thickness = horizontal ? size.height : size.width;
-    const dpr = devicePixelRatio;
+    const dpr = size.scale;
     const style = getComputedStyle(canvas);
     const colors: RulerColors = {
       background: colorVariable(style, "--ruler-background", "#ececf0"),

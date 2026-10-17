@@ -26,7 +26,7 @@ export function ShapeHandlesOverlay({ store }: { store: StatusStore }) {
     const radius = handles.radius === undefined ? undefined : viewPoint(layout, handles.radius);
     const tail = handles.tail === undefined ? undefined : viewPoint(layout, handles.tail);
     if (radius === undefined && tail === undefined) return;
-    paintShapeHandles(ctx, { radius, tail, dpr: devicePixelRatio });
+    paintShapeHandles(ctx, { radius, tail, dpr: size.scale });
   }, [layout, handles, size]);
   return (
     <canvas ref={ref} className="app-canvas-overlay" width={size.width} height={size.height} />

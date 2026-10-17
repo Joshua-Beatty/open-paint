@@ -34,7 +34,7 @@ export function LineCurveHandlesOverlay({ store }: { store: StatusStore }) {
         ? ([firstControl, secondControl] as const)
         : undefined;
     if (start === undefined && end === undefined && controls === undefined) return;
-    paintLineCurveHandles(ctx, { start, end, controls, dpr: devicePixelRatio });
+    paintLineCurveHandles(ctx, { start, end, controls, dpr: size.scale });
   }, [layout, handles, size]);
   return (
     <canvas ref={ref} className="app-canvas-overlay" width={size.width} height={size.height} />

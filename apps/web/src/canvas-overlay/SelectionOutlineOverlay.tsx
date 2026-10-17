@@ -85,12 +85,12 @@ export function SelectionOutlineOverlay({
     if (path === undefined || layout === undefined) return;
     perfMonitor?.overlayDrawn(layout);
     const time = animate ? tick.current * ANT_STEP_MS : 0;
-    const offset = antOffset(time, devicePixelRatio);
+    const offset = antOffset(time, size.scale);
     if (runs === undefined) {
-      paintSelectionOutline(ctx, path, { offset, dpr: devicePixelRatio, tint });
+      paintSelectionOutline(ctx, path, { offset, dpr: size.scale, tint });
       return;
     }
-    const dash = antDash(devicePixelRatio);
+    const dash = antDash(size.scale);
     if (pattern.current?.dash !== dash) {
       const created = antPattern(ctx, dash);
       pattern.current = created === null ? undefined : { dash, pattern: created };

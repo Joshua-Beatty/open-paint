@@ -47,6 +47,7 @@ import {
 import { LineCurveHandlesOverlay } from "./canvas-overlay/LineCurveHandlesOverlay";
 import { RULER_CSS_PIXELS, visibleImageArea } from "./canvas-overlay/overlay-math";
 import { ShapeHandlesOverlay } from "./canvas-overlay/ShapeHandlesOverlay";
+import { canvasScale } from "./canvas-scale";
 import { ColorsPanel } from "./colors/ColorsPanel";
 import { opfsPaletteStorage } from "./colors/palette-library";
 import { PRIMARY_COLOR_PATH, readStoredColor, SECONDARY_COLOR_PATH } from "./colors/use-colors";
@@ -957,8 +958,8 @@ export function App({
         scrollView: (dx, dy) =>
           void engineRef.current?.view({
             type: "pan",
-            dx: -dx * devicePixelRatio,
-            dy: -dy * devicePixelRatio,
+            dx: -dx * canvasScale.value,
+            dy: -dy * canvasScale.value,
           }),
       }),
     [toolController, canvasHasFocus, shortcuts],

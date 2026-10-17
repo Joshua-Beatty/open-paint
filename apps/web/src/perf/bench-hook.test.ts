@@ -1,5 +1,6 @@
 import { LayerBlendMode, MemoryAccountant } from "@openpaint/document";
 import { describe, expect, it, vi } from "vitest";
+import { canvasScale } from "../canvas-scale";
 import {
   BENCH_ALPHA,
   BENCH_BLEND_MODES,
@@ -57,7 +58,9 @@ describe("installBenchHook", () => {
     expect(open).toHaveBeenCalledOnce();
     target.__openpaintBench?.setBrushSize(100);
     expect(setSetting).toHaveBeenCalledWith("tools.brush.size", 100);
+    canvasScale.set(2);
     expect(target.__openpaintBench?.info().devicePixelRatio).toBe(2);
+    canvasScale.reset();
     remove();
     expect(target.__openpaintBench).toBeUndefined();
   });

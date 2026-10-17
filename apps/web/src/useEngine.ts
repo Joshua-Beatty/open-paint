@@ -21,6 +21,7 @@ import {
   autoScrollDelta,
   DEFAULT_AUTO_SCROLL,
 } from "./auto-scroll";
+import { canvasScale, measuredScale } from "./canvas-scale";
 import { noteViewInput, setViewDragging } from "./navigation";
 import { PERF_FLAGS } from "./perf/flags";
 import { perfMonitor } from "./perf/perf-monitor";
@@ -82,10 +83,22 @@ const ARROW_PAN: Record<string, readonly [number, number]> = {
   ArrowDown: [0, -1],
 };
 
-function devicePixelSize(entry: ResizeObserverEntry): EngineSize {
+/**
+ * The canvas's size in device pixels and its device pixels per CSS pixel. The scale is measured
+ * from the device-pixel box rather than taken from `devicePixelRatio`, which can disagree with it;
+ * overlays use the same scale (`canvasScale`), so they line up with what the engine draws.
+ */
+export function devicePixelSize(entry: ResizeObserverEntry): EngineSize {
   const box = entry.devicePixelContentBoxSize?.[0];
+  if (box) {
+    const scale = measuredScale(
+      { width: box.inlineSize, height: box.blockSize },
+      entry.contentRect,
+      devicePixelRatio,
+    );
+    return { width: box.inlineSize, height: box.blockSize, scale };
+  }
   const scale = devicePixelRatio;
-  if (box) return { width: box.inlineSize, height: box.blockSize, scale };
   return {
     width: Math.round(entry.contentRect.width * scale),
     height: Math.round(entry.contentRect.height * scale),
@@ -237,8 +250,8 @@ export function useEngine(
         if (delta.dx !== 0 || delta.dy !== 0) {
           void predictor?.view({
             type: "pan",
-            dx: delta.dx * devicePixelRatio,
-            dy: delta.dy * devicePixelRatio,
+            dx: delta.dx * canvasScale.value,
+            dy: delta.dy * canvasScale.value,
           });
           tools?.pointer("move", scrolling.event, toImage);
         }
@@ -259,9 +272,9 @@ export function useEngine(
       autoScroll = undefined;
     };
     const size: EngineSize = {
-      width: Math.round(host.clientWidth * devicePixelRatio),
-      height: Math.round(host.clientHeight * devicePixelRatio),
-      scale: devicePixelRatio,
+      width: Math.round(host.clientWidth * canvasScale.value),
+      height: Math.round(host.clientHeight * canvasScale.value),
+      scale: canvasScale.value,
     };
     const perf = perfMonitor !== undefined;
     const engineVersion =
@@ -313,6 +326,7 @@ export function useEngine(
       observer = new ResizeObserver(([entry]) => {
         if (!entry) return;
         const next = devicePixelSize(entry);
+        canvasScale.set(next.scale);
         views.resize(next);
         void handle.resize(next);
       });
@@ -460,7 +474,7 @@ export function useEngine(
       const step = ARROW_PAN[event.code];
       if (!spaceHeld || step === undefined || !event.ctrlKey || !predictor) return;
       event.preventDefault();
-      const css = PAN_STEP_CSS_PIXELS * devicePixelRatio;
+      const css = PAN_STEP_CSS_PIXELS * canvasScale.value;
       noteViewInput();
       void predictor.view({ type: "pan", dx: step[0] * css, dy: step[1] * css });
     };

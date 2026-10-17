@@ -1,5 +1,6 @@
 import type { Rect, Size } from "@openpaint/document";
 import type { ViewLayout } from "@openpaint/engine";
+import { canvasScale } from "../canvas-scale";
 import type { MeasureUnit } from "../status/status-model";
 
 /** The ruler strip's thickness in CSS pixels (UI-VIEW-04). */
@@ -104,8 +105,8 @@ export function visibleImageArea(
 ): Rect | undefined {
   if (element === null) return undefined;
   return visibleImageRect(layout, {
-    width: element.clientWidth * devicePixelRatio,
-    height: element.clientHeight * devicePixelRatio,
+    width: element.clientWidth * canvasScale.value,
+    height: element.clientHeight * canvasScale.value,
   });
 }
 

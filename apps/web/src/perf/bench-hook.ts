@@ -7,6 +7,7 @@ import {
   Surface,
 } from "@openpaint/document";
 import type { EngineStatus, ViewLayout } from "@openpaint/engine";
+import { canvasScale } from "../canvas-scale";
 
 /** What `__openpaintBench.createDocument` builds. */
 export interface BenchDocumentOptions {
@@ -132,7 +133,8 @@ export function installBenchHook(target: Window, host: BenchHost): () => void {
     info: () => ({
       backend: host.status()?.backend,
       adapter: host.status()?.adapter,
-      devicePixelRatio: target.devicePixelRatio,
+      // The engine canvas's scale, which bench geometry must use; it can differ from the window's.
+      devicePixelRatio: canvasScale.value,
       layout: host.layout(),
       engine: host.status() === undefined ? undefined : (host.status()?.engine ?? "v1"),
       crossOriginIsolated: target.crossOriginIsolated === true,
