@@ -31,6 +31,16 @@ export interface PerfPresent {
   readonly end: number;
   /** The view it showed, when the engine had one. */
   readonly view?: PerfView;
+  /** Whether it showed floating content (Move Selected Pixels). */
+  readonly float?: boolean;
+}
+
+/** A span of work on the main thread or the engine, for the benchmark's breakdowns. */
+export interface PerfStage {
+  readonly name: string;
+  readonly start: number;
+  readonly end: number;
+  readonly thread: "main" | "engine";
 }
 
 /** An overlay (the selection outline) drawn over the canvas for a view. */
@@ -70,6 +80,8 @@ export interface PerfSnapshot {
   readonly paints?: readonly number[];
   /** Effect previews that reached the canvas. Absent from older recordings. */
   readonly previews?: readonly PerfPreview[];
+  /** Timed stages of work (`PerfMonitor.stage`, the engine's `perfStages`). */
+  readonly stages?: readonly PerfStage[];
   /** Named times set with `__openpaintPerf.mark()`. */
   readonly marks: Readonly<Record<string, number>>;
   /** Whether the browser reports `longtask` and `long-animation-frame` entries. */

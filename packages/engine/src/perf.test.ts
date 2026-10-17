@@ -20,10 +20,18 @@ describe("PresentRecorder", () => {
     expect(emit).toHaveBeenCalledExactlyOnceWith({
       presents: [1, 2, 5, 7],
       views: [Number.NaN, Number.NaN, Number.NaN, Number.NaN, Number.NaN, Number.NaN],
+      floats: [0, 0],
+      stages: [],
     });
-    recorder.record(10, 11, { originX: -4, originY: 2, zoom: 3 });
+    recorder.stage({ name: "float draw", start: 9, end: 10 });
+    recorder.record(10, 11, { originX: -4, originY: 2, zoom: 3 }, true);
     vi.advanceTimersByTime(PERF_FLUSH_MS);
-    expect(emit).toHaveBeenLastCalledWith({ presents: [10, 11], views: [-4, 2, 3] });
+    expect(emit).toHaveBeenLastCalledWith({
+      presents: [10, 11],
+      views: [-4, 2, 3],
+      floats: [1],
+      stages: [{ name: "float draw", start: 9, end: 10 }],
+    });
   });
 
   it("drains the batch on take, so the timer has nothing left to send", () => {
@@ -31,7 +39,7 @@ describe("PresentRecorder", () => {
     const recorder = new PresentRecorder(emit);
     recorder.record(1, 2);
     expect(recorder.take().presents).toEqual([1, 2]);
-    expect(recorder.take()).toEqual({ presents: [], views: [] });
+    expect(recorder.take()).toEqual({ presents: [], views: [], floats: [], stages: [] });
     vi.advanceTimersByTime(PERF_FLUSH_MS * 2);
     expect(emit).not.toHaveBeenCalled();
   });

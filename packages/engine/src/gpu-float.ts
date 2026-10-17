@@ -12,6 +12,7 @@ import {
 import type { FloatLayer, SyncPlacement } from "./document-sync";
 import { BufferUsage, TextureUsage } from "./gpu-device";
 import { footprintGrid, TRANSFORM_SAMPLING_WGSL } from "./gpu-transform";
+import { timedStage } from "./perf";
 import { type ShapeRuns, shapeRuns } from "./shape-runs";
 
 /** Most mip levels the float's texture has: 256 px regions halve exactly down to 1 px. */
@@ -316,7 +317,7 @@ export class FloatGpu {
    * base, new stamps, then the placement and, unless `mips` is false, its mip chain.
    */
   encode(encoder: GPUCommandEncoder, float: FloatLayer, doc: Size, mips = true): void {
-    this.#upload(float);
+    timedStage("float upload", () => this.#upload(float));
     const stamps = float.stamps;
     for (let i = this.#stamped.length; i < stamps.length; i++) {
       // Each stamp has its own uniforms, so it goes in its own submission before the frame's.

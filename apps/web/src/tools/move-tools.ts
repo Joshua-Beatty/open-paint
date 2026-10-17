@@ -11,6 +11,7 @@ import {
 } from "@openpaint/document";
 import type { ToolDescriptor, ToolRuntime } from "@openpaint/extension-api";
 import type { MessageId } from "@openpaint/i18n";
+import { measured } from "../perf/user-timing";
 import { selectionBounds } from "./cursors";
 import { type FrameNames, type FrameTarget, frameToolRuntime } from "./frame-tool";
 import type { PaintHost } from "./paint-tools";
@@ -98,13 +99,15 @@ function pixelTarget(session: FloatingPixels, options: () => TransformOptions): 
       return session.pending;
     },
     preview(m: AffineMatrix, anchor: FramePoint) {
-      session.setAnchor(anchor);
-      session.preview(m, options());
+      measured("move preview", () => {
+        session.setAnchor(anchor);
+        session.preview(m, options());
+      });
     },
     stamp: () => {
       session.stamp();
     },
-    commit: (name) => session.commit(name),
+    commit: (name) => measured("move commit", () => session.commit(name)),
     cancel: () => {
       session.cancel();
     },
@@ -202,7 +205,7 @@ export function movePixelsToolRuntime(host: PaintHost, handoff: FloatingHandoff)
     host,
     names: PIXEL_NAMES,
     start: () => {
-      const session = host.document()?.liftSelectedPixels();
+      const session = measured("move lift", () => host.document()?.liftSelectedPixels());
       if (session === undefined) return undefined;
       equip(session);
       return pixelTarget(session, options);

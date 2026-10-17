@@ -4,7 +4,7 @@ import { initCpu } from "./cpu";
 import { DocumentReplica } from "./document-sync";
 import { Engine } from "./engine";
 import { GpuEffectQueue } from "./gpu-effects";
-import { type EnginePerfReport, type PresentBatch, PresentRecorder } from "./perf";
+import { type EnginePerfReport, type PresentBatch, PresentRecorder, perfStages } from "./perf";
 import { benchmarkPerformanceClass } from "./performance-class";
 import { presentFault as presentFaultError } from "./present-failures";
 import type {
@@ -69,11 +69,14 @@ export function serveEngine(
     layout = next;
     server.emit("view", next);
   };
-  const presented = (start: number, end: number) => recorder?.record(start, end, layout);
-  const perfReport = ({ presents, views }: PresentBatch): EnginePerfReport => ({
+  const presented = (start: number, end: number, float?: boolean) =>
+    recorder?.record(start, end, layout, float);
+  const perfReport = ({ presents, views, floats, stages }: PresentBatch): EnginePerfReport => ({
     timeOrigin: performance.timeOrigin,
     presents,
     views,
+    ...(floats && { floats }),
+    ...(stages && { stages }),
     idle: (engine?.idle ?? true) && (v2?.idle ?? true) && !effects.busy,
   });
 
@@ -139,6 +142,10 @@ export function serveEngine(
       recorder = perf
         ? new PresentRecorder((batch) => server.emit("perf", perfReport(batch)))
         : undefined;
+      if (recorder) {
+        const kept = recorder;
+        perfStages.record = (stage) => kept.stage(stage);
+      }
       if (version === "v2" && gpu) {
         const candidate = new EngineV2(
           {

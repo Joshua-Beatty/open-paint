@@ -20,6 +20,7 @@ import {
 } from "../frame";
 import { adapterKey } from "../gpu-device";
 import { FloatGpu, floatFits } from "../gpu-float";
+import { perfStages, timedStage } from "../perf";
 import {
   PresentFailureTracker,
   presentChecked,
@@ -341,7 +342,13 @@ export class EngineV2 {
         (error: unknown) => this.#presentFailed(state, error),
       );
     }
-    this.host.presented?.(start, this.host.now());
+    this.host.presented?.(start, this.host.now(), state.floatShown !== undefined);
+    if (state.floatShown !== undefined && perfStages.record) {
+      const record = perfStages.record;
+      void state.device.queue
+        .onSubmittedWorkDone()
+        .then(() => record({ name: "float gpu", start, end: this.host.now() }));
+    }
   }
 
   /**
@@ -356,7 +363,7 @@ export class EngineV2 {
       state.compositor.setFloat(undefined, undefined);
       return;
     }
-    state.float.encode(encoder, float, doc);
+    timedStage("float draw", () => state.float.encode(encoder, float, doc));
     state.compositor.setFloat(state.float.texture, float.base.region);
   }
 

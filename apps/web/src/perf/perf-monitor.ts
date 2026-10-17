@@ -6,8 +6,10 @@ import type {
   PerfPresent,
   PerfPreview,
   PerfSnapshot,
+  PerfStage,
   PerfTask,
 } from "./stats";
+import { measuredStages } from "./user-timing";
 
 /** What `idle()` resolves with: whether the app went idle in time, and when it was seen idle. */
 export interface PerfIdle {
@@ -90,6 +92,7 @@ export class PerfMonitor {
   #overlays: PerfOverlay[] = [];
   #paints: number[] = [];
   #previews: PerfPreview[] = [];
+  #stages: PerfStage[] = [];
   #tracking: { frame: number; channel: MessageChannel } | undefined;
   #marks: Record<string, number> = {};
   #engine: EngineHandle | undefined;
@@ -142,6 +145,7 @@ export class PerfMonitor {
         }
       }).observe({ type: "long-animation-frame", buffered: true });
     }
+    measuredStages.record = (name, start, end) => this.stage(name, start, end);
     target.__openpaintPerf = {
       reset: () => this.reset(),
       snapshot: () => this.snapshot(),
@@ -200,6 +204,7 @@ export class PerfMonitor {
     this.#overlays = [];
     this.#paints = [];
     this.#previews = [];
+    this.#stages = [];
     this.#marks = {};
   }
 
@@ -209,6 +214,11 @@ export class PerfMonitor {
    */
   previewShown(requested: number, shown: number): void {
     this.#previews.push({ requested, shown });
+  }
+
+  /** Records a span of main-thread work under `name`, for the benchmark's breakdowns. */
+  stage(name: string, start: number, end = performance.now()): void {
+    this.#stages.push({ name, start, end, thread: "main" });
   }
 
   mark(name: string): number {
@@ -228,6 +238,7 @@ export class PerfMonitor {
       overlays: [...this.#overlays],
       paints: [...this.#paints],
       previews: [...this.#previews],
+      stages: [...this.#stages],
       marks: { ...this.#marks },
       observes: {
         longtask: supports("longtask"),
@@ -290,6 +301,15 @@ export class PerfMonitor {
         start: (report.presents[i] as number) + offset,
         end: (report.presents[i + 1] as number) + offset,
         ...view,
+        ...(report.floats?.[i / 2] === 1 && { float: true }),
+      });
+    }
+    for (const stage of report.stages ?? []) {
+      this.#stages.push({
+        name: stage.name,
+        start: stage.start + offset,
+        end: stage.end + offset,
+        thread: "engine",
       });
     }
   }

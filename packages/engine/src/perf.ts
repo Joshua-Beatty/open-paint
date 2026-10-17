@@ -20,6 +20,10 @@ export interface EnginePerfReport {
    * overlays drew, to see whether the two move together.
    */
   readonly views?: readonly number[];
+  /** Per present in `presents`, 1 when it showed floating content (Move Selected Pixels), else 0. */
+  readonly floats?: readonly number[];
+  /** Timed stages of engine work since the last report (`perfStages`), in the engine's clock. */
+  readonly stages?: readonly PerfStage[];
   /** True when the engine has no tile builds pending and no frame scheduled. */
   readonly idle: boolean;
 }
@@ -35,6 +39,33 @@ export interface PresentView {
 export interface PresentBatch {
   readonly presents: number[];
   readonly views: number[];
+  readonly floats?: number[];
+  readonly stages?: PerfStage[];
+}
+
+/** A named span of work, for the benchmark's breakdowns. */
+export interface PerfStage {
+  readonly name: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * Where stages of engine work are recorded: set while a `PresentRecorder` exists (`?perf=1`), so a
+ * timed stage costs one check otherwise.
+ */
+export const perfStages: { record?: (stage: PerfStage) => void } = {};
+
+/** Runs `work`, recorded as a stage named `name` when the harness records stages. */
+export function timedStage<T>(name: string, work: () => T): T {
+  const record = perfStages.record;
+  if (record === undefined) return work();
+  const start = performance.now();
+  try {
+    return work();
+  } finally {
+    record({ name, start, end: performance.now() });
+  }
 }
 
 /** The user timing measure each recorded present leaves on the engine thread. */
@@ -50,6 +81,8 @@ export const PERF_FLUSH_MS = 250;
 export class PresentRecorder {
   #presents: number[] = [];
   #views: number[] = [];
+  #floats: number[] = [];
+  #stages: PerfStage[] = [];
   #timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -57,8 +90,9 @@ export class PresentRecorder {
     readonly intervalMs = PERF_FLUSH_MS,
   ) {}
 
-  record(start: number, end: number, view?: PresentView): void {
+  record(start: number, end: number, view?: PresentView, float = false): void {
     this.#presents.push(start, end);
+    this.#floats.push(float ? 1 : 0);
     this.#views.push(
       view?.originX ?? Number.NaN,
       view?.originY ?? Number.NaN,
@@ -74,12 +108,24 @@ export class PresentRecorder {
     }, this.intervalMs);
   }
 
+  /** Keeps a stage of engine work for the next batch. */
+  stage(stage: PerfStage): void {
+    this.#stages.push(stage);
+  }
+
   take(): PresentBatch {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#timer = undefined;
-    const batch = { presents: this.#presents, views: this.#views };
+    const batch = {
+      presents: this.#presents,
+      views: this.#views,
+      floats: this.#floats,
+      stages: this.#stages,
+    };
     this.#presents = [];
     this.#views = [];
+    this.#floats = [];
+    this.#stages = [];
     return batch;
   }
 }

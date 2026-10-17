@@ -27,6 +27,7 @@ import {
   planFrame,
 } from "./frame";
 import { adapterKey } from "./gpu-device";
+import { perfStages, timedStage } from "./perf";
 import type { PerformanceClass } from "./performance-class";
 import { PresentFailureTracker, watchUncapturedErrors } from "./present-failures";
 import type { Presenter, TileOverrides } from "./presenter";
@@ -67,9 +68,9 @@ export interface EngineHost {
   requestFrame(callback: () => void): void;
   /**
    * Called after each present with the frame's start and end (`now()` ms), for the benchmark
-   * harness. Absent unless the app runs with `?perf=1`.
+   * harness, and whether it showed floating content. Absent unless the app runs with `?perf=1`.
    */
-  presented?(start: number, end: number): void;
+  presented?(start: number, end: number, float?: boolean): void;
 }
 
 /** Milliseconds of tile building per slice before the engine yields (ARC-03-06). */
@@ -298,7 +299,14 @@ export class Engine {
     } catch (error) {
       this.#presentFailed(presenter, error);
     }
-    this.host.presented?.(start, this.host.now());
+    const floatShown = (this.#shownTiles?.tiles.size ?? 0) > 0;
+    this.host.presented?.(start, this.host.now(), floatShown);
+    if (floatShown && perfStages.record) {
+      const record = perfStages.record;
+      void this.gpuDevice?.queue
+        .onSubmittedWorkDone()
+        .then(() => record({ name: "float gpu", start, end: this.host.now() }));
+    }
     if (this.#builder.pending || this.#refinePending()) this.#schedule();
   }
 
@@ -331,7 +339,10 @@ export class Engine {
     if (float !== undefined) {
       if (this.#floatDisplay?.device !== device) {
         this.#floatDisplay?.display.destroy();
-        this.#floatDisplay = { device, display: new FloatDisplay(device) };
+        this.#floatDisplay = {
+          device,
+          display: timedStage("float pipelines", () => new FloatDisplay(device)),
+        };
       }
       const { display } = this.#floatDisplay;
       if (display.supports(this.#document, float)) {

@@ -686,6 +686,175 @@ scenario("B26", "Glow dialog opened, preview at defaults, 4000 x 3000", (page, s
   effectPreview(page, setup, "Photo", "Glow"),
 );
 
+/** A point in CSS px of the page. */
+interface BenchPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+/** Moves per Move Selected Pixels drag of B27, sent at 120 Hz. */
+const MOVE_START_MOVES = 24;
+
+interface MovedFrame {
+  /** From the pointerdown to the end of the first present that showed the moved pixels. */
+  readonly firstFrameMs: number | null;
+  /** Each stage of work in that time, summed by name, longest first. */
+  readonly stages: string;
+}
+
+/**
+ * When the first frame showing moved pixels came after the drag's pointerdown, and what ran
+ * before it. On the CPU backend, where no present carries floating content, the first present
+ * after the first move counts.
+ */
+async function movedFrame(page: Page): Promise<MovedFrame> {
+  const snapshot = await page.evaluate(() => {
+    const perf = window.__openpaintPerf;
+    if (perf === undefined) throw new Error("The page runs without ?perf=1.");
+    return perf.snapshot();
+  });
+  const down = snapshot.inputs.find((input) => input.kind === "pointerdown" && input.canvas);
+  if (down === undefined) return { firstFrameMs: null, stages: "" };
+  const move = snapshot.inputs.find(
+    (input) => input.kind === "pointermove" && input.time > down.time,
+  );
+  const floats = snapshot.presents.filter((present) => present.float === true);
+  const frame =
+    floats.length > 0
+      ? floats.find((present) => present.end > down.time)
+      : snapshot.presents.find((present) => present.start > (move?.time ?? down.time));
+  if (frame === undefined) return { firstFrameMs: null, stages: "" };
+  // The frame is on screen once the GPU finished it ("float gpu", recorded per floating frame).
+  const gpu = (snapshot.stages ?? []).filter((stage) => stage.name === "float gpu");
+  const shownAt = Math.max(
+    frame.end,
+    gpu.find((stage) => Math.abs(stage.start - frame.start) < 0.01)?.end ?? frame.end,
+  );
+  const sums = new Map<string, number>();
+  for (const stage of snapshot.stages ?? []) {
+    if (stage.name === "float gpu") continue;
+    if (stage.end < down.time || stage.start > shownAt) continue;
+    const name = `${stage.thread === "engine" ? "engine " : ""}${stage.name}`;
+    sums.set(name, (sums.get(name) ?? 0) + stage.end - stage.start);
+  }
+  const up = snapshot.inputs.find((input) => input.kind === "pointerup" && input.time > down.time);
+  const during = snapshot.presents.filter(
+    (present) => present.end > down.time && present.end <= (up?.time ?? Number.POSITIVE_INFINITY),
+  );
+  let gap = 0;
+  for (let i = 1; i < during.length; i++) {
+    gap = Math.max(gap, (during[i]?.end ?? 0) - (during[i - 1]?.end ?? 0));
+  }
+  const gpuMax = Math.max(0, ...gpu.map((stage) => stage.end - stage.start));
+  const stages = [...sums]
+    .filter(([, ms]) => ms >= 0.5)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, ms]) => `${name} ${ms.toFixed(0)}`)
+    .join(", ");
+  return {
+    firstFrameMs: shownAt - down.time,
+    stages: `${stages}; ${during.length} presents in the drag, largest gap ${gap.toFixed(0)} ms, slowest GPU frame ${gpuMax.toFixed(0)} ms`,
+  };
+}
+
+/** A short Move Selected Pixels drag from `press`, `by` CSS px, at 120 Hz. */
+async function moveDrag(page: Page, press: BenchPoint, by: BenchPoint): Promise<void> {
+  const [first, ...moves] = dragPath(press, by, MOVE_START_MOVES);
+  if (first === undefined) throw new Error("The drag has no points.");
+  await page.mouse.move(first.x, first.y);
+  await page.mouse.down();
+  await paceMoves(page, moves, INPUT_HZ);
+  await page.mouse.up();
+}
+
+/** A Rectangle Select drag over `rect` (CSS px). */
+async function selectRect(
+  page: Page,
+  rect: { x: number; y: number; width: number; height: number },
+) {
+  await page.getByRole("radio", { name: "Rectangle Select", exact: true }).click();
+  await page.mouse.move(rect.x, rect.y);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + rect.width, rect.y + rect.height, { steps: 4 });
+  await page.mouse.up();
+}
+
+/**
+ * B27: the first Move Selected Pixels drag after the app loads, measured from its pointerdown to
+ * the first frame that shows the moved pixels. Notes add a drag started right after the first one
+ * was recorded, and a drag of a new selection once the app is idle.
+ */
+async function firstMove(page: Page, setup: Setup, notes: string[], large: boolean) {
+  const { box } = await openImage(page, setup, large);
+  const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await selectRect(page, { x: center.x - 160, y: center.y - 100, width: 200, height: 140 });
+  await page.getByRole("radio", { name: "Move Selected Pixels", exact: true }).click();
+  await idle(page, SETUP_CAP_MS);
+  const press = { x: center.x - 90, y: center.y - 40 };
+  const by = { x: 60, y: 20 };
+  Object.assign(setup, { moves: MOVE_START_MOVES, inputHz: INPUT_HZ, selection: "200x140 css" });
+  await page.mouse.move(press.x, press.y);
+  const from = await beginGesture(page);
+  await moveDrag(page, press, by);
+  const result = await endGesture(page, from);
+  const first = await movedFrame(page);
+  setup.firstMovedFrameMs = Math.round(first.firstFrameMs ?? -1);
+  notes.push(`first drag: moved frame ${first.firstFrameMs?.toFixed(0)} ms (${first.stages})`);
+
+  // A drag straight after a recorded one: no time to settle in between.
+  await page.evaluate(() => window.__openpaintPerf?.reset());
+  const moved = { x: press.x + by.x, y: press.y + by.y };
+  await moveDrag(page, moved, { x: -40, y: 30 });
+  await idle(page, SETUP_CAP_MS);
+  const after = await movedFrame(page);
+  setup.afterCommitMovedFrameMs = Math.round(after.firstFrameMs ?? -1);
+  notes.push(`right after a commit: ${after.firstFrameMs?.toFixed(0)} ms (${after.stages})`);
+
+  // A new selection elsewhere, moved once the app is idle.
+  await page.keyboard.press("Enter");
+  await selectRect(page, { x: center.x + 40, y: center.y - 60, width: 160, height: 120 });
+  await page.getByRole("radio", { name: "Move Selected Pixels", exact: true }).click();
+  await idle(page, SETUP_CAP_MS);
+  await page.evaluate(() => window.__openpaintPerf?.reset());
+  await moveDrag(page, { x: center.x + 100, y: center.y }, { x: 50, y: -30 });
+  await idle(page, SETUP_CAP_MS);
+  const later = await movedFrame(page);
+  setup.laterMovedFrameMs = Math.round(later.firstFrameMs ?? -1);
+  notes.push(`new selection later: ${later.firstFrameMs?.toFixed(0)} ms (${later.stages})`);
+
+  // Select All moved right after the previous move was committed, before the display settled.
+  await page.keyboard.press("Enter");
+  await pressOnCanvas(page, "Control+A");
+  await page.evaluate(() => window.__openpaintPerf?.reset());
+  await moveDrag(page, { x: center.x - 120, y: center.y - 80 }, { x: 40, y: 30 });
+  await idle(page, SETUP_CAP_MS);
+  const all = await movedFrame(page);
+  setup.allAfterCommitMovedFrameMs = Math.round(all.firstFrameMs ?? -1);
+  notes.push(`Select All right after a commit: ${all.firstFrameMs?.toFixed(0)} ms (${all.stages})`);
+
+  // The same once the display settled.
+  await page.keyboard.press("Enter");
+  await pressOnCanvas(page, "Control+A");
+  await idle(page, SETUP_CAP_MS);
+  await page.evaluate(() => window.__openpaintPerf?.reset());
+  await moveDrag(page, { x: center.x - 120, y: center.y - 80 }, { x: -40, y: -30 });
+  await idle(page, SETUP_CAP_MS);
+  const settled = await movedFrame(page);
+  setup.allMovedFrameMs = Math.round(settled.firstFrameMs ?? -1);
+  notes.push(`Select All when settled: ${settled.firstFrameMs?.toFixed(0)} ms (${settled.stages})`);
+  return result;
+}
+
+scenario(
+  "B27a",
+  "First Move Selected Pixels drag after load, default image",
+  (page, setup, notes) => firstMove(page, setup, notes, false),
+);
+
+scenario("B27b", "First Move Selected Pixels drag after load, 4000 x 3000", (page, setup, notes) =>
+  firstMove(page, setup, notes, true),
+);
+
 /**
  * B13: Gradient with no selection. The drag starts at the image's center and its end circles fast
  * for 3 s, so the whole layer's gradient changes on every frame.
