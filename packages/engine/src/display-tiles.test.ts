@@ -51,9 +51,36 @@ function blockOf(cache: DisplayTileCache, children: readonly [number, number][])
 }
 
 describe("boxHalve", () => {
+  beforeAll(async () => {
+    const wasmPath = createRequire(import.meta.url).resolve("@openpaint/cpu/opaint_cpu_bg.wasm");
+    await initCpu(await readFile(wasmPath));
+  });
+
   it("averages each 2x2 group, rounded to nearest", () => {
     const block = new Uint8Array([10, 0, 0, 20, 11, 0, 0, 20, 12, 0, 0, 20, 13, 1, 0, 21]);
     expect([...boxHalve(block, 2)]).toEqual([12, 0, 0, 20]);
+  });
+
+  it("matches the 2x2 average at every pixel and channel of a tile block", () => {
+    const edge = 256;
+    const block = Uint8Array.from(
+      { length: edge * edge * 4 },
+      (_, i) => (i * 131 + (i >> 9)) & 255,
+    );
+    const out = boxHalve(block, edge);
+    const half = edge / 2;
+    let wrong = 0;
+    for (let y = 0; y < half; y++) {
+      for (let x = 0; x < half; x++) {
+        for (let c = 0; c < 4; c++) {
+          const at = (dx: number, dy: number) =>
+            block[((y * 2 + dy) * edge + x * 2 + dx) * 4 + c] as number;
+          const expected = (at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) >> 2;
+          if (out[(y * half + x) * 4 + c] !== expected) wrong++;
+        }
+      }
+    }
+    expect(wrong).toBe(0);
   });
 });
 

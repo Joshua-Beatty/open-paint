@@ -3,6 +3,7 @@ import { wasmThreadCount } from "./threading";
 
 export {
   BrushSettings,
+  box_halve_rgba8 as boxHalveRgba8,
   brush_cover_dabs as brushCoverDabs,
   brush_dabs as brushDabs,
   brush_stamp_dabs_rgba8 as brushStampDabsRgba8,

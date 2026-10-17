@@ -1460,6 +1460,38 @@ pub fn highlights_shadows_rgba8(
     .map_err(|message| JsError::new(&message))
 }
 
+/// Halves a square RGBA8 block of `edge` pixels (even) by averaging each 2x2 group, rounded to
+/// nearest: the draft mip filter of the display tiles.
+#[wasm_bindgen]
+pub fn box_halve_rgba8(block: &[u8], edge: u32) -> Result<Vec<u8>, JsError> {
+    let edge = edge as usize;
+    if edge % 2 != 0 || block.len() != edge * edge * 4 {
+        return Err(JsError::new("box_halve_rgba8 needs an even square block"));
+    }
+    Ok(box_halve(block, edge))
+}
+
+fn box_halve(block: &[u8], edge: usize) -> Vec<u8> {
+    let half = edge / 2;
+    let row = edge * 4;
+    let mut out = vec![0u8; half * half * 4];
+    for (y, out_row) in out.chunks_exact_mut(half * 4).enumerate() {
+        let top = &block[2 * y * row..(2 * y + 1) * row];
+        let bottom = &block[(2 * y + 1) * row..(2 * y + 2) * row];
+        for (x, px) in out_row.chunks_exact_mut(4).enumerate() {
+            for c in 0..4 {
+                let i = x * 8 + c;
+                let sum = u16::from(top[i])
+                    + u16::from(top[i + 4])
+                    + u16::from(bottom[i])
+                    + u16::from(bottom[i + 4]);
+                px[c] = ((sum + 2) >> 2) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// Resamples a premultiplied RGBA8 image with Lanczos-3 (see `resample`), returning the new pixels.
 #[wasm_bindgen]
 pub fn resample_lanczos3_rgba8(
@@ -2233,6 +2265,10 @@ pub fn quantize_palette(
 #[wasm_bindgen]
 pub fn premultiply_rgba8(pixels: &mut [u8]) {
     for [r, g, b, a] in pixels.as_chunks_mut::<4>().0 {
+        // Opaque pixels keep their color: (c·255 + 127) / 255 = c.
+        if *a == 255 {
+            continue;
+        }
         let a = u16::from(*a);
         for c in [r, g, b] {
             *c = ((u16::from(*c) * a + 127) / 255) as u8;
@@ -2249,5 +2285,37 @@ mod tests {
         let mut px = [255, 128, 0, 255, 255, 128, 1, 128, 200, 100, 50, 0];
         premultiply_rgba8(&mut px);
         assert_eq!(px, [255, 128, 0, 255, 128, 64, 1, 128, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn box_halve_averages_each_two_by_two_group_rounded_to_nearest() {
+        let edge = 6;
+        let block: Vec<u8> = (0..edge * edge * 4).map(|i| ((i * 131 + i / 7) % 256) as u8).collect();
+        let out = box_halve(&block, edge);
+        for y in 0..edge / 2 {
+            for x in 0..edge / 2 {
+                for c in 0..4 {
+                    let at = |dx: usize, dy: usize| {
+                        u16::from(block[((2 * y + dy) * edge + 2 * x + dx) * 4 + c])
+                    };
+                    let expected = ((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) >> 2) as u8;
+                    assert_eq!(out[(y * edge / 2 + x) * 4 + c], expected);
+                }
+            }
+        }
+        assert_eq!(box_halve(&[10, 0, 0, 20, 11, 0, 0, 20, 12, 0, 0, 20, 13, 1, 0, 21], 2), [12, 0, 0, 20]);
+    }
+
+    #[test]
+    fn premultiply_matches_the_formula_for_every_color_and_alpha() {
+        for a in 0..=255u16 {
+            let mut px: Vec<u8> = (0..=255u8).flat_map(|c| [c, c, 255 - c, a as u8]).collect();
+            premultiply_rgba8(&mut px);
+            for (i, chunk) in px.chunks(4).enumerate() {
+                let c = i as u16;
+                let expected = |v: u16| ((v * a + 127) / 255) as u8;
+                assert_eq!(chunk, [expected(c), expected(c), expected(255 - c), a as u8]);
+            }
+        }
     }
 }

@@ -8,7 +8,7 @@ import {
 } from "@openpaint/document";
 import { activeLayers, type CompositeDocument } from "./composite";
 import { compositeCpu } from "./composite-cpu";
-import { compositeRgba8, premultiplyRgba8, resampleLanczos3Rgba8 } from "./cpu";
+import { boxHalveRgba8, compositeRgba8, premultiplyRgba8, resampleLanczos3Rgba8 } from "./cpu";
 import { applyLiveFilter } from "./live-filter";
 
 /** ARC-03-03: display tiles are 128 device pixels across at every mip level. */
@@ -426,25 +426,8 @@ function downsample(
 /**
  * Halves a square premultiplied RGBA8 block of `edge` pixels by averaging each 2x2 group, rounded
  * to nearest. Color stays at or below alpha, since each average is no larger than its alpha's.
+ * It runs in WASM: the same loop in JS took about twice as long in Firefox as in Chromium.
  */
 export function boxHalve(block: Uint8Array, edge: number): Uint8Array {
-  const half = edge / 2;
-  const out = new Uint8Array(half * half * 4);
-  const row = edge * 4;
-  for (let y = 0; y < half; y++) {
-    for (let x = 0; x < half; x++) {
-      const top = (y * 2 * edge + x * 2) * 4;
-      const bottom = top + row;
-      const to = (y * half + x) * 4;
-      for (let c = 0; c < 4; c++) {
-        const sum =
-          (block[top + c] ?? 0) +
-          (block[top + 4 + c] ?? 0) +
-          (block[bottom + c] ?? 0) +
-          (block[bottom + 4 + c] ?? 0);
-        out[to + c] = (sum + 2) >> 2;
-      }
-    }
-  }
-  return out;
+  return boxHalveRgba8(block, edge);
 }
