@@ -27,6 +27,25 @@ export class FakeDevice {
     },
   };
 
+  /** Compute pipelines created, by label, and whether in the background. */
+  readonly pipelines: { readonly label: string | undefined; readonly async: boolean }[] = [];
+
+  createShaderModule(descriptor: GPUShaderModuleDescriptor): GPUShaderModule {
+    return { label: descriptor.label ?? "" } as GPUShaderModule;
+  }
+
+  createComputePipeline(descriptor: GPUComputePipelineDescriptor): GPUComputePipeline {
+    this.pipelines.push({ label: descriptor.label, async: false });
+    return { label: descriptor.label ?? "" } as GPUComputePipeline;
+  }
+
+  createComputePipelineAsync(
+    descriptor: GPUComputePipelineDescriptor,
+  ): Promise<GPUComputePipeline> {
+    this.pipelines.push({ label: descriptor.label, async: true });
+    return Promise.resolve({ label: descriptor.label ?? "" } as GPUComputePipeline);
+  }
+
   createTexture(descriptor: GPUTextureDescriptor): FakeTexture {
     const texture = new FakeTexture(descriptor);
     this.textures.push(texture);

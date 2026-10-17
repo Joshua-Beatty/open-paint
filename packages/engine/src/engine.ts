@@ -17,7 +17,7 @@ import {
   tileEdge,
 } from "./display-tiles";
 import type { FloatLayer } from "./document-sync";
-import { FloatDisplay } from "./float-display";
+import { FLOAT_DISPLAY_SHADERS, FloatDisplay } from "./float-display";
 import {
   type CanvasStyle,
   type CanvasTheme,
@@ -29,6 +29,7 @@ import {
 import { adapterKey } from "./gpu-device";
 import { perfStages, timedStage } from "./perf";
 import type { PerformanceClass } from "./performance-class";
+import { warmComputePipelines } from "./pipeline-cache";
 import { PresentFailureTracker, watchUncapturedErrors } from "./present-failures";
 import type { Presenter, TileOverrides } from "./presenter";
 import type { EngineSettings, EngineSize, EngineStatus } from "./protocol";
@@ -123,6 +124,8 @@ export class Engine {
   /** The floating content shown over its layer, and what draws it on the current device. */
   #float: FloatLayer | undefined;
   #floatDisplay: { readonly device: GPUDevice; readonly display: FloatDisplay } | undefined;
+  /** The device whose float pipelines were warmed (`#warm`). */
+  #warmed: GPUDevice | undefined;
   /** The float tiles the last frame drew, and the ones kept after the float went until tiles are fresh. */
   #shownTiles: FloatTiles | undefined;
   #retiring: FloatTiles | undefined;
@@ -308,6 +311,19 @@ export class Engine {
         .then(() => record({ name: "float gpu", start, end: this.host.now() }));
     }
     if (this.#builder.pending || this.#refinePending()) this.#schedule();
+    this.#warm();
+  }
+
+  /**
+   * Compiles the float display's pipelines in the background once the engine is first idle with a
+   * document on a device, so the first Move Selected Pixels drag does not wait for its shaders (L5).
+   */
+  #warm(): void {
+    const device = this.gpuDevice;
+    if (device === undefined || this.#warmed === device) return;
+    if (this.#document === EMPTY_DOCUMENT || !this.idle) return;
+    this.#warmed = device;
+    void warmComputePipelines(device, FLOAT_DISPLAY_SHADERS);
   }
 
   /**
@@ -453,6 +469,7 @@ export class Engine {
       if (started - this.#lastEdit >= REFINE_DELAY_MS) this.#frame(0, started);
       else this.#schedule();
     }
+    this.#warm();
   }
 
   #serialize(task: () => Promise<EngineStatus>): Promise<EngineStatus> {

@@ -14,7 +14,8 @@ import {
 } from "./display-tiles";
 import type { FloatLayer } from "./document-sync";
 import { BufferUsage, TextureUsage } from "./gpu-device";
-import { FloatGpu, floatFits } from "./gpu-float";
+import { FLOAT_COMPOSE, FloatGpu, floatFits } from "./gpu-float";
+import { type ComputeShader, computePipeline } from "./pipeline-cache";
 import type { EngineStatus } from "./protocol";
 
 /** DOC-BLD-01 Normal. */
@@ -269,6 +270,30 @@ function identity(item: object): number {
   return id;
 }
 
+const LEVEL0: ComputeShader = {
+  label: "float display level 0",
+  code: LEVEL0_WGSL,
+  entryPoint: "level0",
+};
+const LEVEL_ACROSS: ComputeShader = {
+  label: "float display mip across",
+  code: LANCZOS_WGSL,
+  entryPoint: "horizontal",
+};
+const LEVEL_DOWN: ComputeShader = {
+  label: "float display mip",
+  code: LANCZOS_WGSL,
+  entryPoint: "level",
+};
+
+/** Every pipeline `FloatDisplay` runs, to compile ahead of the first drag (`warmComputePipelines`). */
+export const FLOAT_DISPLAY_SHADERS: readonly ComputeShader[] = [
+  FLOAT_COMPOSE,
+  LEVEL0,
+  LEVEL_ACROSS,
+  LEVEL_DOWN,
+];
+
 /**
  * Floating content on engine v1 (TL-MOVE-PIX-01), drawn through the display tiles themselves: the
  * visible tiles over the float's region are built again on the GPU, from level 0 up the mip chain
@@ -281,9 +306,6 @@ function identity(item: object): number {
 export class FloatDisplay {
   readonly #device: GPUDevice;
   readonly #float: FloatGpu;
-  readonly #level0: GPUComputePipeline;
-  readonly #levelH: GPUComputePipeline;
-  readonly #levelN: GPUComputePipeline;
   readonly #taps: GPUBuffer;
   readonly #empty: GPUBuffer;
   #static: Static | undefined;
@@ -295,15 +317,6 @@ export class FloatDisplay {
   constructor(device: GPUDevice) {
     this.#device = device;
     this.#float = new FloatGpu(device);
-    const pipeline = (label: string, code: string, entryPoint: string) =>
-      device.createComputePipeline({
-        label,
-        layout: "auto",
-        compute: { module: device.createShaderModule({ label, code }), entryPoint },
-      });
-    this.#level0 = pipeline("float display level 0", LEVEL0_WGSL, "level0");
-    this.#levelH = pipeline("float display mip across", LANCZOS_WGSL, "horizontal");
-    this.#levelN = pipeline("float display mip", LANCZOS_WGSL, "level");
     const taps = lanczos3AxisTaps(2 * DISPLAY_TILE_SIZE, DISPLAY_TILE_SIZE);
     this.#taps = device.createBuffer({
       label: "display mip taps",
@@ -316,6 +329,18 @@ export class FloatDisplay {
       size: 16,
       usage: BufferUsage.STORAGE,
     });
+  }
+
+  get #level0(): GPUComputePipeline {
+    return computePipeline(this.#device, LEVEL0);
+  }
+
+  get #levelH(): GPUComputePipeline {
+    return computePipeline(this.#device, LEVEL_ACROSS);
+  }
+
+  get #levelN(): GPUComputePipeline {
+    return computePipeline(this.#device, LEVEL_DOWN);
   }
 
   /** Whether this device can show `float` over `doc`'s stack. */

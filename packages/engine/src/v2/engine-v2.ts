@@ -19,8 +19,9 @@ import {
   frameStyle,
 } from "../frame";
 import { adapterKey } from "../gpu-device";
-import { FloatGpu, floatFits } from "../gpu-float";
+import { FLOAT_COMPOSE, FLOAT_MIP, FloatGpu, floatFits } from "../gpu-float";
 import { perfStages, timedStage } from "../perf";
+import { warmComputePipelines } from "../pipeline-cache";
 import {
   PresentFailureTracker,
   presentChecked,
@@ -105,6 +106,8 @@ export class EngineV2 {
   #resolved: ResolvedBackend | undefined;
   #context: GPUCanvasContext | undefined;
   #state: DeviceState | undefined;
+  /** The device whose float pipelines were compiled ahead of use, after its first frame. */
+  #warmed: GPUDevice | undefined;
   #view: ViewState = FIT_VIEW;
   #layout: ViewLayout | undefined;
   #stroke: GpuStroke | undefined;
@@ -341,6 +344,12 @@ export class EngineV2 {
         },
         (error: unknown) => this.#presentFailed(state, error),
       );
+    }
+    if (this.#warmed !== state.device && doc.width > 0) {
+      // After the first frame of a document, so the first Move Selected Pixels drag finds its
+      // shaders compiled.
+      this.#warmed = state.device;
+      void warmComputePipelines(state.device, [FLOAT_COMPOSE, FLOAT_MIP]);
     }
     this.host.presented?.(start, this.host.now(), state.floatShown !== undefined);
     if (state.floatShown !== undefined && perfStages.record) {

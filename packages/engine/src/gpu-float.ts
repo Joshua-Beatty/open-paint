@@ -13,6 +13,7 @@ import type { FloatLayer, SyncPlacement } from "./document-sync";
 import { BufferUsage, TextureUsage } from "./gpu-device";
 import { footprintGrid, TRANSFORM_SAMPLING_WGSL } from "./gpu-transform";
 import { timedStage } from "./perf";
+import { type ComputeShader, computePipeline } from "./pipeline-cache";
 import { type ShapeRuns, shapeRuns } from "./shape-runs";
 
 /** Most mip levels the float's texture has: 256 px regions halve exactly down to 1 px. */
@@ -268,6 +269,20 @@ interface Uniforms {
   readonly breaks: GPUBuffer;
 }
 
+/** The float's placement into its region (`FloatGpu.encode`). */
+export const FLOAT_COMPOSE: ComputeShader = {
+  label: "float compose",
+  code: FLOAT_COMPOSE_WGSL,
+  entryPoint: "compose_main",
+};
+
+/** The float's mip chain, for a compositor that samples it at every level. */
+export const FLOAT_MIP: ComputeShader = {
+  label: "float mip",
+  code: FLOAT_MIP_WGSL,
+  entryPoint: "mip_main",
+};
+
 /**
  * Floating content on the GPU (TL-MOVE-PIX-01): the content and the base are uploaded once per key,
  * and each frame draws the placement into a texture over the region, with a mip chain, which the
@@ -276,8 +291,6 @@ interface Uniforms {
  */
 export class FloatGpu {
   readonly #device: GPUDevice;
-  readonly #composePipeline: GPUComputePipeline;
-  readonly #mipPipeline: GPUComputePipeline;
   /** The frame's uniforms, grown as needed. */
   #frame: Uniforms | undefined;
   #contentKey: number | undefined;
@@ -290,16 +303,9 @@ export class FloatGpu {
   /** The stamps drawn into the base since it was uploaded. */
   #stamped: readonly SyncPlacement[] = [];
 
+  /** Its pipelines come from the device's cache, warmed with `FLOAT_COMPOSE` and `FLOAT_MIP`. */
   constructor(device: GPUDevice) {
     this.#device = device;
-    const pipeline = (label: string, code: string, entryPoint: string) =>
-      device.createComputePipeline({
-        label,
-        layout: "auto",
-        compute: { module: device.createShaderModule({ label, code }), entryPoint },
-      });
-    this.#composePipeline = pipeline("float compose", FLOAT_COMPOSE_WGSL, "compose_main");
-    this.#mipPipeline = pipeline("float mip", FLOAT_MIP_WGSL, "mip_main");
   }
 
   /** The region the texture covers, in image pixels. */
@@ -454,12 +460,13 @@ export class FloatGpu {
     if (runs.breaks.byteLength > 0) {
       device.queue.writeBuffer(uniforms.breaks, 0, runs.breaks as Uint32Array<ArrayBuffer>);
     }
+    const compose = computePipeline(device, FLOAT_COMPOSE);
     const pass = encoder.beginComputePass({ label: "float" });
-    pass.setPipeline(this.#composePipeline);
+    pass.setPipeline(compose);
     pass.setBindGroup(
       0,
       device.createBindGroup({
-        layout: this.#composePipeline.getBindGroupLayout(0),
+        layout: compose.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: uniforms.params } },
           { binding: 1, resource: { buffer: this.#src as GPUBuffer } },
@@ -482,15 +489,16 @@ export class FloatGpu {
   #mips(encoder: GPUCommandEncoder): void {
     const out = this.#out;
     if (out === undefined) return;
+    const mip = computePipeline(this.#device, FLOAT_MIP);
     const pass = encoder.beginComputePass({ label: "float mips" });
-    pass.setPipeline(this.#mipPipeline);
+    pass.setPipeline(mip);
     for (let level = 1; level < out.mipLevelCount; level++) {
       const width = Math.max(1, out.width >> level);
       const height = Math.max(1, out.height >> level);
       pass.setBindGroup(
         0,
         this.#device.createBindGroup({
-          layout: this.#mipPipeline.getBindGroupLayout(0),
+          layout: mip.getBindGroupLayout(0),
           entries: [
             {
               binding: 0,

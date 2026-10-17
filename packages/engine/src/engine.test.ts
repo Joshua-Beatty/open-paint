@@ -8,6 +8,7 @@ import { initCpu } from "./cpu";
 import { DisplayTileBuilder, DisplayTileCache } from "./display-tiles";
 import { Engine, REFINE_DELAY_MS } from "./engine";
 import { FakeAdapter, type FakeDevice, FakeGpu } from "./fake-gpu";
+import { FLOAT_DISPLAY_SHADERS } from "./float-display";
 import type { FramePlan } from "./frame";
 import type { Presenter } from "./presenter";
 import type { EngineStatus } from "./protocol";
@@ -271,6 +272,25 @@ describe("Engine", () => {
     expect(engine.idle).toBe(true);
     expect(presents).toHaveLength(presenters[0]?.plans.length ?? 0);
     for (const [start, end] of presents) expect(end).toBeGreaterThan(start);
+  });
+
+  it("compiles the float display's pipelines in the background once it is first idle", async () => {
+    const adapter = new FakeAdapter();
+    const { engine, flush } = setup(adapter, 10);
+    await engine.start();
+    engine.setDocument(documentOf(new TiledPixelStore(300, 200)));
+    const device = adapter.devices[0] as FakeDevice;
+    const warmed = () => device.pipelines.filter((pipeline) => pipeline.async);
+    expect(warmed()).toEqual([]);
+    flush();
+    expect(engine.idle).toBe(true);
+    expect(warmed().map((pipeline) => pipeline.label)).toEqual(
+      FLOAT_DISPLAY_SHADERS.map((shader) => shader.label),
+    );
+    engine.setDocument(documentOf(new TiledPixelStore(310, 200)));
+    flush();
+    expect(warmed()).toHaveLength(FLOAT_DISPLAY_SHADERS.length);
+    expect(device.pipelines.some((pipeline) => !pipeline.async)).toBe(false);
   });
 
   it("keeps showing stale tiles under an edit until they are rebuilt, never leaving gaps", async () => {
