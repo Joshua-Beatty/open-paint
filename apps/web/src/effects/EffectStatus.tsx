@@ -32,7 +32,6 @@ export function EffectAwareSelectionOutline({
   animate,
   antialiased,
   layerPropertiesOpen,
-  paused,
 }: {
   runtime: EffectRuntime;
   store: StatusStore;
@@ -40,7 +39,6 @@ export function EffectAwareSelectionOutline({
   animate: boolean;
   antialiased: boolean;
   layerPropertiesOpen: boolean;
-  paused?: () => boolean;
 }) {
   const phase = useSyncExternalStore(runtime.subscribe, () => runtime.state?.phase);
   return (
@@ -50,7 +48,6 @@ export function EffectAwareSelectionOutline({
       animate={animate}
       antialiased={antialiased}
       tint={selectionTintShown({ layerProperties: layerPropertiesOpen, effect: phase })}
-      {...(paused && { paused })}
     />
   );
 }

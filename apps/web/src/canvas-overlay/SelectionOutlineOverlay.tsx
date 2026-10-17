@@ -38,8 +38,9 @@ function runsPath(runs: readonly number[]): Path2D {
  * it, over the engine's canvas. It follows every selection change, including a selection tool's
  * live preview while it draws. The ants stand still when animations are off (WEB-UI-04). With
  * `antialiased` off the ants are crisp one-pixel runs, which also step at a fraction of the cost.
- * Each step of the ants repaints the canvas directly, without a React render, and steps wait while
- * `paused` holds, such as while a tool draws (L1).
+ * Each step of the ants repaints this 2D canvas directly, without a React render. The ants keep
+ * marching while a tool draws (owner request): a step only strokes the outline, and drawing into a
+ * 2D overlay canvas doesn't make browsers redo the engine's canvas.
  */
 export function SelectionOutlineOverlay({
   store,
@@ -47,7 +48,6 @@ export function SelectionOutlineOverlay({
   animate,
   antialiased,
   tint,
-  paused,
 }: {
   store: StatusStore;
   document: Document | undefined;
@@ -55,8 +55,6 @@ export function SelectionOutlineOverlay({
   antialiased: boolean;
   /** Whether the tint fills the selection. It is off while a dialog previews on the canvas. */
   tint: boolean;
-  /** While true, the ants hold still, so they do not compete with a drawing for the main thread. */
-  paused?: () => boolean;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const size = useCanvasBacking(ref);
@@ -105,12 +103,11 @@ export function SelectionOutlineOverlay({
   useEffect(() => {
     if (!animate || path === undefined) return undefined;
     const timer = setInterval(() => {
-      if (paused?.() === true) return;
       tick.current += 1;
       paint();
     }, ANT_STEP_MS);
     return () => clearInterval(timer);
-  }, [animate, path, paint, paused]);
+  }, [animate, path, paint]);
   return (
     <canvas ref={ref} className="app-canvas-overlay" width={size.width} height={size.height} />
   );

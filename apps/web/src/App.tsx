@@ -266,7 +266,6 @@ export function App({
   );
   const [toolPointer] = useState(() => createToolPointerSink(toolController, historyRunning));
   // The marching ants hold still while a pointer drags on the canvas (L1).
-  const antsPaused = useCallback(() => toolController.pointerHeld, [toolController]);
   const autoScrollSettings = useCallback((): AutoScrollSettings => {
     const enabled = settingsRef.current?.get("ui.autoScrollWhileDrawing");
     const speed = settingsRef.current?.get("workspace.autoScrollSpeed");
@@ -1356,7 +1355,6 @@ export function App({
             animate={animations}
             antialiased={antialiasedOutline}
             layerPropertiesOpen={layerPropertiesOpen}
-            paused={antsPaused}
           />
           <BrushCursorOverlay store={statusStore} diameter={brushOutline} />
           <CloneSourceOverlay store={statusStore} />
