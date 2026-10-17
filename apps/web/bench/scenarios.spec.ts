@@ -122,6 +122,7 @@ function scenario(
       devicePixelRatio: environment?.devicePixelRatio ?? 1,
       engine: environment?.engine,
       crossOriginIsolated: environment?.crossOriginIsolated,
+      performanceClass: environment?.performanceClass,
       hardwareConcurrency: environment?.hardwareConcurrency,
       userAgent: environment?.userAgent,
     });

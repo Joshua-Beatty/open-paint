@@ -22,6 +22,8 @@ export interface BenchDocumentOptions {
 export interface BenchInfo {
   readonly backend: string | undefined;
   readonly adapter: EngineStatus["adapter"];
+  /** The GPU performance class the engine resolved (SET-DLG-07). */
+  readonly performanceClass: EngineStatus["performanceClass"] | undefined;
   readonly devicePixelRatio: number;
   readonly layout: ViewLayout | undefined;
   /** The engine running (`v1` unless v2 was asked for and WebGPU is in use). */
@@ -133,6 +135,7 @@ export function installBenchHook(target: Window, host: BenchHost): () => void {
     info: () => ({
       backend: host.status()?.backend,
       adapter: host.status()?.adapter,
+      performanceClass: host.status()?.performanceClass,
       // The engine canvas's scale, which bench geometry must use; it can differ from the window's.
       devicePixelRatio: canvasScale.value,
       layout: host.layout(),

@@ -13,6 +13,8 @@ export interface SavedScenario {
   /** The engine that ran (`v1` when `?engine=v2` fell back), when the page reported it. */
   readonly engine?: string | undefined;
   readonly crossOriginIsolated?: boolean | undefined;
+  /** The GPU performance class the engine resolved. */
+  readonly performanceClass?: string | undefined;
   readonly hardwareConcurrency?: number | undefined;
   readonly userAgent?: string | undefined;
 }

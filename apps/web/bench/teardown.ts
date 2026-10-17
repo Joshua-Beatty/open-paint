@@ -39,7 +39,8 @@ export default function teardown(): void {
   const backends = distinct(saved.map((entry) => entry.backend));
   const engines = distinct(saved.map((entry) => entry.engine));
   const isolated = distinct(saved.map((entry) => entry.crossOriginIsolated));
+  const classes = distinct(saved.map((entry) => entry.performanceClass));
   console.log(
-    `\nOpenPaint bench, engine ${ENGINE} (ran ${engines}), backend ${backends}, crossOriginIsolated ${isolated}, ${results.browser}\n\n${formatTable(results)}\n\nSaved ${path}\n`,
+    `\nOpenPaint bench, engine ${ENGINE} (ran ${engines}), backend ${backends}, performance class ${classes}, crossOriginIsolated ${isolated}, ${results.browser}\n\n${formatTable(results)}\n\nSaved ${path}\n`,
   );
 }
