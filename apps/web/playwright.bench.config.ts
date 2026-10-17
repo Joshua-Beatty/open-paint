@@ -48,7 +48,11 @@ const projects: Record<typeof BENCH_BROWSER, Project> = {
   },
   firefox: {
     name: "firefox",
-    use: { ...devices["Desktop Firefox"], viewport },
+    use: {
+      ...devices["Desktop Firefox"],
+      viewport,
+      ...(profileDir !== undefined && { launchOptions: { env: firefoxProfilerEnv(profileDir) } }),
+    },
   },
   "firefox-desktop": {
     name: "firefox-desktop",
