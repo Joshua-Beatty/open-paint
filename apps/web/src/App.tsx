@@ -108,11 +108,7 @@ import { PERF_FLAGS } from "./perf/flags";
 import { perfMonitor } from "./perf/perf-monitor";
 import { browserPrinter } from "./print/browser-printer";
 import { SessionRestoreDialog } from "./session/SessionRestoreDialog";
-import {
-  createSessionRecovery,
-  keepsCheckpoint,
-  type SessionOffer,
-} from "./session/session-recovery";
+import { createSessionRecovery, type SessionOffer } from "./session/session-recovery";
 import { useCanvasStyle, useOverscroll } from "./settings/canvas-style";
 import { diagnosticGroups, diagnosticsText } from "./settings/diagnostics";
 import { gatherDiagnosticsFacts } from "./settings/diagnostics-facts";
@@ -164,15 +160,10 @@ import {
 } from "./status/status-commands";
 import { measureUnit, menuUnitOf } from "./status/status-model";
 import { StatusStore } from "./status/status-store";
-import {
-  type CloseCandidate,
-  type ClosePlan,
-  hasUnsavedImages,
-  planClose,
-} from "./tabs/close-flow";
+import { type ClosePlan, closeCandidates, hasUnsavedImages, planClose } from "./tabs/close-flow";
 import { createFirstRunImage } from "./tabs/first-run";
-import { type ImageTab, ImageTabs } from "./tabs/image-tabs";
-import type { OpenImage } from "./tabs/open-image";
+import { ImageTabs } from "./tabs/image-tabs";
+import { hasUnsavedWork, isBlankImage, type OpenImage } from "./tabs/open-image";
 import { registerTabCommands } from "./tabs/tab-commands";
 import { ThumbnailCache } from "./tabs/thumbnail-cache";
 import { surfaceToDataUrl, TAB_THUMBNAIL_INTERVAL_MS, tabThumbnailUrl } from "./tabs/thumbnail-url";
@@ -218,10 +209,6 @@ interface PasteRequest {
   readonly answer: (choice: PasteChoice) => void;
 }
 
-function candidatesOf(items: readonly ImageTab<OpenImage>[]): CloseCandidate[] {
-  return items.map((item) => ({ id: item.id, dirty: item.value.document.dirty }));
-}
-
 /** The Color Scheme from the localStorage mirror, which is readable before IndexedDB opens. */
 function storedColorScheme(): ColorSchemePreference {
   const stored = readEarlySetting("ui.theme");
@@ -249,6 +236,8 @@ export function App({
   recent: suppliedRecent,
 }: AppProps) {
   const t = useTranslation();
+  /** The name a new image gets, which the blank-image rule checks (`isBlankImage`). */
+  const untitled = t("document.untitled");
   const [errors] = useState(
     () =>
       suppliedErrors ??
@@ -358,7 +347,7 @@ export function App({
         navigating() ||
         engineStrokesPending() > 0 ||
         effectRuntimeRef.current?.active === true,
-      t("document.untitled"),
+      untitled,
     ),
   );
   const [sessionOffers, setSessionOffers] = useState<readonly SessionOffer[] | undefined>(
@@ -415,16 +404,20 @@ export function App({
   const requestClose = useCallback(
     (ids: readonly string[]) => {
       const plan = planClose(
-        candidatesOf(images.state.items.filter((item) => ids.includes(item.id))),
+        closeCandidates(
+          images.state.items.filter((item) => ids.includes(item.id)),
+          untitled,
+        ),
       );
       if (plan.dirty.length === 0) closeImages(plan.ids);
       else setClosePrompt(plan);
     },
-    [images, closeImages],
+    [images, closeImages, untitled],
   );
   useEffect(
-    () => guardUnload(window, () => hasUnsavedImages(candidatesOf(images.state.items))),
-    [images],
+    () =>
+      guardUnload(window, () => hasUnsavedImages(closeCandidates(images.state.items, untitled))),
+    [images, untitled],
   );
   /**
    * The default blank image the app opens when it starts with nothing to show (owner request), or
@@ -433,8 +426,8 @@ export function App({
   const startImageId = useRef<string | undefined>(undefined);
   const openStartImage = useCallback(() => {
     if (images.state.items.length > 0) return;
-    startImageId.current = images.open(createFirstRunImage(t("document.untitled")));
-  }, [images, t]);
+    startImageId.current = images.open(createFirstRunImage(untitled));
+  }, [images, untitled]);
   /**
    * Closes the start image when it is still untouched, so files the app was launched with take its
    * place instead of opening beside it.
@@ -444,8 +437,8 @@ export function App({
     startImageId.current = undefined;
     const start = images.state.items.find((item) => item.id === id);
     if (start === undefined) return;
-    if (!keepsCheckpoint(start.value, t("document.untitled"))) closeImages([start.id]);
-  }, [images, closeImages, t]);
+    if (isBlankImage(start.value, untitled)) closeImages([start.id]);
+  }, [images, closeImages, untitled]);
   /**
    * Offers the checkpoints of earlier sessions once, then keeps every open image checkpointed. With
    * nothing to offer, the app opens the default blank image.
@@ -482,7 +475,7 @@ export function App({
       setNotice(t("reload.blocked"));
       return;
     }
-    const plan = planClose(candidatesOf(images.state.items));
+    const plan = planClose(closeCandidates(images.state.items, untitled));
     if (plan.dirty.length === 0) {
       if (session === undefined) updates.applyUpdate();
       else void session.flush().finally(() => updates.applyUpdate());
@@ -490,7 +483,7 @@ export function App({
     }
     reloadAfterClose.current = true;
     setClosePrompt(plan);
-  }, [closePrompt, images, session, t, updates]);
+  }, [closePrompt, images, session, t, updates, untitled]);
   /**
    * Reloads after the engine could not start. Open images cannot be shown without it; the session
    * is flushed first so session recovery offers them again.
@@ -949,7 +942,7 @@ export function App({
   useDocumentTitle(
     activeImage === undefined
       ? null
-      : { path: activeImage.name, dirty: activeImage.document.dirty },
+      : { path: activeImage.name, dirty: hasUnsavedWork(activeImage, untitled) },
     t,
   );
   const menuContext: MenuContext = {
@@ -967,7 +960,7 @@ export function App({
       layerCount: activeDocument?.layerCount ?? 0,
       activeLayerIndex,
       canRunEffects: hasDocument,
-      anyUnsaved: hasUnsavedImages(candidatesOf(tabState.items)),
+      anyUnsaved: hasUnsavedImages(closeCandidates(tabState.items, untitled)),
       recent: recentEntries.map((entry) => ({
         id: entry.id,
         name: entry.name,
@@ -1125,10 +1118,10 @@ export function App({
       registerFileCommands(shortcuts, {
         flows: fileFlows,
         hasImage: () => images.active !== undefined,
-        hasUnsaved: () => hasUnsavedImages(candidatesOf(images.state.items)),
+        hasUnsaved: () => hasUnsavedImages(closeCandidates(images.state.items, untitled)),
         hasRecent: () => recent.entries.length > 0,
       }),
-    [shortcuts, fileFlows, images, recent],
+    [shortcuts, fileFlows, images, recent, untitled],
   );
   useEffect(
     () =>
@@ -1169,7 +1162,7 @@ export function App({
   const tabViews: ImageTabView[] = tabState.items.map((item) => ({
     id: item.id,
     title: item.value.name,
-    dirty: item.value.document.dirty,
+    dirty: hasUnsavedWork(item.value, untitled),
     busy: false,
     thumbnail: thumbnails.url(item.id),
     size: { width: item.value.document.width, height: item.value.document.height },

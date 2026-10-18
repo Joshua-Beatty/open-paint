@@ -25,7 +25,7 @@ import type { RecentFiles } from "@openpaint/storage";
 import { newDocumentAccountant } from "../errors/memory-budget";
 import { type Printer, printLayout } from "../print/print-job";
 import type { ImageTabs } from "../tabs/image-tabs";
-import type { OpenImage } from "../tabs/open-image";
+import { hasUnsavedWork, type OpenImage } from "../tabs/open-image";
 import { engineStrokesSettled } from "../tools/engine-stroke";
 import { type DroppedSources, fetchDroppedImage, remoteFileName } from "./dropped-sources";
 import { type FileAccess, type OpenedFile, openedFileOf } from "./file-access";
@@ -247,10 +247,14 @@ export class FileFlows {
     if (active !== undefined) await this.save(active.id, saveAs);
   }
 
-  /** Save All (FMT-SAVE-01): saves every image with unsaved changes, one after another. */
+  /**
+   * Save All (FMT-SAVE-01): saves every image with unsaved work, one after another. A blank image
+   * with only a selection is not unsaved work (`hasUnsavedWork`), so it is skipped.
+   */
   async saveAll(): Promise<void> {
+    const untitled = this.#options.t("document.untitled");
     const dirty = this.#options.tabs.state.items
-      .filter((item) => item.value.document.dirty)
+      .filter((item) => hasUnsavedWork(item.value, untitled))
       .map((item) => item.id);
     await this.saveImages(dirty);
   }

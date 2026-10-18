@@ -201,8 +201,11 @@ test("the Unsaved Changes dialog, reached from the keyboard, passes axe", async 
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("tab")).toHaveCount(2);
 
-  // Select All records a history item, so the new image is dirty and Ctrl+W asks first.
+  // Erasing the selection changes pixels, so the new image has unsaved work and Ctrl+W asks first
+  // (a selection alone on a blank image does not count).
   await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await expect(page).toHaveTitle(/^\*/);
   await page.keyboard.press("Control+W");
   await expect(dialog).toBeVisible();
   const findings = await violationsOf(page, "Unsaved Changes");

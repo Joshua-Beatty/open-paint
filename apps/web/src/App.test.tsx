@@ -368,6 +368,45 @@ describe("App", () => {
     expect(screen.queryByRole("dialog", { name: "Unsaved Changes" })).toBeNull();
   });
 
+  it("does not count a selection on the blank start image as unsaved work (owner request)", async () => {
+    vi.mocked(SettingsStore.open).mockImplementation(() => openMemorySettings(true));
+    const host = { check: vi.fn(() => Promise.resolve(true)), activate: vi.fn<() => void>() };
+    const updates = new UpdateController(host, { isOnline: () => true });
+    render(<App updates={updates} />);
+    await waitFor(() => expect(document.title).toBe("Untitled - OpenPaint"));
+    fireEvent.keyDown(document.body, { code: "KeyA", ctrlKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Deselect" }).hasAttribute("disabled")).toBe(false),
+    );
+    // No asterisk in the title, and no unsaved dot on the tab.
+    expect(document.title).toBe("Untitled - OpenPaint");
+    expect(document.querySelector(".app-image-tab-dirty")).toBeNull();
+    // The leave-page prompt does not ask.
+    const leave = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leave);
+    expect(leave.defaultPrevented).toBe(false);
+    // An update reloads without the Unsaved Changes prompt.
+    act(() => updates.markWaiting());
+    fireEvent.click(screen.getByRole("button", { name: "Reload now" }));
+    expect(screen.queryByRole("dialog", { name: "Unsaved Changes" })).toBeNull();
+    expect(host.activate).toHaveBeenCalledTimes(1);
+    // Close does not ask either.
+    fireEvent.keyDown(document.body, { code: "KeyW", ctrlKey: true });
+    expect(screen.queryByRole("dialog", { name: "Unsaved Changes" })).toBeNull();
+    expect(document.title).toBe("OpenPaint");
+  });
+
+  it("asks before leaving once the start image has a real edit (WEB-UI-06)", async () => {
+    vi.mocked(SettingsStore.open).mockImplementation(() => openMemorySettings(true));
+    render(<App />);
+    await waitFor(() => expect(document.title).toBe("Untitled - OpenPaint"));
+    fireEvent.keyDown(document.body, { code: "KeyN", ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(document.title).toBe("*Untitled - OpenPaint"));
+    const leave = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leave);
+    expect(leave.defaultPrevented).toBe(true);
+  });
+
   it("closes a clean image with Ctrl+W without asking, then shows the empty state (UI-DOC-03)", async () => {
     vi.mocked(SettingsStore.open).mockImplementation(() => openMemorySettings(true));
     render(<App />);

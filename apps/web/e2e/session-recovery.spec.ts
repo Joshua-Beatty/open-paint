@@ -48,13 +48,49 @@ async function openWithOpfs(page: Page): Promise<void> {
   await expect(page.getByRole("tab")).toHaveCount(1);
 }
 
+/** Whether the page's beforeunload handlers would ask the user before leaving (WEB-UI-06). */
+function asksBeforeLeaving(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+}
+
+test("a selection on the blank start image is not unsaved work: no leave prompt", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  await page.keyboard.press("Control+A");
+  await expect(page.getByRole("button", { name: "Deselect" }).first()).toBeEnabled();
+  await expect(page).toHaveTitle("Untitled - OpenPaint");
+  expect(await asksBeforeLeaving(page)).toBe(false);
+  const dialogs: string[] = [];
+  page.on("dialog", (dialog) => {
+    dialogs.push(dialog.type());
+    void dialog.dismiss();
+  });
+  await page.reload();
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  expect(dialogs).toEqual([]);
+
+  // A real edit does ask.
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await expect(page).toHaveTitle("*Untitled - OpenPaint");
+  expect(await asksBeforeLeaving(page)).toBe(true);
+});
+
 test("a reload after only a selection on the blank start image offers nothing", async ({
   page,
 }) => {
   await openWithOpfs(page);
   await expect(page).toHaveTitle("Untitled - OpenPaint");
   await page.keyboard.press("Control+A");
-  await expect(page).toHaveTitle("*Untitled - OpenPaint");
+  await expect(page.getByRole("button", { name: "Deselect" }).first()).toBeEnabled();
+  // A selection on the blank image is not unsaved work, so the title shows no asterisk.
+  await expect(page).toHaveTitle("Untitled - OpenPaint");
   // Longer than the checkpoint delay, so a checkpoint would have been written by now.
   await page.waitForTimeout(2500);
   expect(await checkpointCount(page)).toBe(0);

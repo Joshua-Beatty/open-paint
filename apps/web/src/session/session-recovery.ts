@@ -14,7 +14,7 @@ import {
   type SessionStore,
   sessionOwnerId,
 } from "@openpaint/storage";
-import type { OpenImage } from "../tabs/open-image";
+import { isBlankImage, type OpenImage } from "../tabs/open-image";
 import { yieldWhileBusy } from "../workers/yield-to-host";
 
 /** A document's checkpoint is written this long after its last change (WEB-MEM-05). */
@@ -84,17 +84,9 @@ export interface SessionRecoveryOptions {
   readonly delayMs?: number;
   /**
    * The name a new image gets. An image with this name and no file whose content is still the
-   * default blank image is neither checkpointed nor offered (`keepsCheckpoint`).
+   * default blank image is neither checkpointed nor offered (`isBlankImage`).
    */
   readonly untitled?: string;
-}
-
-/**
- * False for an image there is nothing to bring back from: untitled, without a file, and with the
- * content of a new blank image, whatever selections it has (owner request).
- */
-export function keepsCheckpoint(image: OpenImage, untitled: string | undefined): boolean {
-  return image.file !== undefined || image.name !== untitled || !image.document.untouchedBlank;
 }
 
 /**
@@ -254,7 +246,7 @@ export class SessionRecovery {
       this.#schedule(entry);
       return Promise.resolve();
     }
-    const kept = keepsCheckpoint(entry.image, this.#options.untitled);
+    const kept = !isBlankImage(entry.image, this.#options.untitled);
     if (!kept && !entry.written) return Promise.resolve();
     entry.written = true;
     const work = kept

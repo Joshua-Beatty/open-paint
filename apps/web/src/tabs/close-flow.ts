@@ -1,3 +1,6 @@
+import type { ImageTab } from "./image-tabs";
+import { hasUnsavedWork, type OpenImage } from "./open-image";
+
 /** One open image as the close rules see it. */
 export interface CloseCandidate {
   readonly id: string;
@@ -8,6 +11,17 @@ export interface CloseCandidate {
 export interface ClosePlan {
   readonly ids: readonly string[];
   readonly dirty: readonly string[];
+}
+
+/**
+ * The open images as close candidates. An image counts as dirty only when it has unsaved work
+ * (`hasUnsavedWork`), so a blank image with only a selection closes without a prompt.
+ */
+export function closeCandidates(
+  items: readonly ImageTab<OpenImage>[],
+  untitled: string,
+): CloseCandidate[] {
+  return items.map((item) => ({ id: item.id, dirty: hasUnsavedWork(item.value, untitled) }));
 }
 
 /** Plans a close over the candidates in tab order (UI-DOC-03, UI-DOC-04). */

@@ -834,6 +834,19 @@ describe("Save All (FMT-SAVE-01)", () => {
     expect(access.suggestions).toEqual(["Untitled.raw"]);
   });
 
+  it("skips a blank untitled image that only has a selection (owner request)", async () => {
+    const { flows, access, tabs } = harness();
+    const blank = Document.createBlank({ width: 2, height: 2 });
+    blank.selectAll();
+    expect(blank.dirty).toBe(true);
+    tabs.open({ name: "Untitled", document: blank });
+
+    await flows.saveAll();
+
+    expect(access.suggestions).toEqual([]);
+    expect(access.written).toEqual([]);
+  });
+
   it("stops at the first prompt that is canceled", async () => {
     const { flows, access, tabs } = harness();
     tabs.open({ name: "First", document: dirtyDocument() });

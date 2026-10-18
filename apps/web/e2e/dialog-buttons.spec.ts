@@ -168,7 +168,9 @@ for (const scheme of ["light", "dark"] as const) {
 
     // Unsaved Changes, from closing an edited image.
     await page.locator(".app-canvas-area").click({ position: { x: 4, y: 4 } });
+    // A selection alone on the blank image is not unsaved work, so the selection is erased.
     await page.keyboard.press("Control+A");
+    await page.keyboard.press("Delete");
     await expect(page.locator(".app-image-tab-dirty")).toHaveCount(1);
     await menu(page, "File", /^Close(?! All)/);
     await checkFooter(page, "unsaved-changes");
