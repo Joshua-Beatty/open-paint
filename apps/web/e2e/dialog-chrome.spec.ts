@@ -35,6 +35,17 @@ async function titleClose(dialog: Locator): Promise<Locator> {
   return close;
 }
 
+/**
+ * Opens Effects > Blurs > Gaussian Blur. The Blurs submenu is opened by clicking it: opening on
+ * hover waits 200 ms, and in Firefox a stray hover end within that time cancels it, so a hover
+ * alone sometimes left the submenu closed.
+ */
+async function openGaussianBlur(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Effects", exact: true }).click();
+  await page.getByRole("menuitem", { name: /^Blurs/ }).click();
+  await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
+}
+
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test.beforeEach(async ({ page }) => {
@@ -64,9 +75,7 @@ test("the close button of an effect dialog cancels the preview and restores the 
   await expect(page.locator(LAST_STEP)).toHaveText("Deselect");
   const before = await canvasShot(page);
 
-  await page.getByRole("button", { name: "Effects", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Blurs/ }).hover();
-  await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
+  await openGaussianBlur(page);
   const dialog = page.getByRole("dialog", { name: "Gaussian Blur" });
   await expect(dialog).toBeVisible();
   // The preview blurs the rectangle's edges on the layer.
@@ -78,9 +87,7 @@ test("the close button of an effect dialog cancels the preview and restores the 
   await expect(page.locator(LAST_STEP)).toHaveText("Deselect");
 
   // Escape still cancels the same way.
-  await page.getByRole("button", { name: "Effects", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Blurs/ }).hover();
-  await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
+  await openGaussianBlur(page);
   await expect(dialog).toBeVisible();
   await expect.poll(async () => (await canvasShot(page)).equals(before)).toBe(false);
   await page.keyboard.press("Escape");

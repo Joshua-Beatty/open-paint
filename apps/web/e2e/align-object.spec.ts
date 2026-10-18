@@ -61,7 +61,7 @@ async function boxesUnderDialog(page: Page): Promise<{ readonly image: Box; read
 
 async function openAlignObject(page: Page) {
   await page.getByRole("button", { name: "Effects", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Object/ }).hover();
+  await page.getByRole("menuitem", { name: /^Object/ }).click();
   await page.getByRole("menuitem", { name: /^Align Object/ }).click();
   await expect(page.getByRole("dialog", { name: "Align Object" })).toBeVisible();
 }

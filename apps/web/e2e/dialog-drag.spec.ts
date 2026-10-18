@@ -27,7 +27,8 @@ async function boxOf(locator: Locator) {
 
 async function openGaussianBlur(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: "Effects", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Blurs/ }).hover();
+  // Clicked, not hovered: a stray hover end in Firefox can cancel the 200 ms hover opening.
+  await page.getByRole("menuitem", { name: /^Blurs/ }).click();
   await page.getByRole("menuitem", { name: /^Gaussian Blur/ }).click();
   const dialog = page.getByRole("dialog", { name: "Gaussian Blur" });
   await expect(dialog).toBeVisible();

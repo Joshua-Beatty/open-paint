@@ -139,7 +139,7 @@ test("Flip Horizontal mirrors a lasso selection's pixels and outline in one step
   expect(Math.abs(before.left.right - (cx - 120))).toBeLessThanOrEqual(3);
 
   await page.getByRole("button", { name: "Effects", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Object/ }).hover();
+  await page.getByRole("menuitem", { name: /^Object/ }).click();
   await page.getByRole("menuitem", { name: "Flip Horizontal", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.locator(LAST_STEP)).toHaveText("Flip Horizontal");
@@ -198,7 +198,7 @@ test("Flip Vertical with nothing selected mirrors the whole layer and Repeat fli
   const before = await darkBoxes(page, cx + 100);
 
   await page.getByRole("button", { name: "Effects", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Object/ }).hover();
+  await page.getByRole("menuitem", { name: /^Object/ }).click();
   await page.getByRole("menuitem", { name: "Flip Vertical", exact: true }).click();
   await expect(page.locator(LAST_STEP)).toHaveText("Flip Vertical");
   await expect(async () => {
