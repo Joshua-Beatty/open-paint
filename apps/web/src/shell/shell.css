@@ -1771,6 +1771,12 @@ body {
   margin: 0 4px;
   border: 1px solid var(--border);
   border-radius: 3px;
+  /*
+   * The inline gradient is sized to the padding box but would repeat under the border, which in
+   * Firefox shows a pixel of the gradient's end at the left edge. The inline `background`
+   * shorthand resets the clip, hence the !important.
+   */
+  background-clip: padding-box !important;
 }
 
 /* React Aria centres the thumb on its left/top point (translate -50%, -50%). */

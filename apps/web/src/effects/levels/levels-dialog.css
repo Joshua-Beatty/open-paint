@@ -91,6 +91,8 @@
   min-height: 120px;
   border: 1px solid #808080;
   touch-action: none;
+  /* Keeps the inline gradient from repeating under the border (a stray end pixel in Firefox). */
+  background-clip: padding-box !important;
 }
 
 .levels-gradient[data-disabled] {

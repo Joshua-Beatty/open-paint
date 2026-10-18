@@ -105,6 +105,8 @@ svg.icon-filled {
     color-mix(in srgb, var(--accent, Highlight) 26%, transparent) var(--prop-fill, 0%),
     transparent var(--prop-fill, 0%)
   );
+  /* The fill doesn't repeat under the border, where it would show a stray end pixel. */
+  background-clip: padding-box;
   cursor: ew-resize;
   touch-action: none;
   outline: none;
