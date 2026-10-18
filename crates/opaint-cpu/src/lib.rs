@@ -10,6 +10,7 @@ pub mod bmff;
 pub mod bmp;
 pub mod bokeh;
 pub mod brush;
+pub mod brush_field;
 pub mod bucket;
 pub mod clone_stamp;
 pub mod clouds;

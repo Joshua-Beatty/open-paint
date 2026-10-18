@@ -85,32 +85,51 @@ function localArea(area: Rect, canvas: LiveCanvas): Rect {
 }
 
 /**
- * The coverage buffer of a region after it grew from `previous`: the old coverage moved to its
- * place in the new region, zero elsewhere.
+ * A brush stroke's values (two words per pixel, see `LiveBrushStroke`) for a region after it grew
+ * from `previous`: the old values moved to their place in the new region, zero elsewhere.
  */
-function grownCover(old: Uint8Array, previous: Rect, region: Rect): Uint8Array<ArrayBuffer> {
-  const cover = new Uint8Array(region.width * region.height);
+function grownValues(old: Uint32Array, previous: Rect, region: Rect): Uint32Array<ArrayBuffer> {
+  const values = new Uint32Array(region.width * region.height * 2);
   if (!isEmptyRect(previous)) {
     for (let y = 0; y < previous.height; y++) {
-      const at = (previous.y - region.y + y) * region.width + previous.x - region.x;
-      cover.set(old.subarray(y * previous.width, (y + 1) * previous.width), at);
+      const at = ((previous.y - region.y + y) * region.width + previous.x - region.x) * 2;
+      values.set(old.subarray(y * previous.width * 2, (y + 1) * previous.width * 2), at);
     }
   }
-  return cover;
+  return values;
+}
+
+/** The part `area` of a stroke's values (two words per pixel) over a region `width` wide. */
+function cropValues(values: Uint32Array, width: number, area: Rect): Uint32Array {
+  const out = new Uint32Array(area.width * area.height * 2);
+  for (let y = 0; y < area.height; y++) {
+    const from = ((area.y + y) * width + area.x) * 2;
+    out.set(values.subarray(from, from + area.width * 2), y * area.width * 2);
+  }
+  return out;
+}
+
+/** Writes a crop of a stroke's values back to its place `area` in a region `width` wide. */
+function placeValues(values: Uint32Array, width: number, area: Rect, crop: Uint32Array): void {
+  for (let y = 0; y < area.height; y++) {
+    const at = ((area.y + y) * width + area.x) * 2;
+    values.set(crop.subarray(y * area.width * 2, (y + 1) * area.width * 2), at);
+  }
 }
 
 /**
  * The brushes that stamp dabs: the Paintbrush and the Eraser stamp the brush color, and the Clone
- * Stamp stamps the source pixels (TL-BRUSH-CS-01). The stroke's coverage is the largest tip
- * coverage of any dab over each pixel, kept with the stroke, and each pixel is painted from its
- * original with that coverage, so overlapping soft dabs keep the tip's falloff (TL-BRUSH-01).
+ * Stamp stamps the source pixels (TL-BRUSH-CS-01). The stroke keeps its values (two words per
+ * pixel, see `LiveBrushStroke`), and each pixel is painted from its original with the coverage
+ * they give, so a soft stroke keeps the tip's falloff (TL-BRUSH-01).
  */
 class DabPainter implements LivePainter {
   readonly #brush: LiveBrushStroke;
   readonly #clone: boolean;
-  /** The coverage of the final dabs, one byte per pixel of the region. */
-  #cover = new Uint8Array();
+  /** The values of the final dabs, two words per pixel of the region. */
+  #values = new Uint32Array();
   #tail: Float32Array = new Float32Array();
+  #tailStarts = false;
   tailArea = EMPTY_RECT;
 
   constructor(options: BrushOptions, clone: boolean) {
@@ -119,13 +138,14 @@ class DabPainter implements LivePainter {
   }
 
   grow(previous: Rect, canvas: LiveCanvas): void {
-    this.#cover = grownCover(this.#cover, previous, canvas.region);
+    this.#values = grownValues(this.#values, previous, canvas.region);
   }
 
   push(points: readonly StrokePoint[], canvas: LiveCanvas): Rect {
     const dabs = this.#brush.push(pathOf(points));
-    this.#stampFinal(dabs, canvas);
+    this.#stampFinal(dabs, this.#brush.starts, false, canvas);
     this.#tail = this.#brush.tail();
+    this.#tailStarts = this.#brush.tailStarts;
     this.tailArea = dabBounds(this.#tail);
     return dabBounds(dabs);
   }
@@ -135,20 +155,22 @@ class DabPainter implements LivePainter {
     const local = localArea(area, canvas);
     if (isEmptyRect(local)) return;
     const original = cropSurface(canvas.original, local);
-    const cover = cropCoverage(this.#cover, canvas.region.width, local);
+    const values = cropValues(this.#values, canvas.region.width, local);
     const x = local.x + canvas.region.x;
     const y = local.y + canvas.region.y;
+    const tail = this.#tail;
+    const starts = this.#tailStarts;
     if (!this.#clone) {
-      this.#brush.stamp(patch, original, cover, x, y, this.#tail);
+      this.#brush.stamp(patch, original, values, x, y, tail, starts, true);
       return;
     }
-    const source = this.#sourceOf(canvas);
-    this.#brush.stampClone(patch, original, cropSurface(source, local), cover, x, y, this.#tail);
+    const source = cropSurface(this.#sourceOf(canvas), local);
+    this.#brush.stampClone(patch, original, source, values, x, y, tail, starts, true);
   }
 
   finish(canvas: LiveCanvas): Rect {
     const dabs = this.#brush.finish();
-    this.#stampFinal(dabs, canvas);
+    this.#stampFinal(dabs, this.#brush.starts, true, canvas);
     this.#tail = new Float32Array();
     this.tailArea = EMPTY_RECT;
     return dabBounds(dabs);
@@ -159,30 +181,27 @@ class DabPainter implements LivePainter {
   }
 
   /**
-   * Adds final dabs to the coverage and paints the working copy where it rose. Only the part of
-   * the buffers that the dabs reach goes through the kernel.
+   * Adds final dabs to the stroke's values and repaints the working copy where the coverage
+   * changed. Only the part of the buffers that the dabs reach goes through the kernel.
    */
-  #stampFinal(dabs: Float32Array, canvas: LiveCanvas): void {
+  #stampFinal(dabs: Float32Array, starts: boolean, ends: boolean, canvas: LiveCanvas): void {
     if (dabs.length === 0) return;
     const { region, original, work } = canvas;
     const local = localArea(dabBounds(dabs), canvas);
     if (isEmptyRect(local)) return;
     const part = cropSurface(work, local);
     const before = cropSurface(original, local);
-    const cover = cropCoverage(this.#cover, region.width, local);
+    const values = cropValues(this.#values, region.width, local);
     const x = local.x + region.x;
     const y = local.y + region.y;
     if (this.#clone) {
       const source = cropSurface(this.#sourceOf(canvas), local);
-      this.#brush.stampClone(part, before, source, cover, x, y, dabs);
+      this.#brush.stampClone(part, before, source, values, x, y, dabs, starts, ends);
     } else {
-      this.#brush.stamp(part, before, cover, x, y, dabs);
+      this.#brush.stamp(part, before, values, x, y, dabs, starts, ends);
     }
     work.copyFrom(part, part.bounds, local.x, local.y);
-    for (let row = 0; row < local.height; row++) {
-      const at = (local.y + row) * region.width + local.x;
-      this.#cover.set(cover.subarray(row * local.width, (row + 1) * local.width), at);
-    }
+    placeValues(this.#values, region.width, local, values);
   }
 
   #sourceOf(canvas: LiveCanvas): Surface {
@@ -192,17 +211,18 @@ class DabPainter implements LivePainter {
 }
 
 /**
- * The Recolor brush (TL-BRUSH-RC-01). It masks with the stroke's coverage, the largest tip
- * coverage of any dab over each pixel, so it keeps that coverage as the dabs arrive and recolors
- * the original pixels again only where the coverage changed. Since a recolored pixel depends only
- * on its original and its coverage, the result is the whole-stroke recolor.
+ * The Recolor brush (TL-BRUSH-RC-01). It masks with the stroke's coverage, so it keeps the
+ * stroke's values as the dabs arrive and recolors the original pixels again where they changed.
+ * Since a recolored pixel depends only on its original and its coverage, the result is the
+ * whole-stroke recolor.
  */
 class RecolorPainter implements LivePainter {
   readonly #brush: LiveBrushStroke;
   readonly #recolor: RecolorOptions;
-  /** The coverage of the final dabs, one byte per pixel of the region. */
-  #cover = new Uint8Array();
+  /** The values of the final dabs, two words per pixel of the region. */
+  #values = new Uint32Array();
   #tail: Float32Array = new Float32Array();
+  #tailStarts = false;
   tailArea = EMPTY_RECT;
 
   constructor(options: BrushOptions, recolor: RecolorOptions) {
@@ -211,13 +231,14 @@ class RecolorPainter implements LivePainter {
   }
 
   grow(previous: Rect, canvas: LiveCanvas): void {
-    this.#cover = grownCover(this.#cover, previous, canvas.region);
+    this.#values = grownValues(this.#values, previous, canvas.region);
   }
 
   push(points: readonly StrokePoint[], canvas: LiveCanvas): Rect {
     const dabs = this.#brush.push(pathOf(points));
-    const changed = this.#coverFinal(dabs, canvas);
+    const changed = this.#coverFinal(dabs, this.#brush.starts, false, canvas);
     this.#tail = this.#brush.tail();
+    this.#tailStarts = this.#brush.tailStarts;
     this.tailArea = dabBounds(this.#tail);
     return changed;
   }
@@ -226,22 +247,25 @@ class RecolorPainter implements LivePainter {
     const local = localArea(intersectRects(this.tailArea, area), canvas);
     if (isEmptyRect(local)) return;
     const { region } = canvas;
-    const cover = cropCoverage(this.#cover, region.width, local);
+    const values = cropValues(this.#values, region.width, local);
     this.#brush.cover(
-      cover,
+      values,
       local.width,
       local.height,
       local.x + region.x,
       local.y + region.y,
       this.#tail,
+      this.#tailStarts,
+      true,
     );
     const pixels = cropSurface(canvas.original, local);
-    recolorCover(pixels, cover, this.#recolor);
+    recolorCover(pixels, this.#brush.coverage(values), this.#recolor);
     patch.copyFrom(pixels, pixels.bounds, local.x + region.x - area.x, local.y + region.y - area.y);
   }
 
   finish(canvas: LiveCanvas): Rect {
-    const changed = this.#coverFinal(this.#brush.finish(), canvas);
+    const dabs = this.#brush.finish();
+    const changed = this.#coverFinal(dabs, this.#brush.starts, true, canvas);
     this.#tail = new Float32Array();
     this.tailArea = EMPTY_RECT;
     return changed;
@@ -251,15 +275,17 @@ class RecolorPainter implements LivePainter {
     this.#brush.free();
   }
 
-  /** Adds final dabs to the coverage and recolors the working copy where they fall. */
-  #coverFinal(dabs: Float32Array, canvas: LiveCanvas): Rect {
+  /** Adds final dabs to the stroke's values and recolors the working copy where they fall. */
+  #coverFinal(dabs: Float32Array, starts: boolean, ends: boolean, canvas: LiveCanvas): Rect {
     const { region } = canvas;
-    this.#brush.cover(this.#cover, region.width, region.height, region.x, region.y, dabs);
+    const { width, height, x, y } = region;
+    this.#brush.cover(this.#values, width, height, x, y, dabs, starts, ends);
     const changed = dabBounds(dabs);
     const local = localArea(changed, canvas);
     if (isEmptyRect(local)) return changed;
     const pixels = cropSurface(canvas.original, local);
-    recolorCover(pixels, cropCoverage(this.#cover, region.width, local), this.#recolor);
+    const coverage = this.#brush.coverage(cropValues(this.#values, region.width, local));
+    recolorCover(pixels, coverage, this.#recolor);
     canvas.work.copyFrom(pixels, pixels.bounds, local.x, local.y);
     return changed;
   }

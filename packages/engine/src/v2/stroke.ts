@@ -1,6 +1,6 @@
 import { TILE_SIZE } from "@openpaint/document";
 import { type BrushOptions, brushSettingsOf } from "../brush";
-import { clampHardness, tipPad } from "../brush-segments";
+import { clampHardness, nominalReach } from "../brush-segments";
 import { brushJoinsDabs, DabPlanner } from "../cpu";
 import { BufferUsage } from "../gpu-device";
 import type { GpuDocument } from "./gpu-document";
@@ -12,8 +12,8 @@ import { RESOLVE_WGSL, STAMP_WGSL } from "./wgsl";
 const OVERWRITE_BLEND = 14;
 /** `paint_mode` of the stamp shader. */
 const PAINT = { blend: 0, erase: 1, overwrite: 2 } as const;
-const STROKE_BYTES = 64;
-const TILE_PARAMS_BYTES = 48;
+const STROKE_BYTES = 80;
+const TILE_PARAMS_BYTES = 64;
 const RESOLVE_BYTES = 16;
 const STRIDE = 256;
 /** `GPUMapMode.READ`. */
@@ -111,8 +111,12 @@ interface Tile {
   readonly preview: number;
   /** The layer's pixels before the stroke, which every dab paints from. */
   readonly original: number;
-  /** The stroke's coverage so far: the largest tip coverage of any final dab, one word per pixel. */
+  /**
+   * The stroke's values so far from its final parts, two words per pixel in two slots: a round
+   * tip's field integrals, or a square tip's largest coverage in `cover`.
+   */
   readonly cover: number;
+  readonly cover2: number;
   /** With a selection: the selection coverage and the clipped result. */
   readonly mask: number | undefined;
   readonly out: number | undefined;
@@ -138,9 +142,10 @@ export class GpuStroke {
   readonly #slots: SlotBuffer;
   readonly #mask: StrokeMask | undefined;
   readonly #planner: DabPlanner;
-  /** Whether consecutive dabs are joined into swept segments (spacing below 100 %). */
+  /** Whether consecutive dabs are joined into a path (spacing below 100 %). */
   readonly #joined: boolean;
-  readonly #pad: number;
+  readonly #square: boolean;
+  readonly #antialias: boolean;
   readonly #strokeUniform: GPUBuffer;
   readonly #tiles = new Map<number, Tile>();
   readonly #buffers = new Map<string, GPUBuffer>();
@@ -149,6 +154,11 @@ export class GpuStroke {
    * dab already stamped, so their segments continue the stroke.
    */
   #pendingDabs: number[] = [];
+  /** Whether the pending dabs begin at the stroke's first dab, and whether they end the stroke. */
+  #pendingStarts = false;
+  #pendingEnds = false;
+  /** Whether the provisional dabs begin at the stroke's first dab. */
+  #tailStarts = false;
   /** The provisional dabs to preview, replaced by every batch. */
   #tail: Float32Array = new Float32Array();
   #finished = false;
@@ -179,7 +189,8 @@ export class GpuStroke {
     } finally {
       settings.free();
     }
-    this.#pad = tipPad(options.antialias);
+    this.#square = options.square;
+    this.#antialias = options.antialias;
     this.#strokeUniform = device.createBuffer({
       label: "v2 stroke",
       size: STROKE_BYTES,
@@ -191,12 +202,12 @@ export class GpuStroke {
         ? PAINT.overwrite
         : PAINT.blend;
     const { color, background } = options;
-    const hardness = new Uint32Array(new Float32Array([clampHardness(options.hardness)]).buffer);
+    const bits = (value: number) => new Uint32Array(new Float32Array([value]).buffer)[0] ?? 0;
     device.queue.writeBuffer(
       this.#strokeUniform,
       0,
       new Uint32Array([
-        hardness[0] ?? 0,
+        bits(clampHardness(options.hardness)),
         paint,
         options.blend,
         options.antialias ? 1 : 0,
@@ -212,6 +223,10 @@ export class GpuStroke {
         doc.width,
         doc.height,
         options.square ? 1 : 0,
+        bits(nominalReach(options.size, options.antialias)),
+        0,
+        0,
+        0,
       ]),
     );
   }
@@ -224,23 +239,28 @@ export class GpuStroke {
   /** Adds pointer samples (flat `x, y, pressure` triples in image pixels). */
   push(samples: Float32Array): void {
     if (this.#finished) return;
-    this.#queue(this.#planner.push(samples));
+    this.#queue(this.#planner.push(samples), this.#planner.starts(), false);
     this.#tail = this.#planner.tail();
+    this.#tailStarts = this.#planner.tail_starts();
   }
 
   /** Places the stroke's last dabs. The next `encode` stamps them, then `commit` records it. */
   finish(): void {
     if (this.#finished) return;
-    this.#queue(this.#planner.finish());
+    const last = this.#planner.finish();
+    this.#queue(last, this.#planner.starts(), true);
     this.#tail = new Float32Array();
     this.#finished = true;
   }
 
   /**
    * Adds a batch of final dabs to the pending ones. A joined batch repeats the last dab before it,
-   * which is already the last pending dab when the pending ones are not stamped yet.
+   * which is already the last pending dab when the pending ones are not stamped yet. The pending
+   * dabs begin at the stroke's start when their first batch did, and end it with the last batch.
    */
-  #queue(batch: Float32Array): void {
+  #queue(batch: Float32Array, starts: boolean, ends: boolean): void {
+    if (this.#pendingDabs.length === 0) this.#pendingStarts = starts;
+    this.#pendingEnds ||= ends;
     const skip = this.#joined && this.#pendingDabs.length > 0 && batch.length > 0 ? 3 : 0;
     for (let i = skip; i < batch.length; i++) this.#pendingDabs.push(batch[i] ?? 0);
   }
@@ -252,10 +272,20 @@ export class GpuStroke {
    */
   encode(encoder: GPUCommandEncoder): void {
     const { width, height } = this.#doc;
-    const finals = planStamps(this.#pendingDabs, width, height, this.#joined, this.#pad);
-    const tails = planStamps(this.#tail, width, height, this.#joined, this.#pad);
+    const parts = { joined: this.#joined, square: this.#square, antialias: this.#antialias };
+    const finals = planStamps(this.#pendingDabs, width, height, {
+      ...parts,
+      starts: this.#pendingStarts,
+      ends: this.#pendingEnds,
+    });
+    const tails = planStamps(this.#tail, width, height, {
+      ...parts,
+      starts: this.#tailStarts,
+      ends: true,
+    });
     const finalDabs = this.#pendingDabs;
     this.#pendingDabs = [];
+    this.#pendingEnds = false;
     for (const stamp of [...finals, ...tails]) this.#tile(stamp.tx, stamp.ty);
     const tailKeys = new Set(tails.map((stamp) => this.#key(stamp.tx, stamp.ty)));
     for (const key of tailKeys) {
@@ -310,15 +340,22 @@ export class GpuStroke {
         stamp.y0,
         stamp.x1,
         stamp.y1,
-        stamp.segments.length / 2,
+        stamp.terms.length / 3,
         this.#slots.wordOffset(tile.original),
         this.#slots.wordOffset(tile.cover),
         final ? 1 : 0,
+        this.#slots.wordOffset(tile.cover2),
       ];
       words.forEach((word, k) => {
         view.setUint32(i * STRIDE + k * 4, word, true);
       });
-      for (const index of stamp.segments) indices.push(base + index);
+      for (let k = 0; k < stamp.terms.length; k += 3) {
+        indices.push(
+          stamp.terms[k] ?? 0,
+          base + (stamp.terms[k + 1] ?? 0),
+          base + (stamp.terms[k + 2] ?? 0),
+        );
+      }
     });
     const device = this.#device;
     const dabBuffer = this.#buffer("dabs", Math.max(16, dabs.byteLength), BufferUsage.STORAGE);
@@ -486,6 +523,7 @@ export class GpuStroke {
         tile.final,
         tile.original,
         tile.cover,
+        tile.cover2,
         tile.mask,
         tile.out,
         tile.scratch,
@@ -521,6 +559,7 @@ export class GpuStroke {
       preview: this.#doc.allocateFor(this.layerId),
       original: this.#slots.allocate(),
       cover: this.#slots.allocate(),
+      cover2: this.#slots.allocate(),
       mask: masked ? this.#slots.allocate() : undefined,
       out: masked ? this.#slots.allocate() : undefined,
       scratch: undefined,
@@ -543,6 +582,7 @@ export class GpuStroke {
       else this.#doc.pool.copyToBuffer(encoder, original, buffer, offset);
     }
     encoder.clearBuffer(buffer, this.#slots.offset(tile.cover), SLOT_BYTES);
+    encoder.clearBuffer(buffer, this.#slots.offset(tile.cover2), SLOT_BYTES);
     if (tile.mask !== undefined && this.#mask) {
       this.#device.queue.writeBuffer(
         buffer,

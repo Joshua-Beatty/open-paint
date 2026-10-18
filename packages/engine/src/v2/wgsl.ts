@@ -1,5 +1,5 @@
 import { ADJUST_PIXEL_WGSL } from "@openpaint/effects";
-import { SWEEP_WGSL } from "../brush-wgsl";
+import { BRUSH_COVERAGE_WGSL } from "../brush-wgsl";
 import { BLEND_WGSL } from "../composite-wgsl";
 
 /**
@@ -206,13 +206,13 @@ const HATCH_ROWS = [
 ].flat();
 
 /**
- * Stamps a batch of swept segments into one stroke tile: 256 × 256 packed RGBA8 words in a storage
- * buffer. The stroke's coverage is the tip swept along its path (`brush.rs` `stamp_dabs`): each
- * pixel takes the largest coverage of the segments that touch its tile (`sweep_cover`) and of the
- * tile's coverage slot, and where that rises it paints the pixel from the original slot with the
- * new coverage, with the hatch and paint rules of `brush.rs` (`source_at`, `paint_pixel`). Final
- * segments store the new coverage (`write_cover`); provisional ones only paint. Positions are
- * image pixels, so hatch patterns repeat from the image origin.
+ * Stamps a batch of stroke parts into one stroke tile: 256 × 256 packed RGBA8 words in a storage
+ * buffer. As `brush.rs` `stamp_dabs`, each pixel adds the parts that touch its tile to its two
+ * words (the tile's two value slots: a round tip's field integrals, or a square tip's largest
+ * coverage), and where the coverage they give changes it paints the pixel from the original slot
+ * with the new coverage, with the hatch and paint rules of `brush.rs` (`source_at`,
+ * `paint_pixel`). Final parts store the new values (`write_cover`); provisional ones only paint.
+ * Positions are image pixels, so hatch patterns repeat from the image origin.
  */
 export const STAMP_WGSL = /* wgsl */ `
 struct Stroke {
@@ -226,18 +226,26 @@ struct Stroke {
   doc_w: u32,
   doc_h: u32,
   square: u32,
+  reach: f32,
+  pad0: u32,
+  pad1: u32,
+  pad2: u32,
 }
 
 struct Tile {
   slot_offset: u32,
   origin_x: u32,
   origin_y: u32,
-  segment_start: u32,
+  term_start: u32,
   bounds: vec4u,
-  segment_count: u32,
+  term_count: u32,
   original_offset: u32,
   cover_offset: u32,
   write_cover: u32,
+  cover2_offset: u32,
+  pad0: u32,
+  pad1: u32,
+  pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> stroke: Stroke;
@@ -249,12 +257,12 @@ struct Tile {
 const HATCH = array<u32, 64>(${HATCH_ROWS.map((row) => `${row}u`).join(", ")});
 
 ${BLEND_WGSL}
-${SWEEP_WGSL}
+${BRUSH_COVERAGE_WGSL}
 fn overwrite_channel(d: u32, s: u32, c: u32) -> u32 {
   return min(255u, mul(d, 255u - c) + mul(s, c));
 }
 
-// A dab as the sweep takes it: centre and reach (its radius, plus half a pixel when antialiased).
+// A dab as its parts take it: centre and reach (its radius, plus half a pixel when antialiased).
 fn node(index: u32) -> vec3f {
   let dab = dabs[index];
   return vec3f(dab.xy, dab.z + select(0.0, 0.5, stroke.antialias != 0u));
@@ -299,22 +307,35 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     return;
   }
   let local = ly * 256u + lx;
-  let before = pixels[tile.cover_offset + local];
-  var cover = before;
+  let before = vec2u(pixels[tile.cover_offset + local], pixels[tile.cover2_offset + local]);
+  var value = before;
   let p = vec2f(f32(x) + 0.5, f32(y) + 0.5);
   let square = stroke.square != 0u;
   let antialias = stroke.antialias != 0u;
-  for (var i = 0u; i < tile.segment_count; i++) {
-    let k = tile.segment_start + i * 2u;
-    let a = node(indices[k]);
-    let b = node(indices[k + 1u]);
-    cover = max(cover, sweep_cover(p, a, b, stroke.hardness, square, antialias));
+  let core = select(1.0, stroke.hardness * stroke.hardness, antialias);
+  for (var i = 0u; i < tile.term_count; i++) {
+    let k = tile.term_start + i * 3u;
+    let kind = indices[k];
+    let a = node(indices[k + 1u]);
+    let b = node(indices[k + 2u]);
+    if (kind == 3u) {
+      value.x = max(value.x, square_cover(p, a, b, core, antialias));
+    } else {
+      let units = field_units(kind, p, a, b);
+      value = vec2u(saturating_add(value.x, units.x), saturating_add(value.y, units.y));
+    }
   }
-  if (cover <= before) {
+  if (all(value == before)) {
     return;
   }
   if (tile.write_cover != 0u) {
-    pixels[tile.cover_offset + local] = cover;
+    pixels[tile.cover_offset + local] = value.x;
+    pixels[tile.cover2_offset + local] = value.y;
+  }
+  // A new part can lower the coverage as well as raise it, so any change repaints the pixel.
+  let cover = stroke_coverage(value, square, stroke.reach, core, antialias);
+  if (cover == stroke_coverage(before, square, stroke.reach, core, antialias)) {
+    return;
   }
   let word = pixels[tile.original_offset + local];
   let o = vec4u(word & 255u, (word >> 8u) & 255u, (word >> 16u) & 255u, word >> 24u);

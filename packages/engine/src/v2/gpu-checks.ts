@@ -40,6 +40,18 @@ export function noiseSurface(seed: number, width: number, height: number): Surfa
   return new Surface(width, height, data);
 }
 
+/**
+ * Opaque noise for the stroke checks: the twins agree on coverage within one level, and over an
+ * opaque pixel one level moves each channel by at most one. Over a nearly transparent pixel the
+ * straight-alpha colour of a blend magnifies it, which says nothing about the coverage. The
+ * empty-layer cases check the coverage on its own, as alpha.
+ */
+function opaqueNoise(seed: number, width: number, height: number): Surface {
+  const surface = noiseSurface(seed, width, height);
+  for (let i = 3; i < surface.data.length; i += 4) surface.data[i] = 255;
+  return surface;
+}
+
 function compare(actual: ArrayLike<number>, expected: ArrayLike<number>): CheckResult {
   let maxDifference = 0;
   let differingChannels = 0;
@@ -256,7 +268,7 @@ export interface StrokeCheck {
  */
 export async function checkStrokeV2(device: GPUDevice, check: StrokeCheck): Promise<CheckResult> {
   const { width, height, options } = check;
-  const original = check.empty ? new Surface(width, height) : noiseSurface(7, width, height);
+  const original = check.empty ? new Surface(width, height) : opaqueNoise(7, width, height);
   const store = new TiledPixelStore(width, height);
   if (!check.empty) store.writeRegion(original, 0, 0);
   const doc = new GpuDocument(device, NO_CHANGES);
@@ -316,7 +328,7 @@ export async function checkStrokeV2(device: GPUDevice, check: StrokeCheck): Prom
  */
 export async function checkBrushV1(device: GPUDevice, check: StrokeCheck): Promise<CheckResult> {
   const { width, height, options } = check;
-  const original = noiseSurface(11, width, height);
+  const original = check.empty ? new Surface(width, height) : opaqueNoise(11, width, height);
   const path = new Float32Array(check.path);
   const settings = brushSettingsOf(options);
   try {

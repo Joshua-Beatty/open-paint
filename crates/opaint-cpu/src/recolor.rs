@@ -151,7 +151,8 @@ pub fn recolor_rgba8(
 
 /// Recolors a straight-alpha RGBA8 buffer in place under the stroke coverage `cover` (one byte
 /// per pixel, the same size), as `recolor` does with the coverage of a whole stroke. A live
-/// Recolor stroke keeps its coverage (`brush_cover_dabs`) and recolors only where it changed.
+/// Recolor stroke keeps its per-pixel values (`brush_cover_dabs`), turns them into coverage
+/// (`brush_values_coverage`) and recolors only where it changed.
 #[wasm_bindgen]
 pub fn recolor_cover_rgba8(
     dst: &mut [u8],
@@ -347,7 +348,7 @@ mod tests {
 
     #[test]
     fn recoloring_a_part_under_its_coverage_matches_the_whole_stroke() {
-        use crate::brush::{cover_dabs, plan_dabs};
+        use crate::brush::{cover_dabs, plan_dabs, stroke_values_coverage};
         let (w, h) = (24, 16);
         let mut original = blank(w, h, RED);
         for x in 0..w {
@@ -373,10 +374,22 @@ mod tests {
             .flat_map(|d| [d.x, d.y, d.diameter])
             .collect();
         assert!(dabs.len() >= 6);
-        let mut cover = vec![0u8; pw * ph];
-        for pair in dabs.windows(6).step_by(3) {
-            cover_dabs(&mut cover, pw, ph, (ox, oy), pair, &brush).expect("cover");
+        let mut values = vec![0u32; pw * ph * 2];
+        let last = dabs.len() / 3 - 2;
+        for (i, pair) in dabs.windows(6).step_by(3).enumerate() {
+            cover_dabs(
+                &mut values,
+                pw,
+                ph,
+                (ox, oy),
+                pair,
+                &brush,
+                i == 0,
+                i == last,
+            )
+            .expect("cover");
         }
+        let cover = stroke_values_coverage(&values, &brush);
         let mut part: Vec<u8> = (0..ph)
             .flat_map(|y| original[((y + oy) * w + ox) * 4..][..pw * 4].to_vec())
             .collect();

@@ -153,6 +153,15 @@ export const V1_BRUSH_CASES: readonly (StrokeCheck & { readonly id: string })[] 
     batch: 1,
   },
   {
+    id: "feathered-empty-layer",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 90, hardness: 0.3 },
+    path: wavyPath(40),
+    batch: 1,
+    empty: true,
+  },
+  {
     id: "spaced-overwrite",
     width: WIDTH,
     height: HEIGHT,

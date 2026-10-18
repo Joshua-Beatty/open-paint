@@ -92,9 +92,11 @@ describe("option mapping", () => {
     });
   });
 
-  it("gives a brush the reach of its radius plus one pixel, and a pencil one pixel", () => {
+  it("gives a brush the reach of its parts, and a pencil one pixel", () => {
     const brush = brushOptionsFor(readerOf({ "brush.size": 10 }), "paint", BLACK, WHITE);
-    expect(strokeReach({ kind: "brush", options: brush })).toBe(6);
+    // A round tip's field reaches 1.45 × its 5.5 px reach, with a pixel to spare.
+    expect(strokeReach({ kind: "brush", options: brush })).toBe(9);
+    expect(strokeReach({ kind: "brush", options: { ...brush, square: true } })).toBe(6);
     expect(strokeReach({ kind: "pencil", color: BLACK, blend: 0 })).toBe(1);
   });
 });

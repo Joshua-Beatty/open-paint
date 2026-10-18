@@ -6,7 +6,7 @@ import {
   type Rect,
   rectFromEdges,
 } from "@openpaint/document";
-import type { BrushOptions, RecolorOptions } from "@openpaint/engine";
+import { type BrushOptions, partRadius, type RecolorOptions } from "@openpaint/engine";
 
 /** One pointer sample of a stroke, in image pixels (WEB-PTR-01). */
 export interface StrokePoint {
@@ -86,11 +86,14 @@ export function brushOptionsFor(
 }
 
 /**
- * The distance, in pixels, that a stroke's pixels reach from its path. A brush reaches half its
- * diameter, rounded up, plus one pixel of antialiasing. A pencil line is one pixel wide.
+ * The distance, in pixels, that a stroke can change pixels from its path. A brush reaches as far
+ * as its parts do (`partRadius`): a round tip's field reaches past its radius, and the stroke
+ * keeps those values so that later parts add up exactly. A pencil line is one pixel wide.
  */
 export function strokeReach(spec: StrokeSpec): number {
-  return spec.kind === "pencil" ? 1 : Math.ceil(spec.options.size / 2) + 1;
+  if (spec.kind === "pencil") return 1;
+  const { size, antialias, square } = spec.options;
+  return Math.ceil(partRadius(size, antialias, square));
 }
 
 /**

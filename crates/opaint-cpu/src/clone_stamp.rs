@@ -6,7 +6,7 @@
 //! composited with the brush's blend mode (or Overwrite), so the tip's coverage fades the source in.
 
 use crate::brush::{
-    check_live_buffers, paint_for, paint_pixel, stroke_coverage, stroke_points, visit_dabs,
+    check_live_buffers, paint_for, paint_pixel, stamp_with, stroke_coverage, stroke_points,
     BrushSettings, StrokePoint,
 };
 use wasm_bindgen::prelude::*;
@@ -58,38 +58,45 @@ pub fn clone_stroke_rgba8(
 
 /// Clones `dabs` (flat `x, y, diameter` triples in image pixels, in order) from `source` onto
 /// `dst`, all `width` × `height` with their top-left pixel at image pixel `origin`. `original`
-/// holds the pixels before the stroke and `cover` the stroke's coverage so far: where a dab
-/// raises the coverage, the pixel is cloned again from its original with the new coverage.
-/// Stamping a stroke's planned dabs a few at a time this way matches `clone_stamp` over the whole
-/// stroke.
+/// holds the pixels before the stroke and `values` the stroke's per-pixel values so far (see
+/// `DabPlanner` for `starts` and `ends`): where the coverage rises, the pixel is cloned again from
+/// its original with the new coverage. Stamping a stroke's planned dabs a few at a time this way
+/// matches `clone_stamp` over the whole stroke.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn clone_stamp_dabs(
     dst: &mut [u8],
     original: &[u8],
     source: &[u8],
-    cover: &mut [u8],
+    values: &mut [u32],
     width: usize,
     height: usize,
     origin: (usize, usize),
     dabs: &[f32],
     brush: &BrushSettings,
+    starts: bool,
+    ends: bool,
 ) -> Result<(), String> {
-    check_live_buffers(dst, original, cover, width, height)?;
+    check_live_buffers(dst, original, values, width, height)?;
     if source.len() != width * height * 4 {
         return Err("clone target and source must be width × height RGBA8".to_owned());
     }
     let paint = paint_for(brush.blend)?;
-    visit_dabs(width, height, origin, dabs, brush, |x, y, c| {
-        let cell = &mut cover[y * width + x];
-        if c <= u32::from(*cell) {
-            return;
-        }
-        *cell = c.min(255) as u8;
-        let i = (y * width + x) * 4;
-        let pixel: [u8; 4] = original[i..i + 4].try_into().expect("four bytes per pixel");
-        let src: [u8; 4] = source[i..i + 4].try_into().expect("four bytes per pixel");
-        dst[i..i + 4].copy_from_slice(&paint_pixel(pixel, c, src, paint));
-    })
+    stamp_with(
+        values,
+        width,
+        height,
+        origin,
+        dabs,
+        brush,
+        starts,
+        ends,
+        |x, y, c| {
+            let i = (y * width + x) * 4;
+            let pixel: [u8; 4] = original[i..i + 4].try_into().expect("four bytes per pixel");
+            let src: [u8; 4] = source[i..i + 4].try_into().expect("four bytes per pixel");
+            dst[i..i + 4].copy_from_slice(&paint_pixel(pixel, c, src, paint));
+        },
+    )
 }
 
 /// Clones `dabs` onto a straight-alpha RGBA8 buffer in place (see `clone_stamp_dabs`). A live
@@ -100,24 +107,28 @@ pub fn clone_stamp_dabs_rgba8(
     dst: &mut [u8],
     original: &[u8],
     source: &[u8],
-    cover: &mut [u8],
+    values: &mut [u32],
     width: u32,
     height: u32,
     origin_x: u32,
     origin_y: u32,
     dabs: &[f32],
+    starts: bool,
+    ends: bool,
     brush: &BrushSettings,
 ) -> Result<(), JsError> {
     clone_stamp_dabs(
         dst,
         original,
         source,
-        cover,
+        values,
         width as usize,
         height as usize,
         (origin_x as usize, origin_y as usize),
         dabs,
         brush,
+        starts,
+        ends,
     )
     .map_err(|m| JsError::new(&m))
 }
@@ -279,21 +290,32 @@ mod tests {
         let part_source = crop(&source);
         let mut part = blank(bw, bh, RED);
         let original = part.clone();
-        let mut cover = vec![0u8; bw * bh];
+        let mut values = vec![0u32; bw * bh * 2];
         let mut planner = DabPlanner::new(&brush);
         let path: Vec<f32> = points.iter().flat_map(|p| [p.x, p.y, p.pressure]).collect();
-        let mut stamp = |part: &mut Vec<u8>, dabs: &[f32]| {
+        let mut stamp = |part: &mut Vec<u8>, dabs: &[f32], starts: bool, ends: bool| {
             let (src, origin) = (&part_source, (ox, oy));
             clone_stamp_dabs(
-                part, &original, src, &mut cover, bw, bh, origin, dabs, &brush,
+                part,
+                &original,
+                src,
+                &mut values,
+                bw,
+                bh,
+                origin,
+                dabs,
+                &brush,
+                starts,
+                ends,
             )
             .expect("clone");
         };
         for chunk in path.chunks(9) {
             let dabs = planner.push(chunk).expect("triples");
-            stamp(&mut part, &dabs);
+            stamp(&mut part, &dabs, planner.starts(), false);
         }
-        stamp(&mut part, &planner.finish());
+        let rest = planner.finish();
+        stamp(&mut part, &rest, planner.starts(), true);
         assert_eq!(part, crop(&whole));
         assert_ne!(whole, blank(w, h, RED));
     }

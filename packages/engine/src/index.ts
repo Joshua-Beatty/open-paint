@@ -20,6 +20,7 @@ export {
   strokeBrushCpu,
   strokePencilCpu,
 } from "./brush";
+export { partRadius } from "./brush-segments";
 export {
   connectEngine,
   createEngineWorker,

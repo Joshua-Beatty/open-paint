@@ -1,5 +1,5 @@
 import { Surface } from "@openpaint/document";
-import { clampHardness, segmentsOf, tipPad } from "./brush-segments";
+import { clampHardness, nominalReach, termBox, termsOf, tipPad } from "./brush-segments";
 import { BRUSH_WGSL } from "./brush-wgsl";
 import { type BrushSettings, brushDabs, brushJoinsDabs } from "./cpu";
 import { BufferUsage } from "./gpu-device";
@@ -7,21 +7,22 @@ import { readBack } from "./gpu-pool";
 
 /** `GPUShaderStage.COMPUTE`; the DOM lib types WebGPU interfaces but not these globals. */
 const COMPUTE_STAGE = 0x4;
-/** Bytes of the shader's `Segment` uniform: two vec4f and sixteen 4-byte fields. */
-const SEGMENT_BYTES = 96;
+/** Bytes of the shader's `Part` uniform: two vec4f and sixteen 4-byte fields. */
+const PART_BYTES = 96;
 const WORKGROUP_SIZE = 8;
 const BYTES_PER_PIXEL = 4;
 /** The brush blend value that replaces the destination (TL-OPT-BLEND "Overwrite"). */
 const OVERWRITE_BLEND = 14;
-/** `paint_mode` values of the shader's `Segment` uniform. */
+/** `paint_mode` values of the shader's `Part` uniform. */
 const PAINT = { blend: 0, erase: 1, overwrite: 2 } as const;
 
 /**
- * One dispatch: its segment's ends (`x, y, reach`), the origin and size of its bounding box, and
- * its uniform slot.
+ * One dispatch: its part's kind and dabs (`x, y, reach`), the origin and size of its bounding
+ * box, and its uniform slot.
  */
 interface Stamp {
   readonly slot: number;
+  readonly kind: number;
   readonly a: readonly [number, number, number];
   readonly b: readonly [number, number, number];
   readonly originX: number;
@@ -32,10 +33,10 @@ interface Stamp {
 
 /**
  * Brush stroke on WebGPU (TL-BRUSH-01). The dab list comes from the Rust kernels. The WGSL twin
- * raises a coverage buffer to each segment's swept tip coverage (each pair of joined dabs, or each
- * dab alone), one dispatch per segment, then paints the stroke's bounding box once with that
- * coverage. Every dispatch's uniform sits in one buffer and is selected with a dynamic offset, so
- * a stroke costs one command encoder.
+ * adds each part of the stroke (see `termsOf`) to two words per pixel, one dispatch per part,
+ * then paints the stroke's bounding box once with the coverage they give. Every dispatch's
+ * uniform sits in one buffer and is selected with a dynamic offset, so a stroke costs one command
+ * encoder.
  */
 export class GpuBrush {
   readonly #device: GPUDevice;
@@ -89,15 +90,25 @@ export class GpuBrush {
       (dabs[i * 3 + 2] ?? 0) * 0.5 + pad,
     ];
     const stamps: Stamp[] = [];
-    for (const [ia, ib] of segmentsOf(dabs.length / 3, brushJoinsDabs(brush))) {
-      const a = node(ia);
-      const b = node(ib);
-      const originX = Math.max(0, Math.floor(Math.min(a[0] - a[2], b[0] - b[2])));
-      const originY = Math.max(0, Math.floor(Math.min(a[1] - a[2], b[1] - b[2])));
-      const extentX = Math.min(width, Math.ceil(Math.max(a[0] + a[2], b[0] + b[2]))) - originX;
-      const extentY = Math.min(height, Math.ceil(Math.max(a[1] + a[2], b[1] + b[2]))) - originY;
-      if (extentX <= 0 || extentY <= 0) continue;
-      stamps.push({ slot: stamps.length, a, b, originX, originY, extentX, extentY });
+    const terms = termsOf(dabs, {
+      joined: brushJoinsDabs(brush),
+      square: brush.square,
+      starts: true,
+      ends: true,
+    });
+    for (const term of terms) {
+      const box = termBox(dabs, term, brush.antialias, brush.square, width, height);
+      if (!box) continue;
+      stamps.push({
+        slot: stamps.length,
+        kind: term.kind,
+        a: node(term.a),
+        b: node(term.b),
+        originX: box.x0,
+        originY: box.y0,
+        extentX: box.x1 - box.x0,
+        extentY: box.y1 - box.y0,
+      });
     }
     if (stamps.length === 0) return copy();
     // The last slot is the stroke's bounding box, which `apply` paints.
@@ -113,6 +124,7 @@ export class GpuBrush {
     }
     const bounds: Stamp = {
       slot: stamps.length,
+      kind: 0,
       a: [0, 0, 1],
       b: [0, 0, 1],
       originX: left,
@@ -122,9 +134,10 @@ export class GpuBrush {
     };
 
     const device = this.#device;
-    const stride = Math.max(device.limits.minUniformBufferOffsetAlignment, SEGMENT_BYTES);
+    const stride = Math.max(device.limits.minUniformBufferOffsetAlignment, PART_BYTES);
     const params = new ArrayBuffer((stamps.length + 1) * stride);
     const view = new DataView(params);
+    const reach = nominalReach(brush.size, brush.antialias);
     const paint = brush.erase
       ? PAINT.erase
       : brush.blend === OVERWRITE_BLEND
@@ -150,6 +163,8 @@ export class GpuBrush {
       view.setUint32(base + 76, brush.a, true);
       view.setFloat32(base + 80, clampHardness(brush.hardness), true);
       view.setUint32(base + 84, brush.square ? 1 : 0, true);
+      view.setUint32(base + 88, stamp.kind, true);
+      view.setFloat32(base + 92, reach, true);
     }
 
     const pixels = width * height;
@@ -171,9 +186,10 @@ export class GpuBrush {
       params.byteLength,
       BufferUsage.UNIFORM | BufferUsage.COPY_DST,
     );
+    // Two words per pixel; a new buffer starts zeroed.
     const coverBuffer = buffer(
-      "brush coverage",
-      pixels * BYTES_PER_PIXEL,
+      "brush values",
+      pixels * 8,
       BufferUsage.STORAGE | BufferUsage.COPY_DST,
     );
     device.queue.writeBuffer(pixelBuffer, 0, words);
@@ -182,7 +198,7 @@ export class GpuBrush {
     const bindGroup = device.createBindGroup({
       layout: this.#layout,
       entries: [
-        { binding: 0, resource: { buffer: dabBuffer, size: SEGMENT_BYTES } },
+        { binding: 0, resource: { buffer: dabBuffer, size: PART_BYTES } },
         { binding: 2, resource: { buffer: pixelBuffer } },
         { binding: 3, resource: { buffer: coverBuffer } },
       ],
