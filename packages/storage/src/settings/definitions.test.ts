@@ -66,6 +66,7 @@ const TOOL_KEYS = [
 const FIXED_KEYS = [
   "app.lastRunVersion",
   "app.firstRunCompleted",
+  "app.sessionRecovery",
   "canvas.checkerboardBrightness",
   "canvas.customBorderColor",
   "canvas.customBorderColorEnabled",

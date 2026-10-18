@@ -63,6 +63,16 @@ describe("settings pages", () => {
     expect(findDefinition("ui.antialiasedSelectionOutline")?.defaultValue).toBe(true);
   });
 
+  it("offers session recovery on the User Interface page, off by default (owner request)", () => {
+    const field = UI_BLOCK.fields.find((entry) => entry.path === "app.sessionRecovery");
+    expect(field?.label).toBe("settings.field.sessionRecovery");
+    expect(enUS["settings.field.sessionRecovery"]).toBe(
+      "Restore unsaved images after the tab closes or crashes",
+    );
+    expect(field?.control?.footnote).toBe("settings.note.sessionRecovery");
+    expect(findDefinition("app.sessionRecovery")?.defaultValue).toBe(false);
+  });
+
   it("builds a valid schema for every block", () => {
     for (const [, block] of allBlocks()) {
       expect(() => blockSchema(block, context)).not.toThrow();

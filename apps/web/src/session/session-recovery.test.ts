@@ -5,7 +5,12 @@ import { Document, MemoryAccountant, rect } from "@openpaint/document";
 import type { SessionCheckpoint, SessionStore } from "@openpaint/storage";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenImage } from "../tabs/open-image";
-import { SessionRecovery, type SessionRecoveryOptions } from "./session-recovery";
+import {
+  type SessionOffer,
+  SessionRecovery,
+  type SessionRecoveryOptions,
+  SessionRecoveryToggle,
+} from "./session-recovery";
 
 beforeAll(async () => {
   const wasmPath = createRequire(import.meta.url).resolve("@openpaint/cpu/opaint_cpu_bg.wasm");
@@ -344,6 +349,117 @@ describe("SessionRecovery (WEB-MEM-05, SET-LIFE-11)", () => {
       const offers = await current.begin();
       expect(offers.map((offer) => offer.name)).toEqual(["Sketch"]);
       expect([...store.entries.keys()]).toEqual(["earlier/b"]);
+    });
+  });
+
+  describe("the session recovery setting (owner request)", () => {
+    /** A store with one checkpoint that a gone instance left, as when recovery was on before. */
+    async function storeWithOldCheckpoint(): Promise<MemorySessionStore> {
+      const store = new MemorySessionStore();
+      const earlier = recovery(store, "earlier");
+      await earlier.begin();
+      earlier.track("1", editedImage("Old"), "a");
+      await earlier.flush();
+      store.writes.length = 0;
+      return store;
+    }
+
+    function toggle(session: SessionRecovery) {
+      const starts: (readonly SessionOffer[])[] = [];
+      const errors: unknown[] = [];
+      const control = new SessionRecoveryToggle(
+        session,
+        (offers) => starts.push(offers),
+        (error) => errors.push(error),
+      );
+      return { control, starts, errors };
+    }
+
+    it("off at start: deletes old checkpoints quietly, offers nothing and writes nothing", async () => {
+      const store = await storeWithOldCheckpoint();
+      const session = recovery(store, "current", { delayMs: 5 });
+      const { control, starts, errors } = toggle(session);
+      const image = editedImage("Sketch");
+      session.track("1", image, "k");
+      control.apply(false);
+      await vi.waitFor(() => expect(store.entries.size).toBe(0));
+      expect(starts).toEqual([[]]);
+      expect(errors).toEqual([]);
+
+      image.document.addLayer();
+      await session.flush();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(store.writes).toHaveLength(0);
+      expect(session.enabled).toBe(false);
+      session.untrack("1");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(store.entries.size).toBe(0);
+    });
+
+    it("leaves the checkpoints of live instances alone when off", async () => {
+      const store = await storeWithOldCheckpoint();
+      const session = recovery(store, "current", { liveOwners: async () => new Set(["earlier"]) });
+      await session.disable();
+      expect([...store.entries.keys()]).toEqual(["earlier/a"]);
+    });
+
+    it("on at start: offers the old checkpoints and checkpoints the open images", async () => {
+      const store = await storeWithOldCheckpoint();
+      const session = recovery(store, "current", { delayMs: 5 });
+      const { control, starts } = toggle(session);
+      session.track("1", editedImage("Sketch"), "k");
+      control.apply(true);
+      await vi.waitFor(() => expect(starts).toHaveLength(1));
+      expect(starts[0]?.map((offer) => offer.name)).toEqual(["Old"]);
+      await vi.waitFor(() => expect(store.entries.has("current/k")).toBe(true));
+    });
+
+    it("turning it on starts checkpointing, and turning it off stops and deletes them", async () => {
+      const store = new MemorySessionStore();
+      const session = recovery(store, "current", { delayMs: 5 });
+      const { control, starts } = toggle(session);
+      const image = editedImage("Sketch");
+      session.track("1", image, "k");
+      control.apply(false);
+      await vi.waitFor(() => expect(starts).toEqual([[]]));
+
+      control.apply(true);
+      await vi.waitFor(() => expect(store.entries.has("current/k")).toBe(true));
+      expect(starts).toHaveLength(1);
+
+      control.apply(false);
+      await vi.waitFor(() => expect(store.entries.size).toBe(0));
+      const written = store.writes.length;
+      image.document.addLayer();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(store.writes).toHaveLength(written);
+
+      // On again, the image is written in full, since its old blobs were deleted.
+      control.apply(true);
+      await vi.waitFor(() => expect(store.entries.has("current/k")).toBe(true));
+      expect(store.writes.at(-1)?.retained).toEqual([]);
+    });
+
+    it("turning it off during a write deletes that checkpoint once the write ends", async () => {
+      let finish: (() => void) | undefined;
+      const store = new MemorySessionStore();
+      const write = store.write.bind(store);
+      store.write = async (owner, key, checkpoint) => {
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        await write(owner, key, checkpoint);
+      };
+      const session = recovery(store, "current");
+      session.enable();
+      session.track("1", editedImage("Sketch"), "k");
+      const flushed = session.flush();
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      const disabled = session.disable();
+      finish?.();
+      await flushed;
+      await disabled;
+      expect(store.entries.size).toBe(0);
     });
   });
 

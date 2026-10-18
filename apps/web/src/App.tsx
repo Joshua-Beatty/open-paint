@@ -108,7 +108,12 @@ import { PERF_FLAGS } from "./perf/flags";
 import { perfMonitor } from "./perf/perf-monitor";
 import { browserPrinter } from "./print/browser-printer";
 import { SessionRestoreDialog } from "./session/SessionRestoreDialog";
-import { createSessionRecovery, type SessionOffer } from "./session/session-recovery";
+import {
+  createSessionRecovery,
+  SESSION_RECOVERY_PATH,
+  type SessionOffer,
+  SessionRecoveryToggle,
+} from "./session/session-recovery";
 import { useCanvasStyle, useOverscroll } from "./settings/canvas-style";
 import { diagnosticGroups, diagnosticsText } from "./settings/diagnostics";
 import { gatherDiagnosticsFacts } from "./settings/diagnostics-facts";
@@ -439,28 +444,6 @@ export function App({
     if (start === undefined) return;
     if (isBlankImage(start.value, untitled)) closeImages([start.id]);
   }, [images, closeImages, untitled]);
-  /**
-   * Offers the checkpoints of earlier sessions once, then keeps every open image checkpointed. With
-   * nothing to offer, the app opens the default blank image.
-   */
-  useEffect(() => {
-    if (sessionBegun.current) return;
-    sessionBegun.current = true;
-    if (session === undefined) {
-      openStartImage();
-      return;
-    }
-    session.begin().then(
-      (offers) => {
-        if (offers.length > 0) setSessionOffers(offers);
-        else openStartImage();
-      },
-      (cause: unknown) => {
-        void errors.report(cause, { context: "session" });
-        openStartImage();
-      },
-    );
-  }, [session, errors, openStartImage]);
   useEffect(() => {
     if (session === undefined) return;
     for (const item of tabState.items) session.track(item.id, item.value);
@@ -485,8 +468,9 @@ export function App({
     setClosePrompt(plan);
   }, [closePrompt, images, session, t, updates, untitled]);
   /**
-   * Reloads after the engine could not start. Open images cannot be shown without it; the session
-   * is flushed first so session recovery offers them again.
+   * Reloads after the engine could not start. Open images cannot be shown without it. With session
+   * recovery on, the session is flushed first so it offers them again; either way the browser's
+   * leave-page prompt asks first while any image has unsaved work.
    */
   const reloadPage = useCallback(() => {
     const reload = () => window.location.reload();
@@ -506,6 +490,33 @@ export function App({
   );
   const settings = useAppSettings();
   useEffect(() => toolController.attach(settings), [toolController, settings]);
+  const [recoveryToggle] = useState(() =>
+    session === undefined
+      ? undefined
+      : new SessionRecoveryToggle(
+          session,
+          (offers) => {
+            if (offers.length > 0) setSessionOffers(offers);
+            else openStartImage();
+          },
+          (cause) => void errors.report(cause, { context: "session" }),
+        ),
+  );
+  const sessionRecoveryOn = useSetting(settings, SESSION_RECOVERY_PATH) === true;
+  /**
+   * Once settings are read, session recovery follows its setting (owner request: off by default).
+   * On at start, the checkpoints of earlier sessions are offered once; off, they are deleted and the
+   * app opens the default blank image. Turning it on or off later starts or stops checkpointing.
+   */
+  useEffect(() => {
+    if (settings === null) return;
+    if (recoveryToggle === undefined) {
+      if (!sessionBegun.current) openStartImage();
+    } else {
+      recoveryToggle.apply(sessionRecoveryOn);
+    }
+    sessionBegun.current = true;
+  }, [settings, recoveryToggle, sessionRecoveryOn, openStartImage]);
   const firstRunHandled = useRef(false);
   useEffect(() => {
     if (settings === null || firstRunHandled.current) return;

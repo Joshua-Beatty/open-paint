@@ -77,6 +77,9 @@ export const UI_BLOCK: FormBlock = {
     field("ui.autoScrollWhileDrawing", "settings.field.autoScroll"),
     field("ui.autoSelectNearestVisibleLayer", "settings.field.autoSelectNearest"),
     field("ui.theme", "settings.field.theme"),
+    field("app.sessionRecovery", "settings.field.sessionRecovery", {
+      control: { footnote: "settings.note.sessionRecovery" },
+    }),
   ],
 };
 

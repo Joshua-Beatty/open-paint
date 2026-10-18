@@ -17,6 +17,9 @@ import {
 import { isBlankImage, type OpenImage } from "../tabs/open-image";
 import { yieldWhileBusy } from "../workers/yield-to-host";
 
+/** The setting that turns session recovery on (owner request: off by default). */
+export const SESSION_RECOVERY_PATH = "app.sessionRecovery";
+
 /** A document's checkpoint is written this long after its last change (WEB-MEM-05). */
 export const CHECKPOINT_DELAY_MS = 1000;
 
@@ -93,13 +96,17 @@ export interface SessionRecoveryOptions {
  * Session recovery (WEB-MEM-05, SET-LIFE-02, SET-LIFE-11). Each open image is checkpointed to OPFS
  * after a change, under this instance's owner id. At start-up the checkpoints of instances that are
  * no longer alive, and this instance's own from before a reload, are offered for restore. Writes wait
- * until `begin` has fixed that list, so a new checkpoint cannot be offered as an old one.
+ * until `begin` or `enable` has started them, so a new checkpoint cannot be offered as an old one.
+ * Recovery is off unless the user turns it on (owner request): then nothing is written, and
+ * `disable` deletes what earlier sessions left.
  */
 export class SessionRecovery {
   readonly #options: SessionRecoveryOptions;
   readonly #tracked = new Map<string, Tracked>();
   readonly #offers = new Map<string, Offer>();
   #enabled = false;
+  /** Counts `begin`, `enable` and `disable`, so one that awaited sees that a later one overrode it. */
+  #generation = 0;
   #persistRequested = false;
 
   constructor(options: SessionRecoveryOptions) {
@@ -142,7 +149,8 @@ export class SessionRecovery {
     if (entry === undefined) return;
     this.#tracked.delete(id);
     this.#drop(entry);
-    this.#remove(entry);
+    // A write in progress deletes its checkpoint when it ends.
+    if (entry.pending === undefined && entry.written) this.#remove(entry);
   }
 
   /** Untracks every tab that is not in `ids`, such as images closed in another way. */
@@ -157,6 +165,7 @@ export class SessionRecovery {
    * Checkpoints of other instances that are alive are left alone, and damaged ones are not offered.
    */
   async begin(): Promise<readonly SessionOffer[]> {
+    const generation = ++this.#generation;
     const live = await this.#options.liveOwners();
     for (const entry of await this.#options.store.list()) {
       const mine = entry.owner === this.#options.owner;
@@ -177,12 +186,53 @@ export class SessionRecovery {
         // A checkpoint that cannot be read is not offered, and stays in the store.
       }
     }
-    this.#enabled = true;
-    for (const entry of this.#tracked.values()) this.#schedule(entry);
+    if (generation !== this.#generation) return [];
+    this.#start();
     return [...this.#offers.entries()].map(([id, offer]) => ({
       id,
       name: parsePayload(offer.checkpoint.document).name,
     }));
+  }
+
+  /** Starts checkpointing the open images without offering anything, as when recovery is turned on. */
+  enable(): void {
+    this.#generation += 1;
+    this.#start();
+  }
+
+  /**
+   * Stops checkpointing and deletes this instance's checkpoints and those of instances that are no
+   * longer alive, as when recovery is off or turned off (owner request). Nothing is offered after it.
+   * Checkpoints of live instances are theirs to delete.
+   */
+  async disable(): Promise<void> {
+    const generation = ++this.#generation;
+    this.#enabled = false;
+    this.#offers.clear();
+    const tracked = [...this.#tracked.values()];
+    for (const entry of tracked) {
+      if (entry.timer !== undefined) clearTimeout(entry.timer);
+      entry.timer = undefined;
+      entry.again = false;
+    }
+    await Promise.all(tracked.map((entry) => entry.pending));
+    if (generation !== this.#generation) return;
+    for (const entry of this.#tracked.values()) {
+      entry.stored = new Set();
+      entry.written = false;
+    }
+    const live = await this.#options.liveOwners();
+    for (const entry of await this.#options.store.list()) {
+      if (generation !== this.#generation) return;
+      const mine = entry.owner === this.#options.owner;
+      if (!mine && (live === "all" || live.has(entry.owner))) continue;
+      await this.#options.store.remove(entry.owner, entry.key);
+    }
+  }
+
+  /** True while checkpoints are written: after `begin` or `enable`, until `disable`. */
+  get enabled(): boolean {
+    return this.#enabled;
   }
 
   /**
@@ -226,6 +276,11 @@ export class SessionRecovery {
    */
   async flush(): Promise<void> {
     await Promise.all([...this.#tracked.values()].map((entry) => this.#write(entry, true)));
+  }
+
+  #start(): void {
+    this.#enabled = true;
+    for (const entry of this.#tracked.values()) this.#schedule(entry);
   }
 
   #schedule(entry: Tracked): void {
@@ -315,6 +370,46 @@ export class SessionRecovery {
     this.#options.store.remove(this.#options.owner, entry.key).catch((cause: unknown) => {
       this.#options.onError(cause);
     });
+  }
+}
+
+/**
+ * Follows the session recovery setting, `app.sessionRecovery` (owner request: off by default). The
+ * first value decides the start: on, the earlier sessions' checkpoints are offered; off, they are
+ * deleted quietly and nothing is offered. Either way `onStart` receives the offers, empty when there
+ * is nothing to restore. Later values turn checkpointing on, or off with the checkpoints deleted.
+ */
+export class SessionRecoveryToggle {
+  readonly #session: SessionRecovery;
+  readonly #onStart: (offers: readonly SessionOffer[]) => void;
+  readonly #onError: (error: unknown) => void;
+  #applied: boolean | undefined;
+
+  constructor(
+    session: SessionRecovery,
+    onStart: (offers: readonly SessionOffer[]) => void,
+    onError: (error: unknown) => void,
+  ) {
+    this.#session = session;
+    this.#onStart = onStart;
+    this.#onError = onError;
+  }
+
+  apply(on: boolean): void {
+    if (this.#applied === on) return;
+    const first = this.#applied === undefined;
+    this.#applied = on;
+    if (on && first) {
+      this.#session.begin().then(this.#onStart, (cause: unknown) => {
+        this.#onError(cause);
+        this.#onStart([]);
+      });
+    } else if (on) {
+      this.#session.enable();
+    } else {
+      if (first) this.#onStart([]);
+      this.#session.disable().catch(this.#onError);
+    }
   }
 }
 

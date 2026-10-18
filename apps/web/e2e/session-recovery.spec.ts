@@ -48,6 +48,24 @@ async function openWithOpfs(page: Page): Promise<void> {
   await expect(page.getByRole("tab")).toHaveCount(1);
 }
 
+/** The Settings checkbox that turns session recovery on (owner request: off by default). */
+const RECOVERY_SETTING = "Restore unsaved images after the tab closes or crashes";
+
+/** Turns session recovery on or off in Settings > User Interface. */
+async function setRecovery(page: Page, on: boolean): Promise<void> {
+  await page.getByRole("button", { name: "Settings" }).click();
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  await dialog.getByRole("option", { name: "User Interface" }).click();
+  const box = dialog.getByRole("checkbox", { name: RECOVERY_SETTING });
+  // The checkbox's label covers its input, so the label takes the click, as it does for a user.
+  if ((await box.isChecked()) !== on) {
+    await dialog.locator("label.react-aria-Checkbox", { hasText: RECOVERY_SETTING }).click();
+  }
+  await expect(box).toBeChecked({ checked: on });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+}
+
 /** Whether the page's beforeunload handlers would ask the user before leaving (WEB-UI-06). */
 function asksBeforeLeaving(page: Page): Promise<boolean> {
   return page.evaluate(() => {
@@ -56,6 +74,23 @@ function asksBeforeLeaving(page: Page): Promise<boolean> {
     return event.defaultPrevented;
   });
 }
+
+test("by default nothing is kept for recovery: a reload after drawing offers nothing", async ({
+  page,
+}) => {
+  await openWithOpfs(page);
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await expect(page).toHaveTitle("*Untitled - OpenPaint");
+  // Longer than the checkpoint delay, so a checkpoint would have been written by now.
+  await page.waitForTimeout(2500);
+  expect(await checkpointCount(page)).toBe(0);
+
+  await page.reload();
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  await expect(page.getByRole("dialog", { name: "Restore Session" })).toHaveCount(0);
+  await expect(page).toHaveTitle("Untitled - OpenPaint");
+});
 
 test("a selection on the blank start image is not unsaved work: no leave prompt", async ({
   page,
@@ -82,15 +117,14 @@ test("a selection on the blank start image is not unsaved work: no leave prompt"
   expect(await asksBeforeLeaving(page)).toBe(true);
 });
 
-test("a reload after only a selection on the blank start image offers nothing", async ({
+test("with recovery on, a reload after only a selection on the blank start image offers nothing", async ({
   page,
 }) => {
   await openWithOpfs(page);
+  await setRecovery(page, true);
   await expect(page).toHaveTitle("Untitled - OpenPaint");
   await page.keyboard.press("Control+A");
   await expect(page.getByRole("button", { name: "Deselect" }).first()).toBeEnabled();
-  // A selection on the blank image is not unsaved work, so the title shows no asterisk.
-  await expect(page).toHaveTitle("Untitled - OpenPaint");
   // Longer than the checkpoint delay, so a checkpoint would have been written by now.
   await page.waitForTimeout(2500);
   expect(await checkpointCount(page)).toBe(0);
@@ -102,10 +136,11 @@ test("a reload after only a selection on the blank start image offers nothing", 
   await expect(page).toHaveTitle("Untitled - OpenPaint");
 });
 
-test("a reload offers the unsaved image back with its history, and Restore brings it back", async ({
+test("with recovery on, a reload offers the unsaved image back with its history, and Restore brings it back", async ({
   page,
 }) => {
   await openWithOpfs(page);
+  await setRecovery(page, true);
 
   await page.keyboard.press("Control+A");
   await page.keyboard.press("Delete");
@@ -128,10 +163,11 @@ test("a reload offers the unsaved image back with its history, and Restore bring
   await expect(page).toHaveTitle("Untitled - OpenPaint");
 });
 
-test("Discard asks once more, deletes the checkpoints and opens a new blank image", async ({
+test("with recovery on, Discard asks once more, deletes the checkpoints and opens a new blank image", async ({
   page,
 }) => {
   await openWithOpfs(page);
+  await setRecovery(page, true);
   await page.keyboard.press("Control+A");
   await page.keyboard.press("Delete");
   await expect.poll(() => checkpointCount(page)).toBeGreaterThan(0);
@@ -147,4 +183,21 @@ test("Discard asks once more, deletes the checkpoints and opens a new blank imag
   await expect(page.getByRole("tab")).toHaveCount(1);
   await expect(page).toHaveTitle("Untitled - OpenPaint");
   await expect.poll(() => checkpointCount(page)).toBe(0);
+});
+
+test("turning recovery off deletes the checkpoints, and a reload then offers nothing", async ({
+  page,
+}) => {
+  await openWithOpfs(page);
+  await setRecovery(page, true);
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
+  await expect.poll(() => checkpointCount(page)).toBeGreaterThan(0);
+
+  await setRecovery(page, false);
+  await expect.poll(() => checkpointCount(page)).toBe(0);
+  await page.reload();
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  await expect(page.getByRole("dialog", { name: "Restore Session" })).toHaveCount(0);
+  await expect(page).toHaveTitle("Untitled - OpenPaint");
 });

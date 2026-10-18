@@ -1286,6 +1286,9 @@ export const enUS = {
   "settings.field.autoScroll": "Auto-scroll when drawing at the edge of the window",
   "settings.field.autoSelectNearest": "Auto-select nearest visible layer after hiding a layer",
   "settings.field.theme": "Color Scheme:",
+  "settings.field.sessionRecovery": "Restore unsaved images after the tab closes or crashes",
+  "settings.note.sessionRecovery":
+    "Keeps a copy of each unsaved image on this device while you work, so it can be restored the next time OpenPaint opens.",
   "settings.field.dropShadow": "Draw a shadow around the canvas",
   "settings.field.checkerboard": "Transparency Checkerboard Brightness",
   "settings.field.borderEnabled": "Use a custom color for the canvas border",

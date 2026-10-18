@@ -241,6 +241,7 @@ const TOOL_ROWS: readonly SettingDefinition[] = [
 const FIXED_DEFINITIONS: readonly SettingDefinition[] = [
   text("app.lastRunVersion", ""),
   flag("app.firstRunCompleted", false),
+  flag("app.sessionRecovery", false),
 
   real("canvas.checkerboardBrightness", 0.75, 0.25, 1),
   colour("canvas.customBorderColor", BORDER_GRAY),
