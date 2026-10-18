@@ -105,8 +105,10 @@ svg.icon-filled {
     color-mix(in srgb, var(--accent, Highlight) 26%, transparent) var(--prop-fill, 0%),
     transparent var(--prop-fill, 0%)
   );
-  /* The fill doesn't repeat under the border, where it would show a stray end pixel. */
+  /* The fill never repeats, so Firefox can't show a stray pixel of it at the far edge. */
+  background-origin: border-box;
   background-clip: padding-box;
+  background-repeat: no-repeat;
   cursor: ew-resize;
   touch-action: none;
   outline: none;

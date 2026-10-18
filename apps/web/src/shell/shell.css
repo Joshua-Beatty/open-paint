@@ -1772,11 +1772,15 @@ body {
   border: 1px solid var(--border);
   border-radius: 3px;
   /*
-   * The inline gradient is sized to the padding box but would repeat under the border, which in
-   * Firefox shows a pixel of the gradient's end at the left edge. The inline `background`
-   * shorthand resets the clip, hence the !important.
+   * Firefox can round the inline gradient's tile a pixel short of the bar (at fractional layout
+   * positions) and repeat it, showing a sliver of the gradient's end at the left edge. So the
+   * gradient never repeats and is sized from the border box, which still covers the bar after
+   * rounding; only the Opacity bar's checkerboard (its second layer) repeats. The inline
+   * `background` shorthand resets these, hence the !important.
    */
+  background-origin: border-box !important;
   background-clip: padding-box !important;
+  background-repeat: no-repeat, repeat !important;
 }
 
 /* React Aria centres the thumb on its left/top point (translate -50%, -50%). */
