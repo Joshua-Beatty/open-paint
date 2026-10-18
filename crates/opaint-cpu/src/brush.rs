@@ -421,61 +421,97 @@ fn sweep_ratio(px: f32, py: f32, a: Node, b: Node, square: bool) -> (f32, f32) {
     (best.0.sqrt(), best.1)
 }
 
+/// Which part of a swept segment [`sweep_coverage`] covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+    /// The whole swept tip.
+    Whole,
+    /// The swept tip without the half disc behind its start: in a polyline, the segment before
+    /// covers that part (the previous end's disc), and the first dab is covered whole on its own.
+    Front,
+}
+
 /// Calls `visit(x, y, c)` for each pixel of a `width` × `height` buffer, whose top-left pixel is
 /// image pixel `origin`, that the tip swept from `a` to `b` covers, where `c` is the 8-bit
 /// coverage (1 to 255). Pixels are measured at their centres in image coordinates, so the coverage
-/// doesn't depend on the buffer's origin.
+/// doesn't depend on the buffer's origin. Each row visits only the span that the sweep (or its
+/// `Front` part) can reach, bounded by the segment's band and start line, so the work follows the
+/// swept area rather than the segment's bounding box. A pixel may be visited with a coverage below
+/// its true coverage near the edges of the part; the other segments of the stroke reach it fully.
 #[allow(clippy::too_many_arguments)]
 fn sweep_coverage(
     a: Node,
     b: Node,
+    part: Part,
     brush: &BrushSettings,
     width: usize,
     height: usize,
     origin: (usize, usize),
     visit: &mut impl FnMut(usize, usize, u32),
 ) {
+    // The bounding box in image pixels, `low..high`.
+    let low_x = f64::from((a.x - a.reach).min(b.x - b.reach).floor());
+    let high_x = f64::from((a.x + a.reach).max(b.x + b.reach).ceil());
+    let low_y = f64::from((a.y - a.reach).min(b.y - b.reach).floor());
+    let high_y = f64::from((a.y + a.reach).max(b.y + b.reach).ceil());
     let (ox, oy) = (origin.0 as f64, origin.1 as f64);
-    let span = |low: f32, high: f32, offset: f64, size: usize| {
-        let start = (f64::from(low.floor()) - offset).max(0.0) as usize;
-        let end = (f64::from(high.ceil()) - offset).clamp(0.0, size as f64) as usize;
-        start..end
-    };
-    let xs = span(
-        (a.x - a.reach).min(b.x - b.reach),
-        (a.x + a.reach).max(b.x + b.reach),
-        ox,
-        width,
-    );
-    let ys = span(
-        (a.y - a.reach).min(b.y - b.reach),
-        (a.y + a.reach).max(b.y + b.reach),
-        oy,
-        height,
-    );
+    let rows = (low_y.max(oy), high_y.min(oy + height as f64));
+    if rows.0 >= rows.1 {
+        return;
+    }
     let hardness = if brush.antialias { brush.hardness } else { 1.0 };
-    // A pixel farther than the larger reach (a square's half diagonal) from the segment's line is
-    // never covered. `band` is that distance times the segment's length, as the cross product is.
-    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let (ax, ay) = (f64::from(a.x), f64::from(a.y));
+    let (dx, dy) = (f64::from(b.x) - ax, f64::from(b.y) - ay);
     let length = (dx * dx + dy * dy).sqrt();
+    let reach = f64::from(a.reach.max(b.reach));
+    let planes = length > 1e-3;
+    // A pixel farther than the larger reach (a square's half diagonal) from the segment's line is
+    // never covered: |cross| ≤ band, with the cross product scaled by the length.
     let corner = if brush.square {
-        std::f32::consts::SQRT_2
+        std::f64::consts::SQRT_2
     } else {
         1.0
     };
-    let band = a.reach.max(b.reach) * corner * length * 1.001 + 1e-3;
-    for y in ys {
-        let py = (y + origin.1) as f32 + 0.5;
-        for x in xs.clone() {
-            let px = (x + origin.0) as f32 + 0.5;
-            if ((px - a.x) * dy - (py - a.y) * dx).abs() > band {
-                continue;
+    let band = reach * corner * length + length;
+    // The front part starts `margin` px behind `a` along the segment. A tapering reach moves the
+    // nearest point of the sweep off the perpendicular foot by up to |dr| × reach² / (L × min reach).
+    let dr = f64::from(b.reach - a.reach).abs();
+    let margin = 1.0 + dr * reach * reach / (length * f64::from(a.reach.min(b.reach)));
+    let front = -margin * length;
+    for y in rows.0 as usize..rows.1 as usize {
+        let py = y as f64 + 0.5;
+        let (mut first, mut last) = (low_x, high_x - 1.0);
+        // Keeps the pixel centres x + 0.5 with k × (x + 0.5) + c ≥ m, a pixel wider each way.
+        let mut keep = |k: f64, c: f64, m: f64| {
+            if k > 0.0 {
+                first = first.max(((m - c) / k - 0.5).ceil() - 1.0);
+            } else if k < 0.0 {
+                last = last.min(((m - c) / k - 0.5).floor() + 1.0);
+            } else if c < m {
+                last = first - 1.0;
             }
-            let (rho, reach) = sweep_ratio(px, py, a, b, brush.square);
+        };
+        if planes {
+            let cross = -ax * dy - (py - ay) * dx;
+            keep(dy, cross, -band);
+            keep(-dy, -cross, -band);
+            if part == Part::Front {
+                keep(dx, -ax * dx + (py - ay) * dy, front);
+            }
+        }
+        let first = first.max(ox);
+        let last = last.min(ox + width as f64 - 1.0);
+        if first > last {
+            continue;
+        }
+        let pyf = py as f32;
+        for x in first as usize..=last as usize {
+            let px = x as f32 + 0.5;
+            let (rho, reach) = sweep_ratio(px, pyf, a, b, brush.square);
             let coverage = tip_falloff(rho, reach, hardness, brush.antialias);
             let c = (coverage * 255.0 + 0.5).floor() as u32;
             if c != 0 {
-                visit(x, y, c);
+                visit(x - origin.0, y - origin.1, c);
             }
         }
     }
@@ -905,13 +941,26 @@ pub(crate) fn visit_dabs(
             reach: reach_of(d[2], brush.antialias),
         })
         .collect();
+    let (w, h) = (width, height);
     if brush.spacing < JOINED_SPACING && nodes.len() > 1 {
+        // A round tip: the first dab whole, then each segment's front, since the half disc behind
+        // a segment's start lies in the disc at the end of the segment before it. A square tip
+        // swept along a steep segment can be nearest to a pixel behind the segment's start, so
+        // each of its segments is covered whole.
+        let first = nodes[0];
+        sweep_coverage(first, first, Part::Whole, &brush, w, h, origin, &mut visit);
+        let part = if brush.square {
+            Part::Whole
+        } else {
+            Part::Front
+        };
         for pair in nodes.windows(2) {
-            sweep_coverage(pair[0], pair[1], &brush, width, height, origin, &mut visit);
+            let (a, b) = (pair[0], pair[1]);
+            sweep_coverage(a, b, part, &brush, w, h, origin, &mut visit);
         }
     } else {
         for &node in &nodes {
-            sweep_coverage(node, node, &brush, width, height, origin, &mut visit);
+            sweep_coverage(node, node, Part::Whole, &brush, w, h, origin, &mut visit);
         }
     }
     Ok(())
@@ -1646,6 +1695,58 @@ mod tests {
             .max()
             .unwrap();
         assert!(spread <= 2, "spread {spread}");
+    }
+
+    #[test]
+    fn covering_each_row_span_matches_sweeping_every_segment_over_every_pixel() {
+        let (w, h) = (160, 120);
+        let points: Vec<StrokePoint> = (0..30)
+            .map(|i| {
+                let t = i as f32 * 0.35;
+                point(
+                    80.0 + t.cos() * (10.0 + i as f32 * 1.8),
+                    60.0 + t.sin() * (8.0 + i as f32 * 1.4),
+                    0.3 + 0.7 * (i as f32 * 0.5).sin().abs(),
+                )
+            })
+            .collect();
+        for (square, hardness) in [(false, 0.0), (false, 0.8), (true, 0.0), (true, 1.0)] {
+            let brush = BrushSettings {
+                size: 36.0,
+                hardness,
+                square,
+                ..BrushSettings::default()
+            }
+            .normalized();
+            let fast = stroke_coverage(w, h, &points, &brush);
+            let nodes: Vec<Node> = plan_dabs(&points, &brush)
+                .iter()
+                .map(|d| Node {
+                    x: d.x,
+                    y: d.y,
+                    reach: reach_of(d.diameter, true),
+                })
+                .collect();
+            let mut differing = 0;
+            for y in 0..h {
+                for x in 0..w {
+                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                    let slow = nodes
+                        .windows(2)
+                        .map(|s| {
+                            let (rho, reach) = sweep_ratio(px, py, s[0], s[1], square);
+                            let c = tip_falloff(rho, reach, hardness, true);
+                            (c * 255.0 + 0.5).floor() as u8
+                        })
+                        .max()
+                        .unwrap();
+                    let got = fast[y * w + x];
+                    assert!(got.abs_diff(slow) <= 1, "({x}, {y}): {got} vs {slow}");
+                    differing += usize::from(got != slow);
+                }
+            }
+            assert!(differing <= 5, "square {square}: {differing} pixels differ");
+        }
     }
 
     #[test]
