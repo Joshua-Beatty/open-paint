@@ -207,12 +207,14 @@ const HATCH_ROWS = [
 
 /**
  * Stamps a batch of stroke parts into one stroke tile: 256 × 256 packed RGBA8 words in a storage
- * buffer. As `brush.rs` `stamp_dabs`, each pixel adds the parts that touch its tile to its two
- * words (the tile's two value slots: a round tip's field integrals, or a square tip's largest
- * coverage), and where the coverage they give changes it paints the pixel from the original slot
- * with the new coverage, with the hatch and paint rules of `brush.rs` (`source_at`,
- * `paint_pixel`). Final parts store the new values (`write_cover`); provisional ones only paint.
- * Positions are image pixels, so hatch patterns repeat from the image origin.
+ * buffer. As `brush.rs` `stamp_dabs`, each pixel adds the parts that touch its tile to its four
+ * words (the tile's four value slots: a round tip's field integrals and the stretch of path seen,
+ * or a square tip's largest coverage), and where they change it paints the pixel from the original
+ * slot with the new coverage, with the hatch and paint rules of `brush.rs` (`source_at`,
+ * `paint_pixel`). Where the stroke passes over a pixel more than once, the coverage combines the
+ * passes from the stroke's terms near the tile (`candidates`). Final parts store the new values
+ * (`write_cover`); provisional ones only paint. Dabs are centre, radius and arc length along the
+ * stroke. Positions are image pixels, so hatch patterns repeat from the image origin.
  */
 export const STAMP_WGSL = /* wgsl */ `
 struct Stroke {
@@ -243,6 +245,10 @@ struct Tile {
   cover_offset: u32,
   write_cover: u32,
   cover2_offset: u32,
+  cover3_offset: u32,
+  cover4_offset: u32,
+  candidate_start: u32,
+  candidate_total: u32,
   pad0: u32,
   pad1: u32,
   pad2: u32,
@@ -253,6 +259,16 @@ struct Tile {
 @group(0) @binding(3) var<storage, read> dabs: array<vec4f>;
 @group(0) @binding(4) var<storage, read> indices: array<u32>;
 @group(0) @binding(5) var<storage, read_write> pixels: array<u32>;
+@group(0) @binding(6) var<storage, read> candidates: array<vec4f>;
+
+fn candidate_count() -> u32 {
+  return tile.candidate_total;
+}
+
+fn candidate(i: u32) -> array<vec4f, 3> {
+  let k = (tile.candidate_start + i) * 3u;
+  return array<vec4f, 3>(candidates[k], candidates[k + 1u], candidates[k + 2u]);
+}
 
 const HATCH = array<u32, 64>(${HATCH_ROWS.map((row) => `${row}u`).join(", ")});
 
@@ -307,7 +323,12 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     return;
   }
   let local = ly * 256u + lx;
-  let before = vec2u(pixels[tile.cover_offset + local], pixels[tile.cover2_offset + local]);
+  let before = vec4u(
+    pixels[tile.cover_offset + local],
+    pixels[tile.cover2_offset + local],
+    pixels[tile.cover3_offset + local],
+    pixels[tile.cover4_offset + local],
+  );
   var value = before;
   let p = vec2f(f32(x) + 0.5, f32(y) + 0.5);
   let square = stroke.square != 0u;
@@ -316,13 +337,19 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
   for (var i = 0u; i < tile.term_count; i++) {
     let k = tile.term_start + i * 3u;
     let kind = indices[k];
-    let a = node(indices[k + 1u]);
-    let b = node(indices[k + 2u]);
+    let ia = indices[k + 1u];
+    let ib = indices[k + 2u];
+    let a = node(ia);
+    let b = node(ib);
     if (kind == 3u) {
       value.x = max(value.x, square_cover(p, a, b, core, antialias));
     } else {
       let units = field_units(kind, p, a, b);
-      value = vec2u(saturating_add(value.x, units.x), saturating_add(value.y, units.y));
+      if (units.x != 0u || units.y != 0u) {
+        let sums = vec2u(saturating_add(value.x, units.x), saturating_add(value.y, units.y));
+        let arc0 = dabs[ia].w;
+        value = arc_words(vec4u(sums, value.zw), arc0, select(arc0, dabs[ib].w, kind == 0u));
+      }
     }
   }
   if (all(value == before)) {
@@ -331,11 +358,16 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
   if (tile.write_cover != 0u) {
     pixels[tile.cover_offset + local] = value.x;
     pixels[tile.cover2_offset + local] = value.y;
+    pixels[tile.cover3_offset + local] = value.z;
+    pixels[tile.cover4_offset + local] = value.w;
   }
   // A new part can lower the coverage as well as raise it, so any change repaints the pixel.
-  let cover = stroke_coverage(value, square, stroke.reach, core, antialias);
-  if (cover == stroke_coverage(before, square, stroke.reach, core, antialias)) {
-    return;
+  let cover = stroke_coverage(value, p, square, stroke.reach, core, antialias);
+  let reach = stroke.reach;
+  if (!passes_over(value, square, reach) && !passes_over(before, square, reach)) {
+    if (cover == stroke_coverage(before, p, square, reach, core, antialias)) {
+      return;
+    }
   }
   let word = pixels[tile.original_offset + local];
   let o = vec4u(word & 255u, (word >> 8u) & 255u, (word >> 16u) & 255u, word >> 24u);

@@ -18,6 +18,12 @@
 //!
 //! The two integrals are kept per pixel in fixed point (`FIELD_ONE` = 1.0), so terms add up in any
 //! order to the same values: a stroke added a few segments at a time matches the whole stroke.
+//!
+//! The average only blends parts of the path that are near each other along it as well (a bend).
+//! Where the stroke comes back over a pixel after a long way round (it crosses itself, or loops),
+//! the passes are measured apart and combine as separate strokes painted over each other
+//! ([`windowed_falloff`]). Each pixel also keeps the stretch of path that reaches it, so the
+//! common single-pass pixel needs only its two integrals.
 
 /// σ of the weights, as a fraction of the tip's reach.
 pub(crate) const FIELD_SIGMA: f32 = 0.3;
@@ -46,46 +52,214 @@ pub(crate) enum Term {
     Point(Node),
 }
 
-/// The field terms of `nodes`. Joined dabs are a polyline whose segments add up; `starts` and
-/// `ends` say whether its first and last dab are the stroke's ends, which get caps. A joined
-/// list of one dab is a single dab only when it ends the stroke. Spaced dabs are single dabs.
-pub(crate) fn field_terms(nodes: &[Node], joined: bool, starts: bool, ends: bool) -> Vec<Term> {
+/// A term and the stretch of the path it covers, as arc length from the stroke's start in
+/// pixels (a cap or a dab covers a single point of it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ArcTerm {
+    pub term: Term,
+    pub arc0: f32,
+    pub arc1: f32,
+}
+
+/// The arc length between spaced dabs, far more than any window: each dab is a pass of its own.
+pub(crate) const SPACED_ARC: f32 = 4096.0;
+
+/// The arc length of each of `nodes`, the first at `arc`: the polyline's length along joined
+/// dabs, a fixed large step between spaced ones.
+pub(crate) fn node_arcs(nodes: &[Node], joined: bool, arc: f32) -> Vec<f32> {
+    let mut arcs = Vec::with_capacity(nodes.len());
+    let mut at = arc;
+    for (i, n) in nodes.iter().enumerate() {
+        if i > 0 {
+            if joined {
+                let (dx, dy) = (n.x - nodes[i - 1].x, n.y - nodes[i - 1].y);
+                at += (dx * dx + dy * dy).sqrt();
+            } else {
+                at += SPACED_ARC;
+            }
+        }
+        arcs.push(at);
+    }
+    arcs
+}
+
+/// The field terms of `nodes`, whose first dab lies at arc length `arc`. Joined dabs are a
+/// polyline whose segments add up; `starts` and `ends` say whether its first and last dab are the
+/// stroke's ends, which get caps. A joined list of one dab is a single dab only when it ends the
+/// stroke. Spaced dabs are single dabs.
+pub(crate) fn field_terms(
+    nodes: &[Node],
+    joined: bool,
+    starts: bool,
+    ends: bool,
+    arc: f32,
+) -> Vec<ArcTerm> {
+    let arcs = node_arcs(nodes, joined, arc);
+    let at = |term: Term, i: usize, j: usize| ArcTerm {
+        term,
+        arc0: arcs[i],
+        arc1: arcs[j],
+    };
     if !joined {
-        return nodes.iter().map(|&n| Term::Point(n)).collect();
+        return (0..nodes.len())
+            .map(|i| at(Term::Point(nodes[i]), i, i))
+            .collect();
     }
     let distinct = |a: &Node, b: &Node| a.x != b.x || a.y != b.y;
     let mut terms = Vec::new();
-    let (Some(&first), Some(&last)) = (nodes.first(), nodes.last()) else {
+    let Some(last) = nodes.len().checked_sub(1) else {
         return terms;
     };
-    let after_first = nodes.iter().find(|n| distinct(n, &first)).copied();
-    let before_last = nodes.iter().rev().find(|n| distinct(n, &last)).copied();
+    let after_first = (1..nodes.len()).find(|&i| distinct(&nodes[i], &nodes[0]));
+    let before_last = (0..last).rev().find(|&i| distinct(&nodes[i], &nodes[last]));
     let (Some(after_first), Some(before_last)) = (after_first, before_last) else {
         if ends {
-            terms.push(Term::Point(last));
+            terms.push(at(Term::Point(nodes[last]), last, last));
         }
         return terms;
     };
     if starts {
-        terms.push(Term::Cap {
-            at: first,
-            from: after_first,
-        });
+        let cap = Term::Cap {
+            at: nodes[0],
+            from: nodes[after_first],
+        };
+        terms.push(at(cap, 0, 0));
     }
-    for pair in nodes.windows(2) {
-        if distinct(&pair[0], &pair[1]) {
-            terms.push(Term::Segment(pair[0], pair[1]));
+    for i in 0..last {
+        if distinct(&nodes[i], &nodes[i + 1]) {
+            terms.push(at(Term::Segment(nodes[i], nodes[i + 1]), i, i + 1));
         }
     }
     if ends {
-        terms.push(Term::Cap {
-            at: last,
-            from: before_last,
-        });
+        let cap = Term::Cap {
+            at: nodes[last],
+            from: nodes[before_last],
+        };
+        terms.push(at(cap, last, last));
     }
     terms
 }
 
+/// The final terms of a stroke so far, found by where they reach: a grid of 128 px cells lists
+/// the terms that can reach into each cell.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct History {
+    terms: Vec<ArcTerm>,
+    cells: std::collections::HashMap<(i32, i32), Vec<u32>>,
+}
+
+const CELL: f32 = 128.0;
+
+impl History {
+    pub(crate) fn add(&mut self, term: ArcTerm) {
+        let index = self.terms.len() as u32;
+        self.terms.push(term);
+        let (x0, y0, x1, y1) = term_bounds(term.term);
+        for cy in (y0 / CELL).floor() as i32..=((y1 - 1.0) / CELL).floor() as i32 {
+            for cx in (x0 / CELL).floor() as i32..=((x1 - 1.0) / CELL).floor() as i32 {
+                self.cells.entry((cx, cy)).or_default().push(index);
+            }
+        }
+    }
+
+    /// The terms that can reach into the image box `[x0, x1) × [y0, y1)`, in stroke order.
+    pub(crate) fn near(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<ArcTerm> {
+        let mut found = Vec::new();
+        for cy in (y0 / CELL).floor() as i32..=((y1 - 1.0) / CELL).floor() as i32 {
+            for cx in (x0 / CELL).floor() as i32..=((x1 - 1.0) / CELL).floor() as i32 {
+                if let Some(list) = self.cells.get(&(cx, cy)) {
+                    found.extend_from_slice(list);
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+            .into_iter()
+            .map(|i| self.terms[i as usize])
+            .filter(|t| {
+                let (a, b, c, d) = term_bounds(t.term);
+                a < x1 && b < y1 && c > x0 && d > y0
+            })
+            .collect()
+    }
+}
+
+/// A term prepared for evaluation at many pixels, with its stretch of the path.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Candidate {
+    pub prepared: Prepared,
+    pub arc0: f32,
+    pub arc1: f32,
+}
+
+impl Candidate {
+    pub(crate) fn new(term: ArcTerm) -> Self {
+        Candidate {
+            prepared: Prepared::new(term.term),
+            arc0: term.arc0,
+            arc1: term.arc1,
+        }
+    }
+}
+
+/// The coverage at pixel centre (`px`, `py`) where the stroke passes more than once: parts of the
+/// path that lie further apart along it than `window` are separate passes. Each term `i` measures
+/// the soft distance over the terms within the window of it (its own pass, bends included), and
+/// the passes add up the way separate strokes composite ("over"): each term contributes its share
+/// `Dᵢ / D̃ᵢ` of its pass's optical depth `−ln(1 − c̃ᵢ)`. A single pass gives exactly its own
+/// coverage; passes far apart along the path give `1 − Π(1 − c)`, as strokes painted over each
+/// other. Everything is a smooth function of the pixel, so no seam appears where passes meet.
+///
+/// `candidates` are in stroke order, so the stretches they cover only move forward and the terms
+/// within the window of each one are a run of them: the sums over the run are kept as it slides.
+pub(crate) fn windowed_falloff(
+    px: f32,
+    py: f32,
+    candidates: &[Candidate],
+    window: f32,
+    reach: f32,
+    core: f32,
+    antialias: bool,
+) -> f32 {
+    let values: Vec<(f32, f32, f32, f32)> = candidates
+        .iter()
+        .filter_map(|c| {
+            // The terms that reach the pixel, by the same test as the values' (see `units`).
+            let (d, n) = c.prepared.value(px, py);
+            (fixed(d) != 0 || fixed(n) != 0).then_some((d, n, c.arc0, c.arc1))
+        })
+        .collect();
+    let (mut lo, mut hi) = (0, 0);
+    let (mut dw, mut nw) = (0.0f32, 0.0f32);
+    let mut depth = 0.0f32;
+    for &(d, _, a0, a1) in &values {
+        while hi < values.len() && values[hi].2 - a1 <= window {
+            dw += values[hi].0;
+            nw += values[hi].1;
+            hi += 1;
+        }
+        while a0 - values[lo].3 > window {
+            dw -= values[lo].0;
+            nw -= values[lo].1;
+            lo += 1;
+        }
+        depth += pass_depth(d, dw, nw, reach, core, antialias);
+    }
+    1.0 - (-depth).exp()
+}
+
+/// A term's share `d / dw` of the optical depth of its pass, whose sums are `dw` and `nw`.
+fn pass_depth(d: f32, dw: f32, nw: f32, reach: f32, core: f32, antialias: bool) -> f32 {
+    if dw <= 0.0 {
+        return 0.0;
+    }
+    let rho2 = nw / dw - FIELD_SIGMA * FIELD_SIGMA;
+    let c = crate::brush::tip_falloff(rho2.max(0.0).sqrt(), reach, core, antialias);
+    d / dw * -(1.0 - c.min(MAX_PASS_COVERAGE)).ln()
+}
+/// The coverage a pass's optical depth counts at most, so that a solid core stays finite.
+const MAX_PASS_COVERAGE: f32 = 0.999_999;
 /// `exp(x)` for `x ≤ 0`, as `2ⁿ · eᵗ` with `n` the nearest integer to `x / ln 2`, `t = x − n ln 2`, and a
 /// degree-6 Taylor polynomial for the rest (relative error below 2·10⁻⁷). It is faster than the
 /// library's, and the WGSL twins evaluate the same operations, so both sides agree closely.
@@ -221,10 +395,14 @@ impl Prepared {
     /// The term's two integrals in fixed point.
     pub(crate) fn units(&self, px: f32, py: f32) -> (u32, u32) {
         let (d, n) = self.value(px, py);
-        let fixed = |v: f32| (v.max(0.0) * FIELD_ONE + 0.5).floor() as u32;
         (fixed(d), fixed(n))
     }
 }
+/// A value in fixed point (`FIELD_ONE` = 1.0).
+fn fixed(v: f32) -> u32 {
+    (v.max(0.0) * FIELD_ONE + 0.5).floor() as u32
+}
+
 /// The image-pixel box `[x0, x1) × [y0, y1)` the term can reach.
 pub(crate) fn term_bounds(term: Term) -> (f32, f32, f32, f32) {
     let (a, b) = term_ends(term);
@@ -244,6 +422,11 @@ pub(crate) fn term_ends(term: Term) -> (Node, Node) {
         Term::Cap { at, .. } | Term::Point(at) => (at, at),
     }
 }
+
+/// How far apart along the path two parts of it must lie to count as separate passes, as a
+/// multiple of the tip's reach. It is more than the stretch of path any pixel sees on a single
+/// straight pass (twice [`FIELD_INFLUENCE`]), so a single pass, bends included, is one window.
+pub(crate) const FIELD_WINDOW: f32 = 3.0;
 
 /// The coverage (0 to 1) for a pixel's integrals: the tip's falloff at `ρ = √(N / D − σ²)`.
 pub(crate) fn field_falloff(d: u32, n: u32, reach: f32, core: f32, antialias: bool) -> f32 {
@@ -307,7 +490,10 @@ mod tests {
     #[test]
     fn segments_and_caps_measure_the_distance_to_a_capsule() {
         let (a, b, c) = (node(0.0, 0.0), node(60.0, 0.0), node(100.0, 0.0));
-        let terms = field_terms(&[a, b, c], true, true, true);
+        let terms: Vec<Term> = field_terms(&[a, b, c], true, true, true, 0.0)
+            .iter()
+            .map(|t| t.term)
+            .collect();
         assert_eq!(terms.len(), 4);
         for (px, py) in [
             (100.0f32, 0.0f32),
@@ -330,9 +516,12 @@ mod tests {
     #[test]
     fn a_lone_dab_counts_only_when_it_ends_the_stroke() {
         let n = node(5.0, 5.0);
-        assert_eq!(field_terms(&[n], true, true, true), vec![Term::Point(n)]);
-        assert!(field_terms(&[n], true, true, false).is_empty());
-        assert_eq!(field_terms(&[n, n], false, false, false).len(), 2);
+        assert_eq!(
+            field_terms(&[n], true, true, true, 0.0)[0].term,
+            Term::Point(n)
+        );
+        assert!(field_terms(&[n], true, true, false, 0.0).is_empty());
+        assert_eq!(field_terms(&[n, n], false, false, false, 0.0).len(), 2);
         let got = rho(&[Term::Point(n)], 11.0, 13.0) * 20.0;
         assert!((got - 10.0).abs() < 1e-3, "{got}");
     }

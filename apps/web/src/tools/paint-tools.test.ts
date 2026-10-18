@@ -315,6 +315,59 @@ describe("paint tools", () => {
     expect(doc.history.entries.at(-1)?.name).toBe("history.paintbrush");
   });
 
+  it("paints a stroke that loops over itself a few samples per frame, matching the whole stroke", () => {
+    const soft = {
+      ...HARD_TIP,
+      "tools.brush.size": 40,
+      "tools.brush.hardness": 0,
+      "tools.antialiasing": true,
+      "tools.inputSmoothing": "Enabled",
+    };
+    const frames: (() => void)[] = [];
+    const host: PaintHost = {
+      settings: () => settingsWith(soft),
+      document: () => doc,
+      translate: (messageId) => messageId,
+      notify,
+      report,
+      scheduleFrame: (callback) => {
+        frames.push(callback);
+        return () => frames.splice(frames.indexOf(callback), 1);
+      },
+    };
+    doc = Document.createBlank({ width: 300, height: 200 });
+    const runtime = builtinToolRuntime(toolNamed("paintbrush"), host);
+    if (runtime === undefined) throw new Error("no runtime");
+    // Rightwards, round a loop of radius 50 and on past where the loop began.
+    const path: [number, number][] = [];
+    for (let i = 0; i <= 10; i++) path.push([20 + i * 8, 150]);
+    for (let i = 1; i < 40; i++) {
+      const a = Math.PI / 2 - (2 * Math.PI * i) / 40;
+      path.push([100 + 50 * Math.cos(a), 100 + 50 * Math.sin(a)]);
+    }
+    for (let i = 0; i <= 10; i++) path.push([100 + i * 8, 150]);
+    const layer = doc.activeLayer;
+    if (layer === undefined) throw new Error("no layer");
+    const before = layer.pixels.readRegion(layer.pixels.bounds);
+
+    runtime.pointer(event("down", path[0] ?? [0, 0], 0));
+    for (const [index, point] of path.slice(1, -1).entries()) {
+      runtime.pointer(event("move", point, 0));
+      if (index % 3 === 2) frames.shift()?.();
+    }
+    frames.shift()?.();
+    runtime.pointer(event("up", path.at(-1) ?? [0, 0], 0));
+
+    const read = (name: string) => soft[`tools.${name}` as keyof typeof soft];
+    const options = brushOptionsFor(read, "paint", BLACK, RED);
+    const expected = strokeBrush(
+      before,
+      new Float32Array(path.flatMap(([x, y]) => [x, y, 1])),
+      options,
+    );
+    expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual([...expected.data]);
+  });
+
   describe("long Pencil, Recolor and Clone Stamp strokes, a few samples per frame", () => {
     const SMOOTH_SOFT = {
       ...HARD_TIP,

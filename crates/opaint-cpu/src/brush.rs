@@ -13,7 +13,8 @@
 
 use crate::blend::{composite_pixel, mul, BlendMode};
 use crate::brush_field::{
-    field_falloff, field_terms, term_bounds, term_ends, Node, Prepared, Term, FIELD_INFLUENCE,
+    field_falloff, field_terms, node_arcs, term_bounds, term_ends, windowed_falloff, ArcTerm,
+    Candidate, History, Node, Prepared, FIELD_INFLUENCE, FIELD_WINDOW,
 };
 use wasm_bindgen::prelude::*;
 
@@ -532,22 +533,16 @@ fn capsule_row(a: Node, b: Node, radius_a: f32, radius_b: f32, py: f64) -> (f64,
 /// swept from one dab to another, whose coverage the stroke keeps the largest of.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mark {
-    Field(Term),
+    Field(ArcTerm),
     Square(Node, Node),
 }
 
-/// The marks of `dabs` (flat `x, y, diameter` triples). Joined dabs make a polyline; `starts` and
-/// `ends` say whether its first and last dab are the ends of the stroke (see [`field_terms`]).
-fn marks(
-    dabs: &[f32],
-    brush: &BrushSettings,
-    starts: bool,
-    ends: bool,
-) -> Result<Vec<Mark>, String> {
+/// The dabs of a flat `x, y, diameter` list as nodes.
+fn nodes_of(dabs: &[f32], brush: &BrushSettings) -> Result<Vec<Node>, String> {
     if !dabs.len().is_multiple_of(3) {
         return Err("dabs must be x, y, diameter triples".to_owned());
     }
-    let nodes: Vec<Node> = dabs
+    Ok(dabs
         .as_chunks::<3>()
         .0
         .iter()
@@ -556,12 +551,38 @@ fn marks(
             y: d[1],
             reach: reach_of(d[2], brush.antialias),
         })
-        .collect();
+        .collect())
+}
+
+/// The field terms of a round tip's batch of dabs (see [`field_terms`]).
+fn batch_terms(
+    dabs: &[f32],
+    brush: &BrushSettings,
+    starts: bool,
+    ends: bool,
+    arc: f32,
+) -> Result<Vec<ArcTerm>, String> {
+    let nodes = nodes_of(dabs, brush)?;
     let joined = brush.spacing < JOINED_SPACING;
+    Ok(field_terms(&nodes, joined, starts, ends, arc))
+}
+
+/// The marks of `dabs` (flat `x, y, diameter` triples), the first at arc length `arc`. Joined dabs
+/// make a polyline; `starts` and `ends` say whether its first and last dab are the ends of the
+/// stroke (see [`field_terms`]).
+fn marks(
+    dabs: &[f32],
+    brush: &BrushSettings,
+    starts: bool,
+    ends: bool,
+    arc: f32,
+) -> Result<Vec<Mark>, String> {
     if !brush.square {
-        let terms = field_terms(&nodes, joined, starts, ends);
+        let terms = batch_terms(dabs, brush, starts, ends, arc)?;
         return Ok(terms.into_iter().map(Mark::Field).collect());
     }
+    let nodes = nodes_of(dabs, brush)?;
+    let joined = brush.spacing < JOINED_SPACING;
     Ok(if joined && nodes.len() > 1 {
         nodes.windows(2).map(|w| Mark::Square(w[0], w[1])).collect()
     } else {
@@ -572,7 +593,7 @@ fn marks(
 /// The image-pixel box `[x0, x1) × [y0, y1)` a mark can change.
 fn mark_bounds(mark: Mark) -> (f32, f32, f32, f32) {
     match mark {
-        Mark::Field(term) => term_bounds(term),
+        Mark::Field(term) => term_bounds(term.term),
         Mark::Square(a, b) => (
             (a.x - a.reach).min(b.x - b.reach).floor(),
             (a.y - a.reach).min(b.y - b.reach).floor(),
@@ -582,8 +603,14 @@ fn mark_bounds(mark: Mark) -> (f32, f32, f32, f32) {
     }
 }
 
-/// Adds a mark to the stroke's per-pixel values, two words per pixel: a field term adds its two
-/// fixed-point integrals, a swept square raises the first word to its 8-bit coverage.
+/// Words per pixel of a stroke's values: a round tip's two fixed-point integrals, then the
+/// largest start and (inverted) the smallest end along the path of the terms that reach the pixel,
+/// as `f32` bits; a square tip's coverage in the first word.
+pub const VALUE_WORDS: usize = 4;
+
+/// Adds a mark to the stroke's per-pixel values ([`VALUE_WORDS`] words per pixel): a field term
+/// adds its two fixed-point integrals and widens the stretch of path seen, a swept square raises
+/// the first word to its 8-bit coverage.
 fn apply_mark(
     values: &mut [u32],
     width: usize,
@@ -594,9 +621,10 @@ fn apply_mark(
 ) {
     match mark {
         Mark::Field(term) => {
-            let (a, b) = term_ends(term);
+            let (a, b) = term_ends(term.term);
             let (ra, rb) = (FIELD_INFLUENCE * a.reach, FIELD_INFLUENCE * b.reach);
-            let prepared = Prepared::new(term);
+            let prepared = Prepared::new(term.term);
+            let (arc0, arc1) = (term.arc0.to_bits(), !term.arc1.to_bits());
             for_each_pixel(
                 a,
                 b,
@@ -610,9 +638,11 @@ fn apply_mark(
                 |x, y, px, py| {
                     let (d, n) = prepared.units(px, py);
                     if d != 0 || n != 0 {
-                        let i = (y * width + x) * 2;
+                        let i = (y * width + x) * VALUE_WORDS;
                         values[i] = values[i].saturating_add(d);
                         values[i + 1] = values[i + 1].saturating_add(n);
+                        values[i + 2] = values[i + 2].max(arc0);
+                        values[i + 3] = values[i + 3].max(arc1);
                     }
                 },
             );
@@ -634,7 +664,7 @@ fn apply_mark(
                     let (rho, reach) = square_ratio(px, py, a, b);
                     let c = (tip_falloff(rho, reach, core, brush.antialias) * 255.0 + 0.5).floor()
                         as u32;
-                    let cell = &mut values[(y * width + x) * 2];
+                    let cell = &mut values[(y * width + x) * VALUE_WORDS];
                     *cell = (*cell).max(c);
                 },
             );
@@ -642,22 +672,40 @@ fn apply_mark(
     }
 }
 
-/// The 8-bit coverage of a pixel's two words: a round tip's field through the tip's falloff (with
-/// the reach of the full-pressure tip for the rim's ramp), a square tip's coverage as it is.
-fn coverage_of(value: [u32; 2], brush: &BrushSettings) -> u32 {
+/// The 8-bit coverage of a pixel's values at pixel centre (`px`, `py`). A round tip's coverage is
+/// the tip's falloff at the soft distance of its integrals (with the reach of the full-pressure tip
+/// for the rim's ramp) when all the path that reaches the pixel is one pass; where it passes more
+/// than once, the passes combine from the terms of `passes` (see [`windowed_falloff`]). A square tip's
+/// coverage is the first word.
+fn coverage_at(
+    value: [u32; VALUE_WORDS],
+    px: f32,
+    py: f32,
+    brush: &BrushSettings,
+    passes: &Passes,
+) -> u32 {
     if brush.square {
         return value[0].min(255);
     }
+    if value[0] == 0 {
+        return 0;
+    }
     let reach = reach_of(brush.size, brush.antialias);
-    let falloff = field_falloff(value[0], value[1], reach, core_of(brush), brush.antialias);
+    let (core, antialias) = (core_of(brush), brush.antialias);
+    let window = FIELD_WINDOW * reach;
+    let spread = f32::from_bits(value[2]) - f32::from_bits(!value[3]);
+    let falloff = if spread <= window {
+        field_falloff(value[0], value[1], reach, core, antialias)
+    } else {
+        windowed_falloff(px, py, passes.candidates(), window, reach, core, antialias)
+    };
     (falloff * 255.0 + 0.5).floor() as u32
 }
 
-/// The two words of pixel `i`.
-fn pair(values: &[u32], i: usize) -> [u32; 2] {
-    [values[i * 2], values[i * 2 + 1]]
+/// The values of pixel `i`.
+fn pixel_values(values: &[u32], i: usize) -> [u32; VALUE_WORDS] {
+    std::array::from_fn(|k| values[i * VALUE_WORDS + k])
 }
-
 /// Places the dabs of a stroke as its path points arrive, for [`plan_dabs`] and [`DabPlanner`].
 #[derive(Clone, Debug)]
 struct Placer {
@@ -905,7 +953,13 @@ pub fn stroke_coverage(
         .into_iter()
         .flat_map(|d| [d.x, d.y, d.diameter])
         .collect();
-    let mut values = vec![0u32; width * height * 2];
+    let mut history = History::default();
+    if !brush.square {
+        for term in batch_terms(&dabs, &brush, true, true, 0.0).expect("x, y, diameter triples") {
+            history.add(term);
+        }
+    }
+    let mut values = vec![0u32; width * height * VALUE_WORDS];
     cover_dabs(
         &mut values,
         width,
@@ -915,9 +969,10 @@ pub fn stroke_coverage(
         &brush,
         true,
         true,
+        0.0,
     )
     .expect("x, y, diameter triples");
-    stroke_values_coverage(&values, &brush)
+    stroke_values_coverage(&values, width, height, (0, 0), &brush, &history, &[])
 }
 
 /// Renders one stroke into a straight-alpha RGBA8 buffer of `width × height` pixels.
@@ -927,6 +982,8 @@ pub fn stroke_coverage(
 /// sweep), and the paint is applied once with that coverage over the pixels before the stroke. A
 /// soft stroke therefore keeps the tip's falloff across its width instead of building up to full
 /// coverage, and its edge is smooth along the stroke and around bends (TL-BRUSH-01 hardness).
+/// Where a round stroke passes over itself again, the passes add up as separate strokes painted
+/// over each other would.
 pub fn stroke(
     dst: &mut [u8],
     width: usize,
@@ -956,7 +1013,7 @@ pub fn stroke(
     Ok(())
 }
 
-/// Checks the buffers of a live stroke: `width` × `height` RGBA8 pixels and two words per pixel.
+/// Checks the buffers of a live stroke: `width` × `height` RGBA8 pixels and their values.
 pub(crate) fn check_live_buffers(
     dst: &[u8],
     original: &[u8],
@@ -968,8 +1025,8 @@ pub(crate) fn check_live_buffers(
     if dst.len() != len * 4 || original.len() != len * 4 {
         return Err("brush target and original must be width × height RGBA8".to_owned());
     }
-    if values.len() != len * 2 {
-        return Err("the stroke values must be two words per pixel".to_owned());
+    if values.len() != len * VALUE_WORDS {
+        return Err("the stroke values must be four words per pixel".to_owned());
     }
     Ok(())
 }
@@ -1005,11 +1062,26 @@ pub fn brush_stroke_rgba8(
     stroke(dst, width as usize, height as usize, &points, brush).map_err(|m| JsError::new(&m))
 }
 
-/// Adds `dabs` (flat `x, y, diameter` triples in image pixels) to a live stroke. The buffers are
-/// `width` × `height` with their top-left pixel at image pixel (`origin_x`, `origin_y`): `dst` is
-/// the working copy, `original` the pixels before the stroke and `values` the stroke's two-word
-/// values so far (see [`DabPlanner`] for `starts` and `ends`). Where the coverage rises, the pixel
-/// is painted again from its original with the new coverage, as [`stroke`] paints the whole
+/// A batch of a live stroke's dabs and where it sits in the stroke (see [`DabPlanner`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Batch<'a> {
+    /// Flat `x, y, diameter` triples in image pixels.
+    pub dabs: &'a [f32],
+    /// The batch begins at the stroke's first dab, or ends the stroke.
+    pub starts: bool,
+    pub ends: bool,
+    /// The arc length of its first dab along the stroke.
+    pub arc: f32,
+    /// A provisional batch (the tail) is not part of the planner's history yet.
+    pub provisional: bool,
+}
+
+/// Adds a batch of dabs to a live stroke. The buffers are `width` × `height` with their top-left
+/// pixel at image pixel (`origin_x`, `origin_y`): `dst` is the working copy, `original` the pixels
+/// before the stroke and `values` the stroke's [`VALUE_WORDS`] words per pixel so far. `starts`,
+/// `ends` and `arc` place the batch in the stroke and `provisional` marks the tail, as
+/// [`DabPlanner`] gives them; the planner also holds the stroke's earlier parts. Where the
+/// coverage changes, the pixel is painted again from its original, as [`stroke`] paints the whole
 /// stroke. Hatch patterns are anchored to the image origin (TL-OPT-FILL), so a stroke stamped a
 /// few dabs at a time, into buffers at different origins, matches one stamped all at once.
 #[wasm_bindgen]
@@ -1025,8 +1097,18 @@ pub fn brush_stamp_dabs_rgba8(
     dabs: &[f32],
     starts: bool,
     ends: bool,
+    arc: f32,
+    provisional: bool,
+    planner: &DabPlanner,
     brush: &BrushSettings,
 ) -> Result<(), JsError> {
+    let batch = Batch {
+        dabs,
+        starts,
+        ends,
+        arc,
+        provisional,
+    };
     stamp_dabs(
         dst,
         original,
@@ -1034,10 +1116,9 @@ pub fn brush_stamp_dabs_rgba8(
         width as usize,
         height as usize,
         (origin_x as usize, origin_y as usize),
-        dabs,
+        batch,
+        &planner.history,
         brush,
-        starts,
-        ends,
     )
     .map_err(|m| JsError::new(&m))
 }
@@ -1050,10 +1131,9 @@ pub(crate) fn stamp_dabs(
     width: usize,
     height: usize,
     origin: (usize, usize),
-    dabs: &[f32],
+    batch: Batch,
+    history: &History,
     brush: &BrushSettings,
-    starts: bool,
-    ends: bool,
 ) -> Result<(), String> {
     check_live_buffers(dst, original, values, width, height)?;
     let brush = brush.normalized();
@@ -1067,10 +1147,9 @@ pub(crate) fn stamp_dabs(
         width,
         height,
         origin,
-        dabs,
+        batch,
+        history,
         &brush,
-        starts,
-        ends,
         |x, y, c| {
             let i = (y * width + x) * 4;
             let pixel: [u8; 4] = original[i..i + 4].try_into().expect("four bytes per pixel");
@@ -1080,28 +1159,56 @@ pub(crate) fn stamp_dabs(
     )
 }
 
-/// Adds the marks of `dabs` to `values` and calls `repaint(x, y, c)` for each buffer pixel whose
-/// coverage changed, with the new 8-bit coverage. Only the box the marks can reach is compared.
+/// The terms near the image box `[x0, x1) × [y0, y1)` that a pixel's passes combine from: the
+/// stroke's history, then a provisional batch's own terms. They are only gathered when a pixel in
+/// the box needs them.
+struct Passes<'a> {
+    history: &'a History,
+    extra: &'a [ArcTerm],
+    image_box: (f32, f32, f32, f32),
+    candidates: std::cell::OnceCell<Vec<Candidate>>,
+}
+
+impl<'a> Passes<'a> {
+    fn new(history: &'a History, extra: &'a [ArcTerm], image_box: (f32, f32, f32, f32)) -> Self {
+        Passes {
+            history,
+            extra,
+            image_box,
+            candidates: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn candidates(&self) -> &[Candidate] {
+        self.candidates.get_or_init(|| {
+            let (x0, y0, x1, y1) = self.image_box;
+            let mut terms = self.history.near(x0, y0, x1, y1);
+            terms.extend_from_slice(self.extra);
+            terms.into_iter().map(Candidate::new).collect()
+        })
+    }
+}
+/// Adds a batch's marks to `values` and calls `repaint(x, y, c)` for each buffer pixel whose
+/// values changed, with its new 8-bit coverage. Only the box the marks can reach is visited.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stamp_with(
     values: &mut [u32],
     width: usize,
     height: usize,
     origin: (usize, usize),
-    dabs: &[f32],
+    batch: Batch,
+    history: &History,
     brush: &BrushSettings,
-    starts: bool,
-    ends: bool,
     mut repaint: impl FnMut(usize, usize, u32),
 ) -> Result<(), String> {
     let brush = brush.normalized();
-    let marks = marks(dabs, &brush, starts, ends)?;
+    let marks = marks(batch.dabs, &brush, batch.starts, batch.ends, batch.arc)?;
     let Some((x0, y0, x1, y1)) = buffer_box(&marks, width, height, origin) else {
         return Ok(());
     };
     let before: Vec<u32> = (y0..y1)
         .flat_map(|y| {
-            values[(y * width + x0) * 2..(y * width + x1) * 2]
+            values[(y * width + x0) * VALUE_WORDS..(y * width + x1) * VALUE_WORDS]
                 .iter()
                 .copied()
         })
@@ -1109,22 +1216,33 @@ pub(crate) fn stamp_with(
     for &mark in &marks {
         apply_mark(values, width, height, origin, mark, &brush);
     }
+    let image_box = (
+        (x0 + origin.0) as f32,
+        (y0 + origin.1) as f32,
+        (x1 + origin.0) as f32,
+        (y1 + origin.1) as f32,
+    );
+    let extra: Vec<ArcTerm> = if batch.provisional && !brush.square {
+        batch_terms(batch.dabs, &brush, batch.starts, batch.ends, batch.arc)?
+    } else {
+        Vec::new()
+    };
+    let passes = Passes::new(history, &extra, image_box);
     let span = x1 - x0;
     for y in y0..y1 {
         for x in x0..x1 {
-            let (old, new) = (
-                pair(&before, (y - y0) * span + x - x0),
-                pair(values, y * width + x),
-            );
-            if new == old {
+            let i = y * width + x;
+            if pixel_values(&before, (y - y0) * span + x - x0) == pixel_values(values, i) {
                 continue;
             }
-            // A new term can lower a pixel's coverage as well as raise it (it moves the weighted
-            // average), so any change repaints the pixel from its original.
-            let c = coverage_of(new, &brush);
-            if c != coverage_of(old, &brush) {
-                repaint(x, y, c);
-            }
+            let (px, py) = ((x + origin.0) as f32 + 0.5, (y + origin.1) as f32 + 0.5);
+            // Any change repaints the pixel from its original: a new pass can lower a pixel's
+            // coverage as well as raise it.
+            repaint(
+                x,
+                y,
+                coverage_at(pixel_values(values, i), px, py, &brush, &passes),
+            );
         }
     }
     Ok(())
@@ -1150,10 +1268,11 @@ fn buffer_box(
     (x0 < x1 && y0 < y1).then_some((x0, y0, x1, y1))
 }
 
-/// Adds the marks of `dabs` (flat `x, y, diameter` triples in image pixels) to a stroke's
-/// per-pixel values, as [`stroke_coverage`] does for a whole stroke. The buffer is `width` ×
-/// `height` with its top-left pixel at image pixel `origin`, so a stroke added a few dabs at a
-/// time matches the whole stroke. [`stroke_values_coverage`] turns the values into coverage.
+/// Adds the marks of `dabs` (flat `x, y, diameter` triples in image pixels, the first at arc
+/// length `arc`) to a stroke's values, as [`stroke_coverage`] does for a whole stroke. The buffer
+/// is `width` × `height` with its top-left pixel at image pixel `origin`, so a stroke added a few
+/// dabs at a time matches the whole stroke. [`stroke_values_coverage`] turns the values into
+/// coverage.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cover_dabs(
     values: &mut [u32],
@@ -1164,20 +1283,21 @@ pub(crate) fn cover_dabs(
     brush: &BrushSettings,
     starts: bool,
     ends: bool,
+    arc: f32,
 ) -> Result<(), String> {
-    if values.len() != width * height * 2 {
-        return Err("the stroke values must be two words per pixel".to_owned());
+    if values.len() != width * height * VALUE_WORDS {
+        return Err("the stroke values must be four words per pixel".to_owned());
     }
     let brush = brush.normalized();
-    for mark in marks(dabs, &brush, starts, ends)? {
+    for mark in marks(dabs, &brush, starts, ends, arc)? {
         apply_mark(values, width, height, origin, mark, &brush);
     }
     Ok(())
 }
 
-/// Adds `dabs` (flat `x, y, diameter` triples in image pixels) to a stroke's per-pixel values
-/// whose top-left pixel is image pixel (`origin_x`, `origin_y`). A live Recolor stroke keeps its
-/// values with it (see [`DabPlanner`] for `starts` and `ends`).
+/// Adds `dabs` (flat `x, y, diameter` triples in image pixels, the first at arc length `arc`) to
+/// a stroke's values whose top-left pixel is image pixel (`origin_x`, `origin_y`). A live Recolor
+/// stroke keeps its values with it (see [`DabPlanner`] for `starts`, `ends` and `arc`).
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn brush_cover_dabs(
@@ -1189,6 +1309,7 @@ pub fn brush_cover_dabs(
     dabs: &[f32],
     starts: bool,
     ends: bool,
+    arc: f32,
     brush: &BrushSettings,
 ) -> Result<(), JsError> {
     cover_dabs(
@@ -1200,26 +1321,111 @@ pub fn brush_cover_dabs(
         brush,
         starts,
         ends,
+        arc,
     )
     .map_err(|m| JsError::new(&m))
 }
 
-/// The 8-bit coverage of a stroke's per-pixel values, two words per pixel.
-pub(crate) fn stroke_values_coverage(values: &[u32], brush: &BrushSettings) -> Vec<u8> {
+/// The 8-bit coverage of a stroke's values for a `width` × `height` buffer whose top-left pixel is
+/// image pixel `origin`. `history` holds the stroke's earlier parts and `extra` any provisional
+/// ones, where the stroke passes over itself.
+pub(crate) fn stroke_values_coverage(
+    values: &[u32],
+    width: usize,
+    height: usize,
+    origin: (usize, usize),
+    brush: &BrushSettings,
+    history: &History,
+    extra: &[ArcTerm],
+) -> Vec<u8> {
     let brush = brush.normalized();
-    values
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&v| coverage_of(v, &brush) as u8)
+    let image_box = (
+        origin.0 as f32,
+        origin.1 as f32,
+        (origin.0 + width) as f32,
+        (origin.1 + height) as f32,
+    );
+    let passes = Passes::new(history, extra, image_box);
+    (0..width * height)
+        .map(|i| {
+            let (px, py) = (
+                (i % width + origin.0) as f32 + 0.5,
+                (i / width + origin.1) as f32 + 0.5,
+            );
+            coverage_at(pixel_values(values, i), px, py, &brush, &passes) as u8
+        })
         .collect()
 }
 
-/// The 8-bit coverage of a stroke's per-pixel values, two words per pixel (see
-/// [`brush_cover_dabs`]).
+/// The 8-bit coverage of a live stroke's values (four words per pixel, see [`brush_cover_dabs`])
+/// for a `width` × `height` buffer whose top-left pixel is image pixel (`origin_x`, `origin_y`).
+/// `dabs`, `starts`, `ends` and `arc` give a provisional batch (the tail) that the values include,
+/// or no dabs; the planner holds the stroke's final parts.
 #[wasm_bindgen]
-pub fn brush_values_coverage(values: &[u32], brush: &BrushSettings) -> Vec<u8> {
-    stroke_values_coverage(values, brush)
+#[allow(clippy::too_many_arguments)]
+pub fn brush_values_coverage(
+    values: &[u32],
+    width: u32,
+    height: u32,
+    origin_x: u32,
+    origin_y: u32,
+    dabs: &[f32],
+    starts: bool,
+    ends: bool,
+    arc: f32,
+    planner: &DabPlanner,
+    brush: &BrushSettings,
+) -> Result<Vec<u8>, JsError> {
+    let normalized = brush.normalized();
+    let extra = if normalized.square {
+        Vec::new()
+    } else {
+        batch_terms(dabs, &normalized, starts, ends, arc).map_err(|m| JsError::new(&m))?
+    };
+    Ok(stroke_values_coverage(
+        values,
+        width as usize,
+        height as usize,
+        (origin_x as usize, origin_y as usize),
+        brush,
+        &planner.history,
+        &extra,
+    ))
+}
+
+/// The terms of a whole stroke as flat records of twelve floats each: `kind, arc0, arc1, 0`, then
+/// `x, y, reach, 0` of its two dabs (0 segment, 1 cap with the dab it comes from, 2 single dab).
+/// The WebGPU brush combines the passes of a pixel from them. Empty for a square tip.
+#[wasm_bindgen]
+pub fn brush_terms(path: &[f32], brush: &BrushSettings) -> Result<Vec<f32>, JsError> {
+    let points = stroke_points(path).map_err(|m| JsError::new(&m))?;
+    let brush = brush.normalized();
+    if brush.square {
+        return Ok(Vec::new());
+    }
+    let dabs: Vec<f32> = plan_dabs(&points, &brush)
+        .into_iter()
+        .flat_map(|d| [d.x, d.y, d.diameter])
+        .collect();
+    let terms = batch_terms(&dabs, &brush, true, true, 0.0).map_err(|m| JsError::new(&m))?;
+    Ok(term_records(&terms))
+}
+
+/// Flat twelve-float records of terms (see [`brush_terms`]).
+fn term_records(terms: &[ArcTerm]) -> Vec<f32> {
+    use crate::brush_field::Term;
+    let mut out = Vec::with_capacity(terms.len() * 12);
+    for t in terms {
+        let (kind, a, b) = match t.term {
+            Term::Segment(a, b) => (0.0, a, b),
+            Term::Cap { at, from } => (1.0, at, from),
+            Term::Point(n) => (2.0, n, n),
+        };
+        out.extend([
+            kind, t.arc0, t.arc1, 0.0, a.x, a.y, a.reach, 0.0, b.x, b.y, b.reach, 0.0,
+        ]);
+    }
+    out
 }
 
 /// The dabs of a stroke as flat `x, y, diameter` triples, in stamping order. The WebGPU brush
@@ -1252,7 +1458,9 @@ pub fn brush_joins_dabs(brush: &BrushSettings) -> bool {
 /// gives the coverage of the whole list. [`DabPlanner::starts`] tells whether a batch begins at the
 /// stroke's first dab, whose end it covers; batches from `push` don't end the stroke, while those
 /// from `tail` and `finish` do. `finish` always returns the last dab placed, so the stroke's end is
-/// covered even when nothing new remains.
+/// covered even when nothing new remains. [`DabPlanner::arc`] gives the arc length of a batch's
+/// first dab along the stroke. The planner keeps the stroke's final terms (its history), which the
+/// kernels read where the stroke passes over itself.
 #[wasm_bindgen]
 #[derive(Clone, Debug)]
 pub struct DabPlanner {
@@ -1267,6 +1475,13 @@ pub struct DabPlanner {
     emitted: usize,
     /// Whether the last batch from `push` or `finish` begins at the stroke's first dab.
     starts: bool,
+    /// The arc length of the last dab placed, and of the first dab of the last batch.
+    anchor_arc: f32,
+    batch_arc: f32,
+    /// A round tip's final terms, shared with the planner's look-ahead copies (see `tail`), which
+    /// don't add to them.
+    pub(crate) history: std::rc::Rc<History>,
+    record: bool,
 }
 
 #[wasm_bindgen]
@@ -1281,7 +1496,58 @@ impl DabPlanner {
             placer: Placer::new(brush),
             emitted: 0,
             starts: false,
+            anchor_arc: 0.0,
+            batch_arc: 0.0,
+            history: std::rc::Rc::default(),
+            record: true,
         }
+    }
+
+    /// The arc length along the stroke of the first dab of the last batch from `push` or `finish`.
+    pub fn arc(&self) -> f32 {
+        self.batch_arc
+    }
+
+    /// The arc length along the stroke of the first dab of the batch from `tail`.
+    pub fn tail_arc(&self) -> f32 {
+        if self.placer.joined {
+            self.anchor_arc
+        } else {
+            self.emitted as f32 * crate::brush_field::SPACED_ARC
+        }
+    }
+
+    /// The arc length along the stroke of each dab of a batch (flat `x, y, diameter` triples)
+    /// whose first dab lies at `arc`: the WebGPU brush keeps it with each dab.
+    pub fn dab_arcs(&self, dabs: &[f32], arc: f32) -> Result<Vec<f32>, JsError> {
+        let nodes = nodes_of(dabs, &self.brush).map_err(|m| JsError::new(&m))?;
+        Ok(node_arcs(&nodes, self.placer.joined, arc))
+    }
+
+    /// The stroke's terms that can reach into the image box `[x0, x1) × [y0, y1)`, in stroke
+    /// order, as the flat records of [`brush_terms`]: the final ones, then those of a provisional
+    /// batch (`tail`, `tail_starts`, `tail_arc` from [`DabPlanner::tail`], or no dabs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn terms_near(
+        &self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        tail: &[f32],
+        tail_starts: bool,
+        tail_arc: f32,
+    ) -> Result<Vec<f32>, JsError> {
+        let mut terms = self.history.near(x0, y0, x1, y1);
+        if !self.brush.square && !tail.is_empty() {
+            let extra = batch_terms(tail, &self.brush, tail_starts, true, tail_arc)
+                .map_err(|m| JsError::new(&m))?;
+            terms.extend(extra.into_iter().filter(|t| {
+                let (a, b, c, d) = term_bounds(t.term);
+                a < x1 && b < y1 && c > x0 && d > y0
+            }));
+        }
+        Ok(term_records(&terms))
     }
 
     /// Whether the last batch from `push` or `finish` begins at the stroke's first dab.
@@ -1315,7 +1581,9 @@ impl DabPlanner {
 
     /// The dabs that `finish` would place now, without placing them.
     pub fn tail(&self) -> Vec<f32> {
-        self.clone().finish()
+        let mut ahead = self.clone();
+        ahead.record = false;
+        ahead.finish()
     }
 
     /// Ends the stroke and returns its remaining dabs.
@@ -1351,13 +1619,34 @@ impl DabPlanner {
         let earlier = self.emitted;
         self.emitted += out.len() / 3;
         self.starts = earlier <= 1;
-        match before {
-            Some(d) if self.placer.joined && (last || !out.is_empty()) => {
+        let joined = self.placer.joined;
+        let batch = match before {
+            Some(d) if joined && (last || !out.is_empty()) => {
                 out.splice(0..0, [d.x, d.y, d.diameter]);
+                self.batch_arc = self.anchor_arc;
                 out
             }
-            _ => out,
+            _ => {
+                self.batch_arc = if joined {
+                    0.0
+                } else {
+                    earlier as f32 * crate::brush_field::SPACED_ARC
+                };
+                out
+            }
+        };
+        if !batch.is_empty() {
+            let nodes = nodes_of(&batch, &self.brush).expect("x, y, diameter triples");
+            let arcs = node_arcs(&nodes, joined, self.batch_arc);
+            self.anchor_arc = arcs[arcs.len() - 1];
+            if self.record && !self.brush.square {
+                let history = std::rc::Rc::make_mut(&mut self.history);
+                for term in field_terms(&nodes, joined, self.starts, last, self.batch_arc) {
+                    history.add(term);
+                }
+            }
         }
+        batch
     }
 
     /// Places every path point that later samples cannot change.
@@ -1455,39 +1744,35 @@ mod tests {
         let (ox, oy, bw, bh) = (8, 6, w - 8, h - 6);
         let mut part = canvas(bw, bh);
         let original = part.clone();
-        let mut values = vec![0u32; bw * bh * 2];
-        for chunk in path.chunks(9) {
-            let dabs = planner.push(chunk).unwrap();
-            let starts = planner.starts();
+        let mut values = vec![0u32; bw * bh * VALUE_WORDS];
+        let mut stamp = |planner: &DabPlanner, dabs: &[f32], ends: bool, part: &mut Vec<u8>| {
+            let batch = Batch {
+                dabs,
+                starts: planner.starts(),
+                ends,
+                arc: planner.arc(),
+                provisional: false,
+            };
+            let history = &planner.history;
             stamp_dabs(
-                &mut part,
+                part,
                 &original,
                 &mut values,
                 bw,
                 bh,
                 (ox, oy),
-                &dabs,
+                batch,
+                history,
                 &brush,
-                starts,
-                false,
             )
             .unwrap();
+        };
+        for chunk in path.chunks(9) {
+            let dabs = planner.push(chunk).unwrap();
+            stamp(&planner, &dabs, false, &mut part);
         }
         let rest = planner.finish();
-        let starts = planner.starts();
-        stamp_dabs(
-            &mut part,
-            &original,
-            &mut values,
-            bw,
-            bh,
-            (ox, oy),
-            &rest,
-            &brush,
-            starts,
-            true,
-        )
-        .unwrap();
+        stamp(&planner, &rest, true, &mut part);
         let mut chunked = canvas(w, h);
         for y in 0..bh {
             let from = y * bw * 4;
@@ -1514,9 +1799,10 @@ mod tests {
         let mut planner = DabPlanner::new(&brush);
         let (ox, oy) = (5, 3);
         let (bw, bh) = (w - ox, h - oy);
-        let mut values = vec![0u32; bw * bh * 2];
+        let mut values = vec![0u32; bw * bh * VALUE_WORDS];
         for (index, chunk) in path.chunks(6).enumerate() {
             let dabs = planner.push(chunk).unwrap();
+            let (starts, arc) = (planner.starts(), planner.arc());
             cover_dabs(
                 &mut values,
                 bw,
@@ -1524,18 +1810,22 @@ mod tests {
                 (ox, oy),
                 &dabs,
                 &brush,
-                planner.starts(),
+                starts,
                 false,
+                arc,
             )
             .unwrap();
             // The final part plus the tail is the whole stroke of the samples so far.
             let mut preview = values.clone();
             let tail = planner.tail();
-            let ts = planner.tail_starts();
-            cover_dabs(&mut preview, bw, bh, (ox, oy), &tail, &brush, ts, true).unwrap();
+            let (ts, ta) = (planner.tail_starts(), planner.tail_arc());
+            cover_dabs(&mut preview, bw, bh, (ox, oy), &tail, &brush, ts, true, ta).unwrap();
             let seen = &points[..(points.len()).min((index + 1) * 2)];
             let so_far = stroke_coverage(w, h, seen, &brush);
-            let preview = stroke_values_coverage(&preview, &brush);
+            let extra = batch_terms(&tail, &brush.normalized(), ts, true, ta).unwrap();
+            let history = &planner.history;
+            let preview =
+                stroke_values_coverage(&preview, bw, bh, (ox, oy), &brush, history, &extra);
             for y in oy..h {
                 for x in ox..w {
                     assert_eq!(
@@ -1547,6 +1837,7 @@ mod tests {
             }
         }
         let rest = planner.finish();
+        let (starts, arc) = (planner.starts(), planner.arc());
         cover_dabs(
             &mut values,
             bw,
@@ -1554,11 +1845,12 @@ mod tests {
             (ox, oy),
             &rest,
             &brush,
-            planner.starts(),
+            starts,
             true,
+            arc,
         )
         .unwrap();
-        let part = stroke_values_coverage(&values, &brush);
+        let part = stroke_values_coverage(&values, bw, bh, (ox, oy), &brush, &planner.history, &[]);
         // The buffer misses the strip above and left of its origin, so only its pixels compare.
         for y in oy..h {
             for x in ox..w {
@@ -1566,7 +1858,18 @@ mod tests {
             }
         }
         assert!(whole.iter().any(|&c| c > 0));
-        assert!(cover_dabs(&mut values, bw + 1, bh, (0, 0), &[], &brush, true, true).is_err());
+        assert!(cover_dabs(
+            &mut values,
+            bw + 1,
+            bh,
+            (0, 0),
+            &[],
+            &brush,
+            true,
+            true,
+            0.0
+        )
+        .is_err());
     }
 
     #[test]
@@ -2038,7 +2341,7 @@ mod tests {
         most
     }
 
-    /// Test strokes for a 60 px brush in a 200 × 160 image: a straight line, an S-curve, a tight
+    /// Test strokes for a 60 px brush in a 200 × 160 image: a straight line, an S-curve, half a tight
     /// circle, a zig-zag and a hairpin.
     fn bend_shapes() -> Vec<(&'static str, Vec<StrokePoint>)> {
         let line = |a: (f32, f32), b: (f32, f32), step: f32, out: &mut Vec<StrokePoint>| {
@@ -2058,7 +2361,8 @@ mod tests {
                 point(x, 80.0 + 27.0 * phase.sin(), 1.0)
             })
             .collect();
-        let circle = (0..=36)
+        // Half a tight circle: a bend, its ends too close along the path to count as two passes.
+        let circle = (0..=17)
             .map(|i| {
                 let a = i as f32 / 34.0 * std::f32::consts::TAU;
                 point(100.0 + 21.0 * a.cos(), 80.0 + 21.0 * a.sin(), 1.0)
@@ -2117,6 +2421,73 @@ mod tests {
                     found <= base + allowed,
                     "h {hardness} {name}: {found} vs straight {base}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn a_stroke_crossing_itself_adds_up_like_two_strokes_painted_over_each_other() {
+        // One stroke down one diagonal, round a turn far to the right and back up the other
+        // diagonal, against its two halves painted as separate strokes.
+        let (w, h) = (260, 200);
+        let mut first = Vec::new();
+        for i in 0..=40 {
+            first.push(point(20.0 + i as f32 * 4.0, 40.0 + i as f32 * 3.0, 1.0));
+        }
+        let mut second = vec![*first.last().unwrap()];
+        for i in 1..30 {
+            let a = std::f32::consts::FRAC_PI_2 - std::f32::consts::PI * i as f32 / 30.0;
+            second.push(point(180.0 + 60.0 * a.cos(), 100.0 + 60.0 * a.sin(), 1.0));
+        }
+        for i in 0..=40 {
+            second.push(point(180.0 - i as f32 * 4.0, 40.0 + i as f32 * 3.0, 1.0));
+        }
+        let whole: Vec<StrokePoint> = first.iter().chain(&second[1..]).copied().collect();
+        for hardness in [0.0f32, 0.5, 0.75] {
+            let brush = BrushSettings {
+                size: 60.0,
+                hardness,
+                pressure: false,
+                ..BrushSettings::default()
+            };
+            let one = stroke_coverage(w, h, &whole, &brush);
+            let a = stroke_coverage(w, h, &first, &brush);
+            let b = stroke_coverage(w, h, &second, &brush);
+            // Painted as two strokes: black at full alpha over white, the second over the first.
+            let paint = |cover: &[&[u8]]| {
+                let mut dst = [255u8, 255, 255, 255].repeat(w * h);
+                for c in cover {
+                    for (i, &v) in c.iter().enumerate() {
+                        let px: [u8; 4] = dst[i * 4..i * 4 + 4].try_into().unwrap();
+                        let out = paint_pixel(
+                            px,
+                            u32::from(v),
+                            [0, 0, 0, 255],
+                            Paint::Blend(BlendMode::Normal),
+                        );
+                        dst[i * 4..i * 4 + 4].copy_from_slice(&out);
+                    }
+                }
+                dst
+            };
+            let (single, layered) = (paint(&[&one]), paint(&[&a, &b]));
+            for y in 0..h {
+                for x in 0..w {
+                    // Near the crossing at (100, 100), away from the halves' own ends.
+                    if (x as f32 - 100.0).hypot(y as f32 - 100.0) > 45.0 {
+                        continue;
+                    }
+                    let i = y * w + x;
+                    assert!(
+                        u32::from(one[i]) + 1 >= u32::from(a[i].max(b[i])),
+                        "h {hardness} ({x}, {y}): {} thinner than {} / {}",
+                        one[i],
+                        a[i],
+                        b[i]
+                    );
+                    let (s, l) = (single[i * 4], layered[i * 4]);
+                    assert!(s.abs_diff(l) <= 1, "h {hardness} ({x}, {y}): {s} vs {l}");
+                }
             }
         }
     }

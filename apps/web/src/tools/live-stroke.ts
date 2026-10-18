@@ -15,6 +15,8 @@ import {
   pencilCells,
   type RecolorOptions,
   recolorCover,
+  STROKE_VALUE_WORDS,
+  type StrokeBatch,
 } from "@openpaint/engine";
 import type { StrokePoint, StrokeSpec } from "./paint-stroke";
 
@@ -84,52 +86,93 @@ function localArea(area: Rect, canvas: LiveCanvas): Rect {
   return translateRect(intersectRects(area, region), -region.x, -region.y);
 }
 
+const WORDS = STROKE_VALUE_WORDS;
+
+/** The edge of the square blocks a stroke's values are kept in. */
+const VALUE_BLOCK = 256;
+
 /**
- * A brush stroke's values (two words per pixel, see `LiveBrushStroke`) for a region after it grew
- * from `previous`: the old values moved to their place in the new region, zero elsewhere.
+ * A brush stroke's values (`STROKE_VALUE_WORDS` per pixel, see `LiveBrushStroke`) in blocks of
+ * `VALUE_BLOCK` image pixels, made where the stroke reaches. Zero elsewhere. A growing region keeps
+ * them as they are, so no growth copies them (L2).
  */
-function grownValues(old: Uint32Array, previous: Rect, region: Rect): Uint32Array<ArrayBuffer> {
-  const values = new Uint32Array(region.width * region.height * 2);
-  if (!isEmptyRect(previous)) {
-    for (let y = 0; y < previous.height; y++) {
-      const at = ((previous.y - region.y + y) * region.width + previous.x - region.x) * 2;
-      values.set(old.subarray(y * previous.width * 2, (y + 1) * previous.width * 2), at);
+class StrokeValues {
+  readonly #blocks = new Map<string, Uint32Array>();
+
+  /** A copy of the values over `area` (image pixels), row by row. */
+  crop(area: Rect): Uint32Array {
+    const out = new Uint32Array(area.width * area.height * WORDS);
+    this.#each(area, false, (block, from, at, run) => {
+      out.set(block.subarray(from, from + run), at);
+    });
+    return out;
+  }
+
+  /** Writes a crop of the values back to its place `area`. */
+  place(area: Rect, crop: Uint32Array): void {
+    this.#each(area, true, (block, from, at, run) => {
+      block.set(crop.subarray(at, at + run), from);
+    });
+  }
+
+  /**
+   * Calls `visit` for each row run of `area` within a block: the block, the run's first word in
+   * it and in a crop of `area`, and its length in words. With `make`, missing blocks are made.
+   */
+  #each(
+    area: Rect,
+    make: boolean,
+    visit: (block: Uint32Array, from: number, at: number, run: number) => void,
+  ): void {
+    const right = area.x + area.width;
+    const bottom = area.y + area.height;
+    for (let by = Math.floor(area.y / VALUE_BLOCK); by * VALUE_BLOCK < bottom; by++) {
+      for (let bx = Math.floor(area.x / VALUE_BLOCK); bx * VALUE_BLOCK < right; bx++) {
+        const key = `${bx},${by}`;
+        let block = this.#blocks.get(key);
+        if (block === undefined) {
+          if (!make) continue;
+          block = new Uint32Array(VALUE_BLOCK * VALUE_BLOCK * WORDS);
+          this.#blocks.set(key, block);
+        }
+        const x0 = Math.max(area.x, bx * VALUE_BLOCK);
+        const x1 = Math.min(right, (bx + 1) * VALUE_BLOCK);
+        const y0 = Math.max(area.y, by * VALUE_BLOCK);
+        const y1 = Math.min(bottom, (by + 1) * VALUE_BLOCK);
+        const run = (x1 - x0) * WORDS;
+        for (let y = y0; y < y1; y++) {
+          const from = ((y - by * VALUE_BLOCK) * VALUE_BLOCK + x0 - bx * VALUE_BLOCK) * WORDS;
+          const at = ((y - area.y) * area.width + x0 - area.x) * WORDS;
+          visit(block, from, at, run);
+        }
+      }
     }
   }
-  return values;
 }
 
-/** The part `area` of a stroke's values (two words per pixel) over a region `width` wide. */
-function cropValues(values: Uint32Array, width: number, area: Rect): Uint32Array {
-  const out = new Uint32Array(area.width * area.height * 2);
-  for (let y = 0; y < area.height; y++) {
-    const from = ((area.y + y) * width + area.x) * 2;
-    out.set(values.subarray(from, from + area.width * 2), y * area.width * 2);
-  }
-  return out;
+/** `area` in image pixels, clipped to the canvas region. */
+function imageArea(area: Rect, canvas: LiveCanvas): Rect {
+  return intersectRects(area, canvas.region);
 }
-
-/** Writes a crop of a stroke's values back to its place `area` in a region `width` wide. */
-function placeValues(values: Uint32Array, width: number, area: Rect, crop: Uint32Array): void {
-  for (let y = 0; y < area.height; y++) {
-    const at = ((area.y + y) * width + area.x) * 2;
-    values.set(crop.subarray(y * area.width * 2, (y + 1) * area.width * 2), at);
-  }
-}
+const NO_BATCH: StrokeBatch = {
+  dabs: new Float32Array(),
+  starts: false,
+  ends: true,
+  arc: 0,
+  provisional: true,
+};
 
 /**
  * The brushes that stamp dabs: the Paintbrush and the Eraser stamp the brush color, and the Clone
- * Stamp stamps the source pixels (TL-BRUSH-CS-01). The stroke keeps its values (two words per
- * pixel, see `LiveBrushStroke`), and each pixel is painted from its original with the coverage
+ * Stamp stamps the source pixels (TL-BRUSH-CS-01). The stroke keeps its values (see `LiveBrushStroke`), and each pixel is painted from its original with the coverage
  * they give, so a soft stroke keeps the tip's falloff (TL-BRUSH-01).
  */
 class DabPainter implements LivePainter {
   readonly #brush: LiveBrushStroke;
   readonly #clone: boolean;
-  /** The values of the final dabs, two words per pixel of the region. */
-  #values = new Uint32Array();
-  #tail: Float32Array = new Float32Array();
-  #tailStarts = false;
+  /** The values of the final dabs. */
+  readonly #values = new StrokeValues();
+  #tail = NO_BATCH;
   tailArea = EMPTY_RECT;
 
   constructor(options: BrushOptions, clone: boolean) {
@@ -137,43 +180,39 @@ class DabPainter implements LivePainter {
     this.#clone = clone;
   }
 
-  grow(previous: Rect, canvas: LiveCanvas): void {
-    this.#values = grownValues(this.#values, previous, canvas.region);
-  }
+  grow(): void {}
 
   push(points: readonly StrokePoint[], canvas: LiveCanvas): Rect {
-    const dabs = this.#brush.push(pathOf(points));
-    this.#stampFinal(dabs, this.#brush.starts, false, canvas);
+    const batch = this.#brush.push(pathOf(points));
+    this.#stampFinal(batch, canvas);
     this.#tail = this.#brush.tail();
-    this.#tailStarts = this.#brush.tailStarts;
-    this.tailArea = dabBounds(this.#tail);
-    return dabBounds(dabs);
+    this.tailArea = dabBounds(this.#tail.dabs);
+    return dabBounds(batch.dabs);
   }
 
   drawTail(patch: Surface, area: Rect, canvas: LiveCanvas): void {
-    if (this.#tail.length === 0) return;
+    if (this.#tail.dabs.length === 0) return;
     const local = localArea(area, canvas);
     if (isEmptyRect(local)) return;
     const original = cropSurface(canvas.original, local);
-    const values = cropValues(this.#values, canvas.region.width, local);
+    const values = this.#values.crop(imageArea(area, canvas));
     const x = local.x + canvas.region.x;
     const y = local.y + canvas.region.y;
     const tail = this.#tail;
-    const starts = this.#tailStarts;
     if (!this.#clone) {
-      this.#brush.stamp(patch, original, values, x, y, tail, starts, true);
+      this.#brush.stamp(patch, original, values, x, y, tail);
       return;
     }
     const source = cropSurface(this.#sourceOf(canvas), local);
-    this.#brush.stampClone(patch, original, source, values, x, y, tail, starts, true);
+    this.#brush.stampClone(patch, original, source, values, x, y, tail);
   }
 
   finish(canvas: LiveCanvas): Rect {
-    const dabs = this.#brush.finish();
-    this.#stampFinal(dabs, this.#brush.starts, true, canvas);
-    this.#tail = new Float32Array();
+    const batch = this.#brush.finish();
+    this.#stampFinal(batch, canvas);
+    this.#tail = NO_BATCH;
     this.tailArea = EMPTY_RECT;
-    return dabBounds(dabs);
+    return dabBounds(batch.dabs);
   }
 
   free(): void {
@@ -184,24 +223,24 @@ class DabPainter implements LivePainter {
    * Adds final dabs to the stroke's values and repaints the working copy where the coverage
    * changed. Only the part of the buffers that the dabs reach goes through the kernel.
    */
-  #stampFinal(dabs: Float32Array, starts: boolean, ends: boolean, canvas: LiveCanvas): void {
-    if (dabs.length === 0) return;
+  #stampFinal(batch: StrokeBatch, canvas: LiveCanvas): void {
+    if (batch.dabs.length === 0) return;
     const { region, original, work } = canvas;
-    const local = localArea(dabBounds(dabs), canvas);
+    const local = localArea(dabBounds(batch.dabs), canvas);
     if (isEmptyRect(local)) return;
     const part = cropSurface(work, local);
     const before = cropSurface(original, local);
-    const values = cropValues(this.#values, region.width, local);
+    const values = this.#values.crop(imageArea(dabBounds(batch.dabs), canvas));
     const x = local.x + region.x;
     const y = local.y + region.y;
     if (this.#clone) {
       const source = cropSurface(this.#sourceOf(canvas), local);
-      this.#brush.stampClone(part, before, source, values, x, y, dabs, starts, ends);
+      this.#brush.stampClone(part, before, source, values, x, y, batch);
     } else {
-      this.#brush.stamp(part, before, values, x, y, dabs, starts, ends);
+      this.#brush.stamp(part, before, values, x, y, batch);
     }
     work.copyFrom(part, part.bounds, local.x, local.y);
-    placeValues(this.#values, region.width, local, values);
+    this.#values.place(imageArea(dabBounds(batch.dabs), canvas), values);
   }
 
   #sourceOf(canvas: LiveCanvas): Surface {
@@ -219,10 +258,9 @@ class DabPainter implements LivePainter {
 class RecolorPainter implements LivePainter {
   readonly #brush: LiveBrushStroke;
   readonly #recolor: RecolorOptions;
-  /** The values of the final dabs, two words per pixel of the region. */
-  #values = new Uint32Array();
-  #tail: Float32Array = new Float32Array();
-  #tailStarts = false;
+  /** The values of the final dabs. */
+  readonly #values = new StrokeValues();
+  #tail = NO_BATCH;
   tailArea = EMPTY_RECT;
 
   constructor(options: BrushOptions, recolor: RecolorOptions) {
@@ -230,16 +268,12 @@ class RecolorPainter implements LivePainter {
     this.#recolor = recolor;
   }
 
-  grow(previous: Rect, canvas: LiveCanvas): void {
-    this.#values = grownValues(this.#values, previous, canvas.region);
-  }
+  grow(): void {}
 
   push(points: readonly StrokePoint[], canvas: LiveCanvas): Rect {
-    const dabs = this.#brush.push(pathOf(points));
-    const changed = this.#coverFinal(dabs, this.#brush.starts, false, canvas);
+    const changed = this.#coverFinal(this.#brush.push(pathOf(points)), canvas);
     this.#tail = this.#brush.tail();
-    this.#tailStarts = this.#brush.tailStarts;
-    this.tailArea = dabBounds(this.#tail);
+    this.tailArea = dabBounds(this.#tail.dabs);
     return changed;
   }
 
@@ -247,26 +281,19 @@ class RecolorPainter implements LivePainter {
     const local = localArea(intersectRects(this.tailArea, area), canvas);
     if (isEmptyRect(local)) return;
     const { region } = canvas;
-    const values = cropValues(this.#values, region.width, local);
-    this.#brush.cover(
-      values,
-      local.width,
-      local.height,
-      local.x + region.x,
-      local.y + region.y,
-      this.#tail,
-      this.#tailStarts,
-      true,
-    );
+    const values = this.#values.crop(translateRect(local, region.x, region.y));
+    const x = local.x + region.x;
+    const y = local.y + region.y;
+    this.#brush.cover(values, local.width, local.height, x, y, this.#tail);
     const pixels = cropSurface(canvas.original, local);
-    recolorCover(pixels, this.#brush.coverage(values), this.#recolor);
+    const coverage = this.#brush.coverage(values, local.width, local.height, x, y, this.#tail);
+    recolorCover(pixels, coverage, this.#recolor);
     patch.copyFrom(pixels, pixels.bounds, local.x + region.x - area.x, local.y + region.y - area.y);
   }
 
   finish(canvas: LiveCanvas): Rect {
-    const dabs = this.#brush.finish();
-    const changed = this.#coverFinal(dabs, this.#brush.starts, true, canvas);
-    this.#tail = new Float32Array();
+    const changed = this.#coverFinal(this.#brush.finish(), canvas);
+    this.#tail = NO_BATCH;
     this.tailArea = EMPTY_RECT;
     return changed;
   }
@@ -276,15 +303,17 @@ class RecolorPainter implements LivePainter {
   }
 
   /** Adds final dabs to the stroke's values and recolors the working copy where they fall. */
-  #coverFinal(dabs: Float32Array, starts: boolean, ends: boolean, canvas: LiveCanvas): Rect {
+  #coverFinal(batch: StrokeBatch, canvas: LiveCanvas): Rect {
     const { region } = canvas;
-    const { width, height, x, y } = region;
-    this.#brush.cover(this.#values, width, height, x, y, dabs, starts, ends);
-    const changed = dabBounds(dabs);
+    const changed = dabBounds(batch.dabs);
     const local = localArea(changed, canvas);
     if (isEmptyRect(local)) return changed;
+    const area = translateRect(local, region.x, region.y);
+    const values = this.#values.crop(area);
+    this.#brush.cover(values, area.width, area.height, area.x, area.y, batch);
+    this.#values.place(area, values);
     const pixels = cropSurface(canvas.original, local);
-    const coverage = this.#brush.coverage(cropValues(this.#values, region.width, local));
+    const coverage = this.#brush.coverage(values, area.width, area.height, area.x, area.y);
     recolorCover(pixels, coverage, this.#recolor);
     canvas.work.copyFrom(pixels, pixels.bounds, local.x, local.y);
     return changed;

@@ -132,7 +132,12 @@ export {
   type GradientShape,
   gradientCpu,
 } from "./gradient";
-export { dabBounds, LiveBrushStroke } from "./live-brush";
+export {
+  dabBounds,
+  LiveBrushStroke,
+  STROKE_VALUE_WORDS,
+  type StrokeBatch,
+} from "./live-brush";
 export { type EnginePerfReport, PERF_FLUSH_MS, PresentRecorder } from "./perf";
 export {
   benchmarkPerformanceClass,

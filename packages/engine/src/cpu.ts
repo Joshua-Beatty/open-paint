@@ -9,6 +9,7 @@ export {
   brush_joins_dabs as brushJoinsDabs,
   brush_stamp_dabs_rgba8 as brushStampDabsRgba8,
   brush_stroke_rgba8 as brushStrokeRgba8,
+  brush_terms as brushTerms,
   brush_values_coverage as brushValuesCoverage,
   bucket_fill_rgba8 as bucketFillRgba8,
   clone_stamp_dabs_rgba8 as cloneStampDabsRgba8,

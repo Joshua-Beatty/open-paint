@@ -1,14 +1,22 @@
 import { Surface } from "@openpaint/document";
-import { clampHardness, nominalReach, termBox, termsOf, tipPad } from "./brush-segments";
+import {
+  clampHardness,
+  FIELD_INFLUENCE,
+  nominalReach,
+  TERM,
+  termBox,
+  termsOf,
+  tipPad,
+} from "./brush-segments";
 import { BRUSH_WGSL } from "./brush-wgsl";
-import { type BrushSettings, brushDabs, brushJoinsDabs } from "./cpu";
+import { type BrushSettings, brushDabs, brushJoinsDabs, brushTerms } from "./cpu";
 import { BufferUsage } from "./gpu-device";
 import { readBack } from "./gpu-pool";
 
 /** `GPUShaderStage.COMPUTE`; the DOM lib types WebGPU interfaces but not these globals. */
 const COMPUTE_STAGE = 0x4;
-/** Bytes of the shader's `Part` uniform: two vec4f and sixteen 4-byte fields. */
-const PART_BYTES = 96;
+/** Bytes of the shader's `Part` uniform: two vec4f and twenty 4-byte fields. */
+const PART_BYTES = 112;
 const WORKGROUP_SIZE = 8;
 const BYTES_PER_PIXEL = 4;
 /** The brush blend value that replaces the destination (TL-OPT-BLEND "Overwrite"). */
@@ -17,14 +25,16 @@ const OVERWRITE_BLEND = 14;
 const PAINT = { blend: 0, erase: 1, overwrite: 2 } as const;
 
 /**
- * One dispatch: its part's kind and dabs (`x, y, reach`), the origin and size of its bounding
- * box, and its uniform slot.
+ * One dispatch: its part's kind and dabs (`x, y, reach`), the stretch of the path it covers, the
+ * origin and size of its bounding box, and its uniform slot.
  */
 interface Stamp {
   readonly slot: number;
   readonly kind: number;
   readonly a: readonly [number, number, number];
   readonly b: readonly [number, number, number];
+  readonly arc0: number;
+  readonly arc1: number;
   readonly originX: number;
   readonly originY: number;
   readonly extentX: number;
@@ -32,9 +42,9 @@ interface Stamp {
 }
 
 /**
- * Brush stroke on WebGPU (TL-BRUSH-01). The dab list comes from the Rust kernels. The WGSL twin
- * adds each part of the stroke (see `termsOf`) to two words per pixel, one dispatch per part,
- * then paints the stroke's bounding box once with the coverage they give. Every dispatch's
+ * Brush stroke on WebGPU (TL-BRUSH-01). The dab list and a round tip's terms come from the Rust
+ * kernels. The WGSL twin adds each part of the stroke to four words per pixel, one dispatch per
+ * part, then paints the stroke's bounding box once with the coverage they give. Every dispatch's
  * uniform sits in one buffer and is selected with a dynamic offset, so a stroke costs one command
  * encoder.
  */
@@ -57,6 +67,7 @@ export class GpuBrush {
         },
         { binding: 2, visibility: COMPUTE_STAGE, buffer: { type: "storage" } },
         { binding: 3, visibility: COMPUTE_STAGE, buffer: { type: "storage" } },
+        { binding: 4, visibility: COMPUTE_STAGE, buffer: { type: "read-only-storage" } },
       ],
     });
     const layout = device.createPipelineLayout({ bindGroupLayouts: [this.#layout] });
@@ -90,25 +101,42 @@ export class GpuBrush {
       (dabs[i * 3 + 2] ?? 0) * 0.5 + pad,
     ];
     const stamps: Stamp[] = [];
-    const terms = termsOf(dabs, {
-      joined: brushJoinsDabs(brush),
-      square: brush.square,
-      starts: true,
-      ends: true,
-    });
-    for (const term of terms) {
-      const box = termBox(dabs, term, brush.antialias, brush.square, width, height);
-      if (!box) continue;
+    const push = (kind: number, a: Stamp["a"], b: Stamp["b"], arcs: [number, number], box: Box) => {
       stamps.push({
         slot: stamps.length,
-        kind: term.kind,
-        a: node(term.a),
-        b: node(term.b),
+        kind,
+        a,
+        b,
+        arc0: arcs[0],
+        arc1: arcs[1],
         originX: box.x0,
         originY: box.y0,
         extentX: box.x1 - box.x0,
         extentY: box.y1 - box.y0,
       });
+    };
+    // A round tip's terms as records of twelve floats: kind, arc0, arc1, 0, then two dabs.
+    const records = brush.square ? new Float32Array() : brushTerms(path, brush);
+    if (brush.square) {
+      const terms = termsOf(dabs, {
+        joined: brushJoinsDabs(brush),
+        square: true,
+        starts: true,
+        ends: true,
+      });
+      for (const term of terms) {
+        const box = termBox(dabs, term, brush.antialias, true, width, height);
+        if (box) push(term.kind, node(term.a), node(term.b), [0, 0], box);
+      }
+    } else {
+      for (let i = 0; i * 12 < records.length; i++) {
+        const at = (k: number) => records[i * 12 + k] ?? 0;
+        const a: Stamp["a"] = [at(4), at(5), at(6)];
+        const b: Stamp["b"] = [at(8), at(9), at(10)];
+        const kind = at(0);
+        const box = recordBox(a, kind === TERM.segment ? b : a, width, height);
+        if (box) push(kind, a, b, [at(1), at(2)], box);
+      }
     }
     if (stamps.length === 0) return copy();
     // The last slot is the stroke's bounding box, which `apply` paints.
@@ -127,6 +155,8 @@ export class GpuBrush {
       kind: 0,
       a: [0, 0, 1],
       b: [0, 0, 1],
+      arc0: 0,
+      arc1: 0,
       originX: left,
       originY: top,
       extentX: right - left,
@@ -165,6 +195,9 @@ export class GpuBrush {
       view.setUint32(base + 84, brush.square ? 1 : 0, true);
       view.setUint32(base + 88, stamp.kind, true);
       view.setFloat32(base + 92, reach, true);
+      view.setFloat32(base + 96, stamp.arc0, true);
+      view.setFloat32(base + 100, stamp.arc1, true);
+      view.setUint32(base + 104, records.length / 12, true);
     }
 
     const pixels = width * height;
@@ -186,14 +219,20 @@ export class GpuBrush {
       params.byteLength,
       BufferUsage.UNIFORM | BufferUsage.COPY_DST,
     );
-    // Two words per pixel; a new buffer starts zeroed.
+    // Four words per pixel; a new buffer starts zeroed.
     const coverBuffer = buffer(
       "brush values",
-      pixels * 8,
+      pixels * 16,
+      BufferUsage.STORAGE | BufferUsage.COPY_DST,
+    );
+    const termBuffer = buffer(
+      "brush terms",
+      Math.max(48, records.byteLength),
       BufferUsage.STORAGE | BufferUsage.COPY_DST,
     );
     device.queue.writeBuffer(pixelBuffer, 0, words);
     device.queue.writeBuffer(dabBuffer, 0, params);
+    device.queue.writeBuffer(termBuffer, 0, records);
 
     const bindGroup = device.createBindGroup({
       layout: this.#layout,
@@ -201,6 +240,7 @@ export class GpuBrush {
         { binding: 0, resource: { buffer: dabBuffer, size: PART_BYTES } },
         { binding: 2, resource: { buffer: pixelBuffer } },
         { binding: 3, resource: { buffer: coverBuffer } },
+        { binding: 4, resource: { buffer: termBuffer } },
       ],
     });
     const encoder = device.createCommandEncoder();
@@ -221,4 +261,27 @@ export class GpuBrush {
     for (const created of buffers) created.destroy();
     return new Surface(width, height, bytes);
   }
+}
+
+interface Box {
+  readonly x0: number;
+  readonly y0: number;
+  readonly x1: number;
+  readonly y1: number;
+}
+
+/** The pixel box a round tip's term between dabs `a` and `b` (`x, y, reach`) can change. */
+function recordBox(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+  width: number,
+  height: number,
+): Box | undefined {
+  const ra = a[2] * FIELD_INFLUENCE + 1;
+  const rb = b[2] * FIELD_INFLUENCE + 1;
+  const x0 = Math.max(0, Math.floor(Math.min(a[0] - ra, b[0] - rb)));
+  const y0 = Math.max(0, Math.floor(Math.min(a[1] - ra, b[1] - rb)));
+  const x1 = Math.min(width, Math.ceil(Math.max(a[0] + ra, b[0] + rb)));
+  const y1 = Math.min(height, Math.ceil(Math.max(a[1] + ra, b[1] + rb)));
+  return x1 > x0 && y1 > y0 ? { x0, y0, x1, y1 } : undefined;
 }

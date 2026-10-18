@@ -31,6 +31,23 @@ function wavyPath(count: number): number[] {
   return path;
 }
 
+/**
+ * A figure eight across the tile boundary at x = 256 that crosses itself, then a small loop, as
+ * flat `x, y, pressure` samples.
+ */
+function crossingPath(): number[] {
+  const path: number[] = [];
+  for (let i = 0; i <= 60; i++) {
+    const t = -Math.PI / 2 + (2 * Math.PI * i) / 60;
+    path.push(260 + 200 * Math.sin(t), 180 + 120 * Math.sin(t) * Math.cos(t), 1);
+  }
+  for (let i = 1; i <= 30; i++) {
+    const a = Math.PI / 2 - (2 * Math.PI * i) / 30;
+    path.push(60 + i * 3 + 50 * Math.cos(a), 280 + 50 * Math.sin(a), 0.6 + 0.4 * (i / 30));
+  }
+  return path;
+}
+
 /** A soft-edged elliptical selection over the image, one byte per pixel. */
 function ellipseMask(width: number, height: number): Uint8Array {
   const mask = new Uint8Array(width * height);
@@ -123,6 +140,15 @@ export const V2_STROKE_CASES: readonly (StrokeCheck & { readonly id: string })[]
     batch: 2,
     perFrame: 2,
   },
+  {
+    id: "crossing-itself",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 70, hardness: 0.3 },
+    path: crossingPath(),
+    batch: 2,
+    perFrame: 3,
+  },
 ];
 
 /** Whole strokes for the engine v1 `GpuBrush`, against the Rust reference. */
@@ -167,6 +193,14 @@ export const V1_BRUSH_CASES: readonly (StrokeCheck & { readonly id: string })[] 
     height: HEIGHT,
     options: { ...BRUSH, size: 30, spacing: 1.5, blend: 14 },
     path: wavyPath(30),
+    batch: 1,
+  },
+  {
+    id: "crossing-itself",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 70, hardness: 0.3 },
+    path: crossingPath(),
     batch: 1,
   },
 ];

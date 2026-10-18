@@ -4,13 +4,18 @@ import { BLEND_WGSL } from "./composite-wgsl";
  * WGSL twin of the brush coverage in `crates/opaint-cpu/src/brush.rs` and `brush_field.rs`, with
  * the same operations in the same order. A round tip's parts add two fixed-point integrals per
  * pixel (`field_term`); a square tip's sweeps keep the largest 8-bit coverage (`square_cover`).
- * `stroke_coverage` turns a pixel's two words into its coverage. Dabs are `xy` centre and `z`
- * reach in image pixels; term kinds are 0 segment, 1 cap, 2 point, 3 square sweep.
+ * `stroke_coverage` turns a pixel's four words into its coverage: where the stroke passes over the
+ * pixel more than once, it combines the passes from the stroke's terms near it, which the
+ * including shader gives as `candidate_count()` records `candidate(i)` (three vec4f each: kind,
+ * arc0, arc1; dab a; dab b), in stroke order. Dabs are `xy` centre and `z` reach in image pixels;
+ * term kinds are 0 segment, 1 cap, 2 point, 3 square sweep.
  */
 export const BRUSH_COVERAGE_WGSL = /* wgsl */ `
 const FIELD_SIGMA: f32 = 0.3;
 const FIELD_INFLUENCE: f32 = 1.45;
 const FIELD_ONE: f32 = 4194304.0;
+const FIELD_WINDOW: f32 = 3.0;
+const MAX_PASS_COVERAGE: f32 = 0.999999;
 
 fn tip_falloff(rho: f32, reach: f32, core: f32, antialias: bool) -> f32 {
   if (rho >= 1.0) {
@@ -164,26 +169,114 @@ fn saturating_add(a: u32, b: u32) -> u32 {
   return select(sum, 0xffffffffu, sum < a);
 }
 
-// The 8-bit coverage of a pixel's two words (brush.rs coverage_of).
-fn stroke_coverage(value: vec2u, square: bool, reach: f32, core: f32, antialias: bool) -> u32 {
+// A candidate term at p: its integrals and its stretch of the path, and whether it reaches p (by
+// the test of the values, brush_field.rs windowed_falloff).
+struct Reach {
+  value: vec4f,
+  ok: bool,
+}
+
+fn reached(p: vec2f, i: u32) -> Reach {
+  let r = candidate(i);
+  let v = field_term(u32(r[0].x), p, r[1].xyz, r[2].xyz);
+  let u = vec2u(floor(max(v, vec2f(0.0)) * FIELD_ONE + 0.5));
+  return Reach(vec4f(v, r[0].y, r[0].z), u.x != 0u || u.y != 0u);
+}
+// A term's share of the optical depth of its pass (brush_field.rs pass_depth).
+fn pass_depth(d: f32, dw: f32, nw: f32, reach: f32, core: f32, antialias: bool) -> f32 {
+  if (dw <= 0.0) {
+    return 0.0;
+  }
+  let rho2 = nw / dw - FIELD_SIGMA * FIELD_SIGMA;
+  let c = tip_falloff(sqrt(max(rho2, 0.0)), reach, core, antialias);
+  return d / dw * -log(1.0 - min(c, MAX_PASS_COVERAGE));
+}
+
+// The coverage where the stroke passes over p more than once (brush_field.rs windowed_falloff).
+fn windowed_falloff(p: vec2f, window: f32, reach: f32, core: f32, antialias: bool) -> f32 {
+  let count = candidate_count();
+  var lo = 0u;
+  var hi = 0u;
+  var dw = 0.0;
+  var nw = 0.0;
+  var depth = 0.0;
+  for (var i = 0u; i < count; i++) {
+    let r = reached(p, i);
+    if (!r.ok) {
+      continue;
+    }
+    let t = r.value;
+    loop {
+      if (hi >= count) {
+        break;
+      }
+      let hr = reached(p, hi);
+      if (hr.ok) {
+        let h = hr.value;
+        if (h.z - t.w > window) {
+          break;
+        }
+        dw += h.x;
+        nw += h.y;
+      }
+      hi++;
+    }
+    loop {
+      let lr = reached(p, lo);
+      if (lr.ok) {
+        let l = lr.value;
+        if (t.z - l.w <= window) {
+          break;
+        }
+        dw -= l.x;
+        nw -= l.y;
+      }
+      lo++;
+    }
+    depth += pass_depth(t.x, dw, nw, reach, core, antialias);
+  }
+  return 1.0 - exp(-depth);
+}
+
+// The largest start and smallest end along the path of the terms that reach a pixel, as the
+// values keep them (brush.rs apply_mark).
+fn arc_words(value: vec4u, arc0: f32, arc1: f32) -> vec4u {
+  return vec4u(value.xy, max(value.z, bitcast<u32>(arc0)), max(value.w, ~bitcast<u32>(arc1)));
+}
+
+// The 8-bit coverage of a pixel's four words at p (brush.rs coverage_at).
+fn stroke_coverage(value: vec4u, p: vec2f, square: bool, reach: f32, core: f32, antialias: bool) -> u32 {
   if (square) {
     return min(value.x, 255u);
   }
   if (value.x == 0u) {
     return 0u;
   }
-  let rho2 = f32(value.y) / f32(value.x) - FIELD_SIGMA * FIELD_SIGMA;
-  return u32(floor(tip_falloff(sqrt(max(rho2, 0.0)), reach, core, antialias) * 255.0 + 0.5));
+  let window = FIELD_WINDOW * reach;
+  let spread = bitcast<f32>(value.z) - bitcast<f32>(~value.w);
+  var falloff: f32;
+  if (spread <= window) {
+    let rho2 = f32(value.y) / f32(value.x) - FIELD_SIGMA * FIELD_SIGMA;
+    falloff = tip_falloff(sqrt(max(rho2, 0.0)), reach, core, antialias);
+  } else {
+    falloff = windowed_falloff(p, window, reach, core, antialias);
+  }
+  return u32(floor(falloff * 255.0 + 0.5));
 }
-`;
+
+// Whether a pixel's four words combine passes (stroke_coverage).
+fn passes_over(value: vec4u, square: bool, reach: f32) -> bool {
+  return !square && bitcast<f32>(value.z) - bitcast<f32>(~value.w) > FIELD_WINDOW * reach;
+}`;
 
 /**
  * WGSL twin of the stroke in `crates/opaint-cpu/src/brush.rs` (TL-BRUSH-01). One `stamp` dispatch
- * adds one part of the stroke to its per-pixel values over the part's bounding box: two words per
- * pixel, added for a round tip's field term, raised to the coverage for a square sweep. One
- * `apply` dispatch over the stroke's bounding box then paints each covered pixel once with its
- * coverage. The dab list comes from the Rust kernels. Pixels are packed RGBA8 words in a storage
- * buffer.
+ * adds one part of the stroke to its per-pixel values over the part's bounding box: four words per
+ * pixel, a round tip's field integrals added and the stretch of path seen widened, or a square
+ * sweep's coverage raised. One `apply` dispatch over the stroke's bounding box then paints each
+ * covered pixel once with its coverage, combining passes from the stroke's terms (`terms`, the
+ * records of `brush_terms`) where it passes more than once. The dab list comes from the Rust
+ * kernels. Pixels are packed RGBA8 words in a storage buffer.
  */
 export const BRUSH_WGSL = /* wgsl */ `
 struct Part {
@@ -205,11 +298,24 @@ struct Part {
   square: u32,
   kind: u32,
   reach: f32,
+  arc0: f32,
+  arc1: f32,
+  term_count: u32,
+  pad: u32,
 }
 
 @group(0) @binding(0) var<uniform> part: Part;
 @group(0) @binding(2) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(3) var<storage, read_write> values: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read> terms: array<vec4f>;
+
+fn candidate_count() -> u32 {
+  return part.term_count;
+}
+
+fn candidate(i: u32) -> array<vec4f, 3> {
+  return array<vec4f, 3>(terms[i * 3u], terms[i * 3u + 1u], terms[i * 3u + 2u]);
+}
 
 ${BLEND_WGSL}
 ${BRUSH_COVERAGE_WGSL}
@@ -229,7 +335,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
   let x = part.origin_x + id.x;
   let y = part.origin_y + id.y;
   let p = vec2f(f32(x) + 0.5, f32(y) + 0.5);
-  let index = (y * part.canvas_w + x) * 2u;
+  let index = (y * part.canvas_w + x) * 4u;
   if (part.kind == 3u) {
     let c = square_cover(p, part.a.xyz, part.b.xyz, core_of(), part.antialias != 0u);
     if (c != 0u) {
@@ -241,6 +347,8 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
   if (units.x != 0u || units.y != 0u) {
     atomicAdd(&values[index], units.x);
     atomicAdd(&values[index + 1u], units.y);
+    atomicMax(&values[index + 2u], bitcast<u32>(part.arc0));
+    atomicMax(&values[index + 3u], ~bitcast<u32>(part.arc1));
   }
 }
 
@@ -253,8 +361,14 @@ fn apply(@builtin(global_invocation_id) id: vec3u) {
   let x = part.origin_x + id.x;
   let y = part.origin_y + id.y;
   let index = y * part.canvas_w + x;
-  let value = vec2u(atomicLoad(&values[index * 2u]), atomicLoad(&values[index * 2u + 1u]));
-  let c = stroke_coverage(value, part.square != 0u, part.reach, core_of(), part.antialias != 0u);
+  let value = vec4u(
+    atomicLoad(&values[index * 4u]),
+    atomicLoad(&values[index * 4u + 1u]),
+    atomicLoad(&values[index * 4u + 2u]),
+    atomicLoad(&values[index * 4u + 3u]),
+  );
+  let p = vec2f(f32(x) + 0.5, f32(y) + 0.5);
+  let c = stroke_coverage(value, p, part.square != 0u, part.reach, core_of(), part.antialias != 0u);
   if (c == 0u) {
     return;
   }

@@ -16,10 +16,12 @@ import {
  * the whole stroke the dabs, their order and the pixels are those of `strokeBrush`, except that
  * hatch patterns are anchored to the image origin. Points and dabs are in image pixels.
  *
- * The stroke keeps two words per pixel (`values`, see `brush_cover_dabs`). When the brush joins
+ * The stroke keeps four words per pixel (`values`, see `brush_cover_dabs`). When the brush joins
  * its dabs (spacing below 100 %), each batch after the first starts with the last dab before it,
- * and `starts` / `ends` say whether a batch holds the stroke's start and end: batches from `push`
- * never end it, the tail and the final batch do. Call `free` when done.
+ * `starts` / `ends` say whether a batch holds the stroke's start and end (batches from `push`
+ * never end it, the tail and the final batch do) and `arc` where it begins along the stroke. The
+ * planner keeps the stroke's earlier parts, which the kernels read where the stroke passes over
+ * itself. Call `free` when done.
  */
 export class LiveBrushStroke {
   readonly #settings: BrushSettings;
@@ -30,39 +32,35 @@ export class LiveBrushStroke {
     this.#planner = new DabPlanner(this.#settings);
   }
 
-  /** Adds samples (`x, y, pressure` triples) and returns the dabs that became final. */
-  push(path: Float32Array): Float32Array {
-    return new Float32Array(this.#planner.push(path));
-  }
-
-  /** Whether the last batch from `push` or `finish` begins at the stroke's first dab. */
-  get starts(): boolean {
-    return this.#planner.starts();
+  /** Adds samples (`x, y, pressure` triples) and returns the batch of dabs that became final. */
+  push(path: Float32Array): StrokeBatch {
+    const dabs = new Float32Array(this.#planner.push(path));
+    const starts = this.#planner.starts();
+    return { dabs, starts, ends: false, arc: this.#planner.arc(), provisional: false };
   }
 
   /**
    * The dabs that smoothing still holds back for the newest samples, through the stroke's end.
-   * They belong in a preview but may move as more samples come, so they are not final.
+   * They belong in a preview but may move as more samples come, so the batch is provisional.
    */
-  tail(): Float32Array {
-    return new Float32Array(this.#planner.tail());
-  }
-
-  /** Whether the batch from `tail` begins at the stroke's first dab. */
-  get tailStarts(): boolean {
-    return this.#planner.tail_starts();
+  tail(): StrokeBatch {
+    const dabs = new Float32Array(this.#planner.tail());
+    const starts = this.#planner.tail_starts();
+    return { dabs, starts, ends: true, arc: this.#planner.tail_arc(), provisional: true };
   }
 
   /** Ends the stroke and returns its remaining dabs, which end it. */
-  finish(): Float32Array {
-    return new Float32Array(this.#planner.finish());
+  finish(): StrokeBatch {
+    const dabs = new Float32Array(this.#planner.finish());
+    const starts = this.#planner.starts();
+    return { dabs, starts, ends: true, arc: this.#planner.arc(), provisional: false };
   }
-
   /**
    * Adds `dabs` to the stroke on `surface`, whose top-left pixel is image pixel (`originX`,
-   * `originY`). `original` holds the pixels before the stroke and `values` the stroke's two words
-   * per pixel so far, both the size of `surface`. Each pixel whose coverage changes is painted
-   * again from its original (TL-BRUSH-01).
+   * `originY`). `original` holds the pixels before the stroke and `values` the stroke's four words
+   * per pixel so far, both the size of `surface`. `batch` places the dabs in the stroke; a
+   * provisional batch (the tail) is drawn but not part of the stroke's history. Each pixel whose
+   * values change is painted again from its original (TL-BRUSH-01).
    */
   stamp(
     surface: Surface,
@@ -70,11 +68,9 @@ export class LiveBrushStroke {
     values: Uint32Array,
     originX: number,
     originY: number,
-    dabs: Float32Array,
-    starts: boolean,
-    ends: boolean,
+    batch: StrokeBatch,
   ): void {
-    if (dabs.length === 0) return;
+    if (batch.dabs.length === 0) return;
     brushStampDabsRgba8(
       bytesOf(surface),
       bytesOf(original),
@@ -83,9 +79,12 @@ export class LiveBrushStroke {
       surface.height,
       originX,
       originY,
-      dabs,
-      starts,
-      ends,
+      batch.dabs,
+      batch.starts,
+      batch.ends,
+      batch.arc,
+      batch.provisional,
+      this.#planner,
       this.#settings,
     );
   }
@@ -102,11 +101,9 @@ export class LiveBrushStroke {
     values: Uint32Array,
     originX: number,
     originY: number,
-    dabs: Float32Array,
-    starts: boolean,
-    ends: boolean,
+    batch: StrokeBatch,
   ): void {
-    if (dabs.length === 0) return;
+    if (batch.dabs.length === 0) return;
     cloneStampDabsRgba8(
       bytesOf(surface),
       bytesOf(original),
@@ -116,17 +113,20 @@ export class LiveBrushStroke {
       surface.height,
       originX,
       originY,
-      dabs,
-      starts,
-      ends,
+      batch.dabs,
+      batch.starts,
+      batch.ends,
+      batch.arc,
+      batch.provisional,
+      this.#planner,
       this.#settings,
     );
   }
 
   /**
-   * Adds `dabs` to a `width` × `height` buffer of the stroke's two words per pixel, whose top-left
-   * pixel is image pixel (`originX`, `originY`). `coverage` turns them into the stroke coverage
-   * that the Recolor brush masks with (TL-BRUSH-RC-01).
+   * Adds a batch to a `width` × `height` buffer of the stroke's four words per pixel, whose
+   * top-left pixel is image pixel (`originX`, `originY`). `coverage` turns them into the stroke
+   * coverage that the Recolor brush masks with (TL-BRUSH-RC-01).
    */
   cover(
     values: Uint32Array,
@@ -134,17 +134,50 @@ export class LiveBrushStroke {
     height: number,
     originX: number,
     originY: number,
-    dabs: Float32Array,
-    starts: boolean,
-    ends: boolean,
+    batch: StrokeBatch,
   ): void {
-    if (dabs.length === 0) return;
-    brushCoverDabs(values, width, height, originX, originY, dabs, starts, ends, this.#settings);
+    if (batch.dabs.length === 0) return;
+    const { dabs, starts, ends, arc } = batch;
+    brushCoverDabs(
+      values,
+      width,
+      height,
+      originX,
+      originY,
+      dabs,
+      starts,
+      ends,
+      arc,
+      this.#settings,
+    );
   }
 
-  /** The 8-bit coverage of the stroke's two words per pixel. */
-  coverage(values: Uint32Array): Uint8Array {
-    return brushValuesCoverage(values, this.#settings);
+  /**
+   * The 8-bit coverage of the stroke's four words per pixel over a `width` × `height` buffer whose
+   * top-left pixel is image pixel (`originX`, `originY`). `tail` is the provisional batch the
+   * values include, if any.
+   */
+  coverage(
+    values: Uint32Array,
+    width: number,
+    height: number,
+    originX: number,
+    originY: number,
+    tail?: StrokeBatch,
+  ): Uint8Array {
+    return brushValuesCoverage(
+      values,
+      width,
+      height,
+      originX,
+      originY,
+      tail?.dabs ?? new Float32Array(),
+      tail?.starts ?? false,
+      tail?.ends ?? false,
+      tail?.arc ?? 0,
+      this.#planner,
+      this.#settings,
+    );
   }
 
   free(): void {
@@ -152,6 +185,19 @@ export class LiveBrushStroke {
     this.#settings.free();
   }
 }
+
+/** A batch of a live stroke's dabs and where it sits in the stroke (see `LiveBrushStroke`). */
+export interface StrokeBatch {
+  readonly dabs: Float32Array;
+  readonly starts: boolean;
+  readonly ends: boolean;
+  readonly arc: number;
+  /** The tail: drawn, but not part of the stroke's history yet. */
+  readonly provisional: boolean;
+}
+
+/** The words per pixel of a live stroke's values (`VALUE_WORDS`). */
+export const STROKE_VALUE_WORDS = 4;
 
 /**
  * The integer image rectangle that dabs (`x, y, diameter` triples) can change, with everything a

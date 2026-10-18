@@ -374,22 +374,17 @@ mod tests {
             .flat_map(|d| [d.x, d.y, d.diameter])
             .collect();
         assert!(dabs.len() >= 6);
-        let mut values = vec![0u32; pw * ph * 2];
+        let mut values = vec![0u32; pw * ph * crate::brush::VALUE_WORDS];
         let last = dabs.len() / 3 - 2;
+        let mut arc = 0.0f32;
         for (i, pair) in dabs.windows(6).step_by(3).enumerate() {
-            cover_dabs(
-                &mut values,
-                pw,
-                ph,
-                (ox, oy),
-                pair,
-                &brush,
-                i == 0,
-                i == last,
-            )
-            .expect("cover");
+            let (s, e) = (i == 0, i == last);
+            cover_dabs(&mut values, pw, ph, (ox, oy), pair, &brush, s, e, arc).expect("cover");
+            let (dx, dy) = (pair[3] - pair[0], pair[4] - pair[1]);
+            arc += (dx * dx + dy * dy).sqrt();
         }
-        let cover = stroke_values_coverage(&values, &brush);
+        let history = crate::brush_field::History::default();
+        let cover = stroke_values_coverage(&values, pw, ph, (ox, oy), &brush, &history, &[]);
         let mut part: Vec<u8> = (0..ph)
             .flat_map(|y| original[((y + oy) * w + ox) * 4..][..pw * 4].to_vec())
             .collect();
