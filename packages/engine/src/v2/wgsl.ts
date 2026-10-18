@@ -1,4 +1,5 @@
 import { ADJUST_PIXEL_WGSL } from "@openpaint/effects";
+import { SWEEP_WGSL } from "../brush-wgsl";
 import { BLEND_WGSL } from "../composite-wgsl";
 
 /**
@@ -205,17 +206,17 @@ const HATCH_ROWS = [
 ].flat();
 
 /**
- * Stamps a batch of dabs into one stroke tile: 256 × 256 packed RGBA8 words in a storage buffer.
- * The stroke's coverage is the largest tip coverage of any dab (`brush.rs` `stamp_dabs`): each
- * pixel takes the largest coverage of the dabs that touch its tile and of the tile's coverage
- * slot, and where that rises it paints the pixel from the original slot with the new coverage,
- * with the hatch and paint rules of `brush.rs` (`dab_coverage`, `source_at`, `paint_pixel`).
- * Final dabs store the new coverage (`write_cover`); provisional ones only paint. Positions are
+ * Stamps a batch of swept segments into one stroke tile: 256 × 256 packed RGBA8 words in a storage
+ * buffer. The stroke's coverage is the tip swept along its path (`brush.rs` `stamp_dabs`): each
+ * pixel takes the largest coverage of the segments that touch its tile (`sweep_cover`) and of the
+ * tile's coverage slot, and where that rises it paints the pixel from the original slot with the
+ * new coverage, with the hatch and paint rules of `brush.rs` (`source_at`, `paint_pixel`). Final
+ * segments store the new coverage (`write_cover`); provisional ones only paint. Positions are
  * image pixels, so hatch patterns repeat from the image origin.
  */
 export const STAMP_WGSL = /* wgsl */ `
 struct Stroke {
-  sprite_n: u32,
+  hardness: f32,
   paint_mode: u32,
   blend_mode: u32,
   antialias: u32,
@@ -224,16 +225,16 @@ struct Stroke {
   hatch: u32,
   doc_w: u32,
   doc_h: u32,
-  pad0: u32,
+  square: u32,
 }
 
 struct Tile {
   slot_offset: u32,
   origin_x: u32,
   origin_y: u32,
-  dab_start: u32,
+  segment_start: u32,
   bounds: vec4u,
-  dab_count: u32,
+  segment_count: u32,
   original_offset: u32,
   cover_offset: u32,
   write_cover: u32,
@@ -241,7 +242,6 @@ struct Tile {
 
 @group(0) @binding(0) var<uniform> stroke: Stroke;
 @group(0) @binding(1) var<uniform> tile: Tile;
-@group(0) @binding(2) var<storage, read> tip: array<f32>;
 @group(0) @binding(3) var<storage, read> dabs: array<vec4f>;
 @group(0) @binding(4) var<storage, read> indices: array<u32>;
 @group(0) @binding(5) var<storage, read_write> pixels: array<u32>;
@@ -249,33 +249,15 @@ struct Tile {
 const HATCH = array<u32, 64>(${HATCH_ROWS.map((row) => `${row}u`).join(", ")});
 
 ${BLEND_WGSL}
+${SWEEP_WGSL}
 fn overwrite_channel(d: u32, s: u32, c: u32) -> u32 {
   return min(255u, mul(d, 255u - c) + mul(s, c));
 }
 
-fn tip_at(x: f32, y: f32) -> f32 {
-  let max_index = f32(stroke.sprite_n - 1u);
-  let cx = u32(clamp(x, 0.0, max_index));
-  let cy = u32(clamp(y, 0.0, max_index));
-  return tip[cy * stroke.sprite_n + cx];
-}
-
-fn tip_coverage(lx: f32, ly: f32) -> f32 {
-  let n = f32(stroke.sprite_n);
-  let u = (lx + 1.0) * 0.5 * n;
-  let v = (ly + 1.0) * 0.5 * n;
-  if (stroke.antialias != 0u) {
-    let fx = u - 0.5;
-    let fy = v - 0.5;
-    let x0 = floor(fx);
-    let y0 = floor(fy);
-    let tx = fx - x0;
-    let ty = fy - y0;
-    let top = tip_at(x0, y0) * (1.0 - tx) + tip_at(x0 + 1.0, y0) * tx;
-    let bottom = tip_at(x0, y0 + 1.0) * (1.0 - tx) + tip_at(x0 + 1.0, y0 + 1.0) * tx;
-    return top * (1.0 - ty) + bottom * ty;
-  }
-  return tip_at(floor(u), floor(v));
+// A dab as the sweep takes it: centre and reach (its radius, plus half a pixel when antialiased).
+fn node(index: u32) -> vec3f {
+  let dab = dabs[index];
+  return vec3f(dab.xy, dab.z + select(0.0, 0.5, stroke.antialias != 0u));
 }
 
 fn source_at(x: u32, y: u32) -> vec4u {
@@ -319,16 +301,14 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
   let local = ly * 256u + lx;
   let before = pixels[tile.cover_offset + local];
   var cover = before;
-  let fx = f32(x) + 0.5;
-  let fy = f32(y) + 0.5;
-  for (var i = 0u; i < tile.dab_count; i++) {
-    let dab = dabs[indices[tile.dab_start + i]];
-    let px = (fx - dab.x) / dab.z;
-    let py = (fy - dab.y) / dab.z;
-    if (abs(px) >= 1.0 || abs(py) >= 1.0) {
-      continue;
-    }
-    cover = max(cover, u32(floor(tip_coverage(px, py) * 255.0 + 0.5)));
+  let p = vec2f(f32(x) + 0.5, f32(y) + 0.5);
+  let square = stroke.square != 0u;
+  let antialias = stroke.antialias != 0u;
+  for (var i = 0u; i < tile.segment_count; i++) {
+    let k = tile.segment_start + i * 2u;
+    let a = node(indices[k]);
+    let b = node(indices[k + 1u]);
+    cover = max(cover, sweep_cover(p, a, b, stroke.hardness, square, antialias));
   }
   if (cover <= before) {
     return;

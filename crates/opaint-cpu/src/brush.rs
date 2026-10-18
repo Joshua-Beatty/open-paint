@@ -1,8 +1,14 @@
 //! Brush engine (TL-BRUSH-01, TL-OPT-BRUSH, TL-OPT-AA, TL-OPT-BLEND, TL-OPT-SMOOTH).
 //!
-//! This is the reference for the WebGPU brush twin. The dab list and the tip sprite are computed
-//! here and shared with the GPU path, so both place and shape every dab identically. Pixels are
-//! straight-alpha RGBA8, as everywhere else in the crate.
+//! This is the reference for the WebGPU brush twins. The dab list is computed here and shared with
+//! the GPU paths, and the WGSL evaluates the same swept-tip coverage, so both shape every stroke
+//! identically. Pixels are straight-alpha RGBA8, as everywhere else in the crate.
+//!
+//! With a spacing below [`JOINED_SPACING`], consecutive dabs are joined: the stroke's coverage at a
+//! pixel is the tip's coverage at its distance from the path, the tip swept continuously from one
+//! dab to the next (a capsule whose radius follows the pressure). The edge is then smooth along the
+//! stroke whatever the spacing, with no scallops between dabs. With a larger spacing the dabs are
+//! stamped apart, as separate tips.
 
 use crate::blend::{composite_pixel, mul, BlendMode};
 use wasm_bindgen::prelude::*;
@@ -10,10 +16,8 @@ use wasm_bindgen::prelude::*;
 /// Blend value that replaces the destination, alpha included (TL-OPT-BLEND "Overwrite"). Values
 /// 0-13 are the layer blend modes of [`BlendMode`].
 pub const OVERWRITE: u8 = 14;
-/// Smallest tip sprite resolution in pixels (TL-BRUSH-01).
-const MIN_TIP_RESOLUTION: usize = 32;
-/// Hard core diameter at hardness 0 as a fraction of the tip diameter: 1.18875 / 2 (TL-BRUSH-01).
-const CORE_AT_ZERO_HARDNESS: f32 = 0.594_375;
+/// Spacing (a fraction of the diameter) from which the dabs are stamped apart instead of joined.
+pub const JOINED_SPACING: f32 = 1.0;
 const MIN_SIZE: f32 = 1.0;
 const MAX_SIZE: f32 = 2000.0;
 const MIN_SPACING: f32 = 0.01;
@@ -66,9 +70,11 @@ pub struct Dab {
 pub struct BrushSettings {
     /// Tip diameter at full pressure, 1..=2000.
     pub size: f32,
-    /// Hardness 0..=1 (TL-OPT-BRUSH "Hardness"). Ignored, and treated as 1, when `antialias` is off.
+    /// Hardness 0..=1 (TL-OPT-BRUSH "Hardness"): the fraction of the tip's radius that is solid
+    /// (see `tip_falloff`). Ignored, and treated as 1, when `antialias` is off.
     pub hardness: f32,
-    /// Spacing as a fraction of the tip diameter, 0.01..=5.
+    /// Spacing as a fraction of the tip diameter, 0.01..=5. Below [`JOINED_SPACING`] the tip is
+    /// swept continuously and the spacing has no effect; from it on, dabs are stamped this far apart.
     pub spacing: f32,
     /// Square tip instead of a circle.
     pub square: bool,
@@ -276,98 +282,404 @@ fn barry_goldman(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, knots: [f64; 4], t: f64
     blend3(b1, b2, (t2 - t) / (t2 - t1), (t - t1) / (t2 - t1))
 }
 
-/// Places the dabs along the (smoothed) path. The first dab sits on the first sample. Each next
-/// dab is `spacing × diameter` further along the path, measured as Euclidean arc length, with the
-/// diameter taken at the pressure of the dab's own position (TL-BRUSH-01).
+/// Places the dabs along the (smoothed) path (TL-BRUSH-01).
+///
+/// With a spacing of [`JOINED_SPACING`] or more, the first dab sits on the first sample and each
+/// next dab is `spacing × diameter` further along the path, measured as Euclidean arc length, with
+/// the diameter taken at the pressure of the dab's own position.
+///
+/// With a smaller spacing the dabs are the corners of a polyline that follows the path within a
+/// small tolerance, and the tip is swept along it, so the spacing doesn't change the result. Path
+/// points that lie on a nearly straight run with a nearly linear pressure are merged into one
+/// segment, which keeps the number of segments, and the work, low.
 pub fn plan_dabs(points: &[StrokePoint], brush: &BrushSettings) -> Vec<Dab> {
     let brush = brush.normalized();
-    let path = stroke_path(points, brush.smooth);
-    let Some(first) = path.first().copied() else {
-        return Vec::new();
-    };
-    let mut dabs = vec![Dab {
-        x: first.x,
-        y: first.y,
-        diameter: diameter_at(&brush, first.pressure),
-    }];
-    let mut next = f64::from(brush.spacing * dabs[0].diameter);
-    let mut start = 0.0_f64;
-    for segment in path.windows(2) {
-        let (a, b) = (segment[0], segment[1]);
-        let len = distance(point3(a), point3(b));
-        while next <= start + len {
-            let t = ((next - start) / len) as f32;
-            let x = a.x + (b.x - a.x) * t;
-            let y = a.y + (b.y - a.y) * t;
-            let diameter = diameter_at(&brush, a.pressure + (b.pressure - a.pressure) * t);
-            dabs.push(Dab { x, y, diameter });
-            next += f64::from(brush.spacing * diameter);
-        }
-        start += len;
+    let mut placer = Placer::new(brush);
+    let mut flat = Vec::new();
+    for p in stroke_path(points, brush.smooth) {
+        placer.place(p, &mut flat);
     }
-    dabs
+    placer.finish(&mut flat);
+    flat.as_chunks::<3>()
+        .0
+        .iter()
+        .map(|d| Dab {
+            x: d[0],
+            y: d[1],
+            diameter: d[2],
+        })
+        .collect()
 }
 
-/// Resolution of the square tip sprite: the tip size rounded up, and at least 32 px (TL-BRUSH-01).
-pub fn tip_resolution(size: f32) -> usize {
-    (size.ceil() as usize).max(MIN_TIP_RESOLUTION)
+/// Whether the brush joins consecutive dabs into a swept tip (spacing below [`JOINED_SPACING`]).
+pub fn joins_dabs(brush: &BrushSettings) -> bool {
+    brush.normalized().spacing < JOINED_SPACING
 }
 
-/// Coverage of the tip at a radius `rho` from its center, with `rho` in units of the tip radius.
-/// Full inside the hard core, a linear ramp to zero at the full radius.
-fn falloff(rho: f32, core: f32) -> f32 {
+/// How far, in pixels, the tip of `diameter` can cover: its radius, and half a pixel more when
+/// antialiased, where the rim's 1 px ramp ends.
+fn reach_of(diameter: f32, antialias: bool) -> f32 {
+    diameter * 0.5 + if antialias { 0.5 } else { 0.0 }
+}
+
+/// The soft part of the tip's falloff over `x` from 0 (the hard core's edge) to 1 (the reach):
+/// `(1 − x²)⁴`. It is a bell-shaped curve close to a Gaussian with σ ≈ 0.35 of the ramp, flat at
+/// the core and reaching zero with zero slope at the edge, so a soft tip has no visible rim and no
+/// flat centre. Being a polynomial, the WGSL twins evaluate it exactly as here.
+fn soft_falloff(x: f32) -> f32 {
+    let u = 1.0 - x * x;
+    let u2 = u * u;
+    u2 * u2
+}
+
+/// The coverage of a tip at `rho`, the distance from its centre over its reach (TL-OPT-BRUSH
+/// Hardness). The hard core is the inner `hardness` fraction of the reach; from there the coverage
+/// falls along [`soft_falloff`] to zero at the reach. At hardness 0 the whole tip is a soft bell,
+/// and at hardness 1 the tip is solid. An antialiased tip also fades over its last pixel, so a
+/// hard edge has a 1 px ramp centred on the radius. Aliased tips are solid inside their radius.
+fn tip_falloff(rho: f32, reach: f32, hardness: f32, antialias: bool) -> f32 {
     if rho >= 1.0 {
-        0.0
-    } else if rho <= core {
-        1.0
-    } else {
-        (1.0 - rho) / (1.0 - core)
+        return 0.0;
     }
+    if !antialias {
+        return 1.0;
+    }
+    let rim = ((1.0 - rho) * reach).min(1.0);
+    if rho <= hardness {
+        return rim;
+    }
+    soft_falloff((rho - hardness) / (1.0 - hardness)) * rim
 }
 
-/// The tip coverage as an `n × n` row-major sprite of f32 values in 0..=1. The sprite covers the
-/// full nominal diameter, so a smaller dab samples it at the same relative positions.
-pub fn tip_sprite(brush: &BrushSettings) -> Vec<f32> {
-    let brush = brush.normalized();
-    let n = tip_resolution(brush.size);
-    let hardness = if brush.antialias { brush.hardness } else { 1.0 };
-    let core = CORE_AT_ZERO_HARDNESS + (1.0 - CORE_AT_ZERO_HARDNESS) * hardness;
-    let scale = 2.0 / n as f32;
-    let mut sprite = Vec::with_capacity(n * n);
-    for j in 0..n {
-        let oy = (j as f32 + 0.5) * scale - 1.0;
-        for i in 0..n {
-            let ox = (i as f32 + 0.5) * scale - 1.0;
-            let rho = if brush.square {
-                ox.abs().max(oy.abs())
-            } else {
-                (ox * ox + oy * oy).sqrt()
-            };
-            sprite.push(falloff(rho, core));
+/// One end of a swept segment: a dab's centre and reach in image pixels.
+#[derive(Clone, Copy, Debug)]
+struct Node {
+    x: f32,
+    y: f32,
+    reach: f32,
+}
+
+/// The smallest `distance / reach` from pixel centre (`px`, `py`) to the tip swept from `a` to `b`,
+/// with the reach growing linearly along the segment, and the reach where it is smallest. A round
+/// tip measures Euclidean distance, a square one the largest axis distance. Both are exact: the
+/// ratio is smallest at an end of the segment or at one of a few closed-form interior points.
+fn sweep_ratio(px: f32, py: f32, a: Node, b: Node, square: bool) -> (f32, f32) {
+    let (ex, ey) = (px - a.x, py - a.y);
+    let (dx, dy, dr) = (b.x - a.x, b.y - a.y, b.reach - a.reach);
+    if square {
+        let ratio = |t: f32| {
+            let (qx, qy) = (ex - t * dx, ey - t * dy);
+            let r = a.reach + t * dr;
+            (qx.abs().max(qy.abs()) / r, r)
+        };
+        let mut best = ratio(0.0);
+        let mut consider = |t: f32| {
+            if t > 0.0 && t <= 1.0 {
+                let candidate = ratio(t);
+                if candidate.0 < best.0 {
+                    best = candidate;
+                }
+            }
+        };
+        consider(1.0);
+        if dx != 0.0 {
+            consider(ex / dx);
+        }
+        if dy != 0.0 {
+            consider(ey / dy);
+        }
+        if dx != dy {
+            consider((ex - ey) / (dx - dy));
+        }
+        if dx != -dy {
+            consider((ex + ey) / (dx + dy));
+        }
+        return best;
+    }
+    let ee = ex * ex + ey * ey;
+    let mut best = (ee / (a.reach * a.reach), a.reach);
+    let (fx, fy) = (px - b.x, py - b.y);
+    let at_b = (fx * fx + fy * fy) / (b.reach * b.reach);
+    if at_b < best.0 {
+        best = (at_b, b.reach);
+    }
+    // d/dt of |e − tD|² / (Ra + t·dr)² vanishes where t·(|D|²·Ra + e·D·dr) = e·D·Ra + |e|²·dr.
+    let dd = dx * dx + dy * dy;
+    let ed = ex * dx + ey * dy;
+    let den = dd * a.reach + ed * dr;
+    if den != 0.0 {
+        let t = (ed * a.reach + ee * dr) / den;
+        if t > 0.0 && t < 1.0 {
+            let (qx, qy) = (ex - t * dx, ey - t * dy);
+            let r = a.reach + t * dr;
+            let inner = (qx * qx + qy * qy) / (r * r);
+            if inner < best.0 {
+                best = (inner, r);
+            }
         }
     }
-    sprite
+    (best.0.sqrt(), best.1)
 }
 
-/// Samples the sprite at `(lx, ly)` in tip radii, both in -1..1. Antialiased brushes interpolate
-/// bilinearly; aliased brushes take the nearest sprite pixel.
-fn tip_coverage(sprite: &[f32], n: usize, lx: f32, ly: f32, antialias: bool) -> f32 {
-    let u = (lx + 1.0) * 0.5 * n as f32;
-    let v = (ly + 1.0) * 0.5 * n as f32;
-    let at = |x: f32, y: f32| {
-        let max = (n - 1) as f32;
-        let (x, y) = (x.clamp(0.0, max) as usize, y.clamp(0.0, max) as usize);
-        sprite[y * n + x]
+/// Calls `visit(x, y, c)` for each pixel of a `width` × `height` buffer, whose top-left pixel is
+/// image pixel `origin`, that the tip swept from `a` to `b` covers, where `c` is the 8-bit
+/// coverage (1 to 255). Pixels are measured at their centres in image coordinates, so the coverage
+/// doesn't depend on the buffer's origin.
+#[allow(clippy::too_many_arguments)]
+fn sweep_coverage(
+    a: Node,
+    b: Node,
+    brush: &BrushSettings,
+    width: usize,
+    height: usize,
+    origin: (usize, usize),
+    visit: &mut impl FnMut(usize, usize, u32),
+) {
+    let (ox, oy) = (origin.0 as f64, origin.1 as f64);
+    let span = |low: f32, high: f32, offset: f64, size: usize| {
+        let start = (f64::from(low.floor()) - offset).max(0.0) as usize;
+        let end = (f64::from(high.ceil()) - offset).clamp(0.0, size as f64) as usize;
+        start..end
     };
-    if antialias {
-        let (fx, fy) = (u - 0.5, v - 0.5);
-        let (x0, y0) = (fx.floor(), fy.floor());
-        let (tx, ty) = (fx - x0, fy - y0);
-        let top = at(x0, y0) * (1.0 - tx) + at(x0 + 1.0, y0) * tx;
-        let bottom = at(x0, y0 + 1.0) * (1.0 - tx) + at(x0 + 1.0, y0 + 1.0) * tx;
-        top * (1.0 - ty) + bottom * ty
+    let xs = span(
+        (a.x - a.reach).min(b.x - b.reach),
+        (a.x + a.reach).max(b.x + b.reach),
+        ox,
+        width,
+    );
+    let ys = span(
+        (a.y - a.reach).min(b.y - b.reach),
+        (a.y + a.reach).max(b.y + b.reach),
+        oy,
+        height,
+    );
+    let hardness = if brush.antialias { brush.hardness } else { 1.0 };
+    // A pixel farther than the larger reach (a square's half diagonal) from the segment's line is
+    // never covered. `band` is that distance times the segment's length, as the cross product is.
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let length = (dx * dx + dy * dy).sqrt();
+    let corner = if brush.square {
+        std::f32::consts::SQRT_2
     } else {
-        at(u.floor(), v.floor())
+        1.0
+    };
+    let band = a.reach.max(b.reach) * corner * length * 1.001 + 1e-3;
+    for y in ys {
+        let py = (y + origin.1) as f32 + 0.5;
+        for x in xs.clone() {
+            let px = (x + origin.0) as f32 + 0.5;
+            if ((px - a.x) * dy - (py - a.y) * dx).abs() > band {
+                continue;
+            }
+            let (rho, reach) = sweep_ratio(px, py, a, b, brush.square);
+            let coverage = tip_falloff(rho, reach, hardness, brush.antialias);
+            let c = (coverage * 255.0 + 0.5).floor() as u32;
+            if c != 0 {
+                visit(x, y, c);
+            }
+        }
+    }
+}
+
+/// Places the dabs of a stroke as its path points arrive, for [`plan_dabs`] and [`DabPlanner`].
+#[derive(Clone, Debug)]
+struct Placer {
+    brush: BrushSettings,
+    joined: bool,
+    /// The last path point placed.
+    last: Option<StrokePoint>,
+    /// Spaced dabs: arc length of the next dab, and of `last`, along the path.
+    next: f64,
+    start: f64,
+    /// Joined dabs: the last dab placed, and the run of path points that may still merge into the
+    /// segment from it.
+    anchor: Option<Dab>,
+    run: Option<Run>,
+    /// How far, in pixels, a merged segment may stray from the path points it replaces.
+    tolerance: f32,
+}
+
+/// Path points that one segment from the anchor to `end` can replace: every point so far lies
+/// within the tolerance of it. Each point narrows the directions (relative to `heading`) and the
+/// diameter slopes (per pixel from the anchor) that a longer segment may take.
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    end: Dab,
+    heading: f32,
+    low: f32,
+    high: f32,
+    slope_low: f32,
+    slope_high: f32,
+    /// The largest distance of a point from the anchor.
+    far: f32,
+}
+
+impl Placer {
+    fn new(brush: BrushSettings) -> Self {
+        Placer {
+            brush,
+            joined: brush.spacing < JOINED_SPACING,
+            last: None,
+            next: 0.0,
+            start: 0.0,
+            anchor: None,
+            run: None,
+            tolerance: (brush.size / 2000.0).max(0.01),
+        }
+    }
+
+    /// Extends the path to `p` and places the dabs that became final.
+    fn place(&mut self, p: StrokePoint, out: &mut Vec<f32>) {
+        if self.joined {
+            self.place_joined(p, out);
+        } else {
+            self.place_spaced(p, out);
+        }
+    }
+
+    /// Places the dabs that wait for more of the path.
+    fn finish(&mut self, out: &mut Vec<f32>) {
+        if let Some(run) = self.run.take() {
+            self.emit(run.end, out);
+        }
+    }
+
+    fn place_spaced(&mut self, p: StrokePoint, out: &mut Vec<f32>) {
+        let brush = self.brush;
+        let Some(a) = self.last else {
+            let diameter = diameter_at(&brush, p.pressure);
+            out.extend([p.x, p.y, diameter]);
+            self.next = f64::from(brush.spacing * diameter);
+            self.start = 0.0;
+            self.last = Some(p);
+            return;
+        };
+        let len = distance(point3(a), point3(p));
+        while self.next <= self.start + len {
+            let t = ((self.next - self.start) / len) as f32;
+            let x = a.x + (p.x - a.x) * t;
+            let y = a.y + (p.y - a.y) * t;
+            let diameter = diameter_at(&brush, a.pressure + (p.pressure - a.pressure) * t);
+            out.extend([x, y, diameter]);
+            self.next += f64::from(brush.spacing * diameter);
+        }
+        self.start += len;
+        self.last = Some(p);
+    }
+
+    /// The longest segment for two diameters: twice the smaller one, and at least 4 px, so that a
+    /// segment's bounding box stays close to the area its tip sweeps.
+    fn longest(a: f32, b: f32) -> f32 {
+        (2.0 * a.min(b)).max(4.0)
+    }
+
+    fn place_joined(&mut self, p: StrokePoint, out: &mut Vec<f32>) {
+        let brush = self.brush;
+        let dab = |p: StrokePoint| Dab {
+            x: p.x,
+            y: p.y,
+            diameter: diameter_at(&brush, p.pressure),
+        };
+        let Some(a) = self.last else {
+            self.last = Some(p);
+            self.emit(dab(p), out);
+            return;
+        };
+        // A long step of the path is split, so no segment is much longer than its tip is wide.
+        let longest = Self::longest(dab(a).diameter, dab(p).diameter);
+        let steps = (distance(point3(a), point3(p)) / f64::from(longest))
+            .ceil()
+            .max(1.0) as u32;
+        for i in 1..=steps {
+            let q = if i == steps {
+                p
+            } else {
+                let t = i as f32 / steps as f32;
+                StrokePoint {
+                    x: a.x + (p.x - a.x) * t,
+                    y: a.y + (p.y - a.y) * t,
+                    pressure: a.pressure + (p.pressure - a.pressure) * t,
+                }
+            };
+            self.add(dab(q), out);
+        }
+        self.last = Some(p);
+    }
+
+    /// Adds a path point to the run from the anchor, or ends the run's segment before it.
+    fn add(&mut self, q: Dab, out: &mut Vec<f32>) {
+        let Some(a) = self.anchor else {
+            self.emit(q, out);
+            return;
+        };
+        let (vx, vy) = (q.x - a.x, q.y - a.y);
+        let rho = (vx * vx + vy * vy).sqrt();
+        let tol = self.tolerance;
+        let Some(run) = self.run else {
+            if rho == 0.0 {
+                if q.diameter != a.diameter {
+                    self.emit(q, out);
+                }
+                return;
+            }
+            let spread = if rho <= tol {
+                std::f32::consts::PI
+            } else {
+                (tol / rho).asin()
+            };
+            self.run = Some(Run {
+                end: q,
+                heading: vy.atan2(vx),
+                low: -spread,
+                high: spread,
+                slope_low: (q.diameter - tol - a.diameter) / rho,
+                slope_high: (q.diameter + tol - a.diameter) / rho,
+                far: rho,
+            });
+            return;
+        };
+        let mut angle = vy.atan2(vx) - run.heading;
+        if angle > std::f32::consts::PI {
+            angle -= std::f32::consts::TAU;
+        } else if angle < -std::f32::consts::PI {
+            angle += std::f32::consts::TAU;
+        }
+        let slope = if rho > 0.0 {
+            (q.diameter - a.diameter) / rho
+        } else {
+            f32::NAN
+        };
+        let fits = rho >= run.far - tol
+            && rho <= Self::longest(a.diameter, q.diameter)
+            && angle >= run.low
+            && angle <= run.high
+            && slope >= run.slope_low
+            && slope <= run.slope_high;
+        if !fits {
+            self.run = None;
+            self.emit(run.end, out);
+            self.add(q, out);
+            return;
+        }
+        let spread = if rho <= tol {
+            std::f32::consts::PI
+        } else {
+            (tol / rho).asin()
+        };
+        self.run = Some(Run {
+            end: q,
+            low: run.low.max(angle - spread),
+            high: run.high.min(angle + spread),
+            slope_low: run.slope_low.max((q.diameter - tol - a.diameter) / rho),
+            slope_high: run.slope_high.min((q.diameter + tol - a.diameter) / rho),
+            far: run.far.max(rho),
+            ..run
+        });
+    }
+
+    fn emit(&mut self, d: Dab, out: &mut Vec<f32>) {
+        out.extend([d.x, d.y, d.diameter]);
+        self.anchor = Some(d);
     }
 }
 
@@ -399,40 +711,8 @@ pub(crate) fn paint_pixel(d: [u8; 4], c: u32, src: [u8; 4], paint: Paint) -> [u8
     out.map(|v| v as u8)
 }
 
-/// Calls `visit(x, y, c)` for each pixel of `width` × `height` that the dab covers, where `c` is
-/// the 8-bit tip coverage (1 to 255). Pixels with no coverage are skipped.
-pub(crate) fn dab_coverage(
-    dab: Dab,
-    sprite: &[f32],
-    brush: &BrushSettings,
-    width: usize,
-    height: usize,
-    mut visit: impl FnMut(usize, usize, u32),
-) {
-    let n = (sprite.len() as f64).sqrt() as usize;
-    let radius = dab.diameter * 0.5;
-    let x0 = (dab.x - radius).floor().max(0.0) as usize;
-    let x1 = ((dab.x + radius).ceil().max(0.0) as usize).min(width);
-    let y0 = (dab.y - radius).floor().max(0.0) as usize;
-    let y1 = ((dab.y + radius).ceil().max(0.0) as usize).min(height);
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let lx = (x as f32 + 0.5 - dab.x) / radius;
-            let ly = (y as f32 + 0.5 - dab.y) / radius;
-            if lx.abs() >= 1.0 || ly.abs() >= 1.0 {
-                continue;
-            }
-            let coverage = tip_coverage(sprite, n, lx, ly, brush.antialias);
-            let c = (coverage * 255.0 + 0.5).floor() as u32;
-            if c != 0 {
-                visit(x, y, c);
-            }
-        }
-    }
-}
-
-/// The coverage of a whole stroke: one byte per pixel of `width` × `height`, holding the largest
-/// tip coverage of any dab over it (0 outside the stroke). The Recolor brush masks with it.
+/// The coverage of a whole stroke: one byte per pixel of `width` × `height`, holding the tip's
+/// coverage swept along the stroke (0 outside it). The Recolor brush masks with it.
 pub fn stroke_coverage(
     width: usize,
     height: usize,
@@ -440,23 +720,21 @@ pub fn stroke_coverage(
     brush: &BrushSettings,
 ) -> Vec<u8> {
     let brush = brush.normalized();
-    let sprite = tip_sprite(&brush);
+    let dabs: Vec<f32> = plan_dabs(points, &brush)
+        .into_iter()
+        .flat_map(|d| [d.x, d.y, d.diameter])
+        .collect();
     let mut cover = vec![0u8; width * height];
-    for dab in plan_dabs(points, &brush) {
-        dab_coverage(dab, &sprite, &brush, width, height, |x, y, c| {
-            let cell = &mut cover[y * width + x];
-            *cell = (*cell).max(c.min(255) as u8);
-        });
-    }
+    cover_dabs(&mut cover, width, height, (0, 0), &dabs, &brush).expect("x, y, diameter triples");
     cover
 }
 
 /// Renders one stroke into a straight-alpha RGBA8 buffer of `width × height` pixels.
 ///
-/// The stroke's coverage is the largest tip coverage of any dab over each pixel, and the paint is
-/// applied once with that coverage over the pixels before the stroke. Overlapping soft dabs
-/// therefore keep the tip's falloff across the stroke's width instead of building up to full
-/// coverage, and the result does not depend on the spacing (TL-BRUSH-01 hardness).
+/// The stroke's coverage is the tip's coverage swept along the path (the largest over any of its
+/// dabs or swept segments), and the paint is applied once with that coverage over the pixels
+/// before the stroke. A soft stroke therefore keeps the tip's falloff across its width instead of
+/// building up to full coverage, and its edge is smooth along the stroke (TL-BRUSH-01 hardness).
 pub fn stroke(
     dst: &mut [u8],
     width: usize,
@@ -601,8 +879,10 @@ pub(crate) fn stamp_dabs(
 }
 
 /// Calls `visit(x, y, c)` for each pixel of a `width` × `height` buffer whose top-left pixel is
-/// image pixel `origin` that one of `dabs` (flat `x, y, diameter` triples in image pixels) covers,
-/// dab by dab in order. `x` and `y` are buffer pixels.
+/// image pixel `origin` that `dabs` (flat `x, y, diameter` triples in image pixels) cover, in
+/// order, where `c` is the 8-bit coverage (1 to 255). When the brush joins its dabs, the tip is
+/// swept from each dab to the next (a single dab is one tip); otherwise each dab is one tip.
+/// `x` and `y` are buffer pixels. A pixel may be visited more than once.
 pub(crate) fn visit_dabs(
     width: usize,
     height: usize,
@@ -615,15 +895,24 @@ pub(crate) fn visit_dabs(
         return Err("dabs must be x, y, diameter triples".to_owned());
     }
     let brush = brush.normalized();
-    let sprite = tip_sprite(&brush);
-    let (ox, oy) = origin;
-    for d in dabs.as_chunks::<3>().0 {
-        let dab = Dab {
-            x: d[0] - ox as f32,
-            y: d[1] - oy as f32,
-            diameter: d[2],
-        };
-        dab_coverage(dab, &sprite, &brush, width, height, &mut visit);
+    let nodes: Vec<Node> = dabs
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|d| Node {
+            x: d[0],
+            y: d[1],
+            reach: reach_of(d[2], brush.antialias),
+        })
+        .collect();
+    if brush.spacing < JOINED_SPACING && nodes.len() > 1 {
+        for pair in nodes.windows(2) {
+            sweep_coverage(pair[0], pair[1], &brush, width, height, origin, &mut visit);
+        }
+    } else {
+        for &node in &nodes {
+            sweep_coverage(node, node, &brush, width, height, origin, &mut visit);
+        }
     }
     Ok(())
 }
@@ -649,7 +938,7 @@ pub(crate) fn cover_dabs(
     })
 }
 
-/// Max-combines the tip coverage of `dabs` (flat `x, y, diameter` triples in image pixels) into
+/// Max-combines the swept tip coverage of `dabs` (flat `x, y, diameter` triples in image pixels) into
 /// a one-byte-per-pixel coverage buffer whose top-left pixel is image pixel (`origin_x`,
 /// `origin_y`). A live Recolor stroke keeps its coverage with it (see [`DabPlanner`]).
 #[wasm_bindgen]
@@ -684,17 +973,23 @@ pub fn brush_dabs(path: &[f32], brush: &BrushSettings) -> Result<Vec<f32>, JsErr
         .collect())
 }
 
-/// The tip coverage sprite as `n × n` row-major f32 values, with `n` the square root of the length.
+/// Whether the brush sweeps its tip from each dab to the next ([`joins_dabs`]): the GPU twins then
+/// cover each pair of consecutive dabs as one segment.
 #[wasm_bindgen]
-pub fn brush_tip_sprite(brush: &BrushSettings) -> Vec<f32> {
-    tip_sprite(brush)
+pub fn brush_joins_dabs(brush: &BrushSettings) -> bool {
+    joins_dabs(brush)
 }
 
 /// Plans the dabs of a stroke whose samples arrive a few at a time, so that a live stroke stamps
-/// only its new dabs (engine v2). Over the whole stroke it yields exactly the dabs of
-/// [`plan_dabs`], in order. With smoothing, the spline segment that ends at the newest sample
-/// still depends on the samples to come, so its dabs are held back: [`DabPlanner::tail`] plans
-/// them without consuming them, for a preview, and [`DabPlanner::finish`] places them for good.
+/// only its new dabs. Over the whole stroke it yields the dabs of [`plan_dabs`], in order. With
+/// smoothing, the spline segment that ends at the newest sample still depends on the samples to
+/// come, and a joined stroke's last segment may still grow, so their dabs are held back:
+/// [`DabPlanner::tail`] plans them without consuming them, for a preview, and
+/// [`DabPlanner::finish`] places them for good.
+///
+/// When the brush joins its dabs, every non-empty batch after the first starts with the last dab
+/// of the batch before, so that each batch covers its own segments: covering the batches one by one
+/// gives the coverage of the whole list.
 #[wasm_bindgen]
 #[derive(Clone, Debug)]
 pub struct DabPlanner {
@@ -704,24 +999,19 @@ pub struct DabPlanner {
     /// Without smoothing, the samples already placed on the path. With smoothing, the spline
     /// segments already placed.
     placed: usize,
-    /// The last point placed on the path: where the next path window starts.
-    last: Option<StrokePoint>,
-    /// Arc length of the next dab, and of `last`, along the path.
-    next: f64,
-    start: f64,
+    placer: Placer,
 }
 
 #[wasm_bindgen]
 impl DabPlanner {
     #[wasm_bindgen(constructor)]
     pub fn new(brush: &BrushSettings) -> DabPlanner {
+        let brush = brush.normalized();
         DabPlanner {
-            brush: brush.normalized(),
+            brush,
             points: Vec::new(),
             placed: 0,
-            last: None,
-            next: 0.0,
-            start: 0.0,
+            placer: Placer::new(brush),
         }
     }
 
@@ -738,9 +1028,10 @@ impl DabPlanner {
                 self.points.push(point);
             }
         }
+        let joined_to = self.placer.anchor;
         let mut out = Vec::new();
         self.advance(&mut out);
-        Ok(out)
+        Ok(self.joined(joined_to, out))
     }
 
     /// The dabs that `finish` would place now, without placing them.
@@ -750,6 +1041,7 @@ impl DabPlanner {
 
     /// Ends the stroke and returns its remaining dabs.
     pub fn finish(&mut self) -> Vec<f32> {
+        let joined_to = self.placer.anchor;
         let mut out = Vec::new();
         let n = self.points.len();
         if !self.brush.smooth || n < 2 {
@@ -758,21 +1050,33 @@ impl DabPlanner {
                 self.placed = 1;
             }
             self.advance(&mut out);
-            return out;
+        } else {
+            while self.placed + 1 < n {
+                self.place_segment(self.placed, &mut out);
+                self.placed += 1;
+            }
+            if self.placed + 1 == n {
+                self.place(self.points[n - 1], &mut out);
+                self.placed = n;
+            }
         }
-        while self.placed + 1 < n {
-            self.place_segment(self.placed, &mut out);
-            self.placed += 1;
-        }
-        if self.placed + 1 == n {
-            self.place(self.points[n - 1], &mut out);
-            self.placed = n;
-        }
-        out
+        self.placer.finish(&mut out);
+        self.joined(joined_to, out)
     }
 }
 
 impl DabPlanner {
+    /// A batch of new dabs, led by the last dab placed before them when the brush joins its dabs.
+    fn joined(&self, before: Option<Dab>, mut out: Vec<f32>) -> Vec<f32> {
+        match before {
+            Some(d) if self.placer.joined && !out.is_empty() => {
+                out.splice(0..0, [d.x, d.y, d.diameter]);
+                out
+            }
+            _ => out,
+        }
+    }
+
     /// Places every path point that later samples cannot change.
     fn advance(&mut self, out: &mut Vec<f32>) {
         let n = self.points.len();
@@ -800,26 +1104,7 @@ impl DabPlanner {
 
     /// Extends the path to `p` and places the dabs on the new window, as `plan_dabs` does.
     fn place(&mut self, p: StrokePoint, out: &mut Vec<f32>) {
-        let brush = self.brush;
-        let Some(a) = self.last else {
-            let diameter = diameter_at(&brush, p.pressure);
-            out.extend([p.x, p.y, diameter]);
-            self.next = f64::from(brush.spacing * diameter);
-            self.start = 0.0;
-            self.last = Some(p);
-            return;
-        };
-        let len = distance(point3(a), point3(p));
-        while self.next <= self.start + len {
-            let t = ((self.next - self.start) / len) as f32;
-            let x = a.x + (p.x - a.x) * t;
-            let y = a.y + (p.y - a.y) * t;
-            let diameter = diameter_at(&brush, a.pressure + (p.pressure - a.pressure) * t);
-            out.extend([x, y, diameter]);
-            self.next += f64::from(brush.spacing * diameter);
-        }
-        self.start += len;
-        self.last = Some(p);
+        self.placer.place(p, out);
     }
 }
 
@@ -989,20 +1274,106 @@ mod tests {
     }
 
     #[test]
-    fn dabs_are_spaced_by_the_diameter_fraction() {
-        // Size 10 at spacing 50 % steps every 5 px along a 100 px line: 21 dabs at x = 0, 5, …, 100.
+    fn dabs_at_a_spacing_of_100_percent_or_more_are_spaced_by_the_diameter_fraction() {
+        // Size 10 at spacing 200 % steps every 20 px along a 100 px line: x = 0, 20, …, 100.
         let brush = BrushSettings {
             size: 10.0,
-            spacing: 0.5,
+            spacing: 2.0,
             pressure: false,
             smooth: false,
             ..hard_brush(10.0)
         };
         let dabs = plan_dabs(&[point(0.0, 0.0, 1.0), point(100.0, 0.0, 1.0)], &brush);
-        assert_eq!(dabs.len(), 21);
+        assert_eq!(dabs.len(), 6);
         for (i, dab) in dabs.iter().enumerate() {
-            assert!((dab.x - i as f32 * 5.0).abs() < 1e-4, "{dab:?}");
+            assert!((dab.x - i as f32 * 20.0).abs() < 1e-4, "{dab:?}");
             assert_eq!((dab.y, dab.diameter), (0.0, 10.0));
+        }
+        assert!(!joins_dabs(&brush));
+        // The stamps stay apart: the middle of a gap is not painted.
+        let mut dst = canvas(120, 20);
+        stroke(
+            &mut dst,
+            120,
+            20,
+            &[point(5.0, 10.0, 1.0), point(105.0, 10.0, 1.0)],
+            &brush,
+        )
+        .unwrap();
+        assert_eq!(dst[(10 * 120 + 15) * 4 + 3], 0);
+        assert_eq!(dst[(10 * 120 + 25) * 4 + 3], 255);
+    }
+
+    #[test]
+    fn a_joined_straight_line_is_one_segment_whatever_the_spacing() {
+        for spacing in [0.01, 0.15, 0.5, 0.99] {
+            let brush = BrushSettings {
+                size: 40.0,
+                spacing,
+                pressure: false,
+                smooth: true,
+                ..BrushSettings::default()
+            };
+            let path: Vec<StrokePoint> = (0..20).map(|i| point(i as f32 * 3.0, 7.0, 1.0)).collect();
+            let dabs = plan_dabs(&path, &brush);
+            assert_eq!(
+                flat_dabs(&dabs),
+                vec![0.0, 7.0, 40.0, 57.0, 7.0, 40.0],
+                "spacing {spacing}"
+            );
+        }
+    }
+
+    #[test]
+    fn joined_segments_are_no_longer_than_twice_the_diameter() {
+        let brush = BrushSettings {
+            size: 10.0,
+            pressure: false,
+            smooth: false,
+            ..BrushSettings::default()
+        };
+        let dabs = plan_dabs(&[point(0.0, 0.0, 1.0), point(100.0, 0.0, 1.0)], &brush);
+        assert_eq!(dabs.len(), 6);
+        assert!(dabs
+            .windows(2)
+            .all(|w| (w[1].x - w[0].x - 20.0).abs() < 1e-4));
+    }
+
+    #[test]
+    fn joined_segments_follow_a_curve_within_the_tolerance() {
+        let brush = BrushSettings {
+            size: 30.0,
+            pressure: false,
+            smooth: true,
+            ..BrushSettings::default()
+        };
+        let samples: Vec<StrokePoint> = (0..=40)
+            .map(|i| {
+                let t = i as f32 * 0.05;
+                point(100.0 + 80.0 * t.cos(), 100.0 + 80.0 * t.sin(), 1.0)
+            })
+            .collect();
+        let dabs = plan_dabs(&samples, &brush);
+        assert!(dabs.len() > 3 && dabs.len() < 100, "{}", dabs.len());
+        // Every path point lies within the tolerance (0.015 px here) of the polyline.
+        for p in stroke_path(&samples, true) {
+            let nearest = dabs
+                .windows(2)
+                .map(|w| {
+                    let a = Node {
+                        x: w[0].x,
+                        y: w[0].y,
+                        reach: 1.0,
+                    };
+                    let b = Node {
+                        x: w[1].x,
+                        y: w[1].y,
+                        reach: 1.0,
+                    };
+                    sweep_ratio(p.x, p.y, a, b, false).0
+                })
+                .fold(f32::MAX, f32::min);
+            assert!(nearest < 0.016, "{p:?} is {nearest} px away");
         }
     }
 
@@ -1034,26 +1405,39 @@ mod tests {
     #[test]
     fn the_incremental_planner_places_the_same_dabs_as_the_whole_path() {
         let path = wobbly_path(40);
-        for smooth in [false, true] {
+        for (smooth, spacing) in [(false, 0.15), (true, 0.15), (false, 1.5), (true, 1.5)] {
             let brush = BrushSettings {
                 size: 24.0,
-                spacing: 0.15,
+                spacing,
                 smooth,
                 ..BrushSettings::default()
+            };
+            let joined = joins_dabs(&brush);
+            // A joined batch after the first starts with the last dab before it.
+            let append = |list: &mut Vec<f32>, batch: Vec<f32>| {
+                if joined && !list.is_empty() && !batch.is_empty() {
+                    assert_eq!(batch[..3], list[list.len() - 3..]);
+                    list.extend_from_slice(&batch[3..]);
+                } else {
+                    list.extend(batch);
+                }
             };
             let expected = flat_dabs(&plan_dabs(&path, &brush));
             for batch in [1, 2, 3, 7, path.len()] {
                 let mut planner = DabPlanner::new(&brush);
                 let mut actual = Vec::new();
                 for (index, chunk) in path.chunks(batch).enumerate() {
-                    actual.extend(planner.push(&flat_path(chunk)).expect("triples"));
+                    append(
+                        &mut actual,
+                        planner.push(&flat_path(chunk)).expect("triples"),
+                    );
                     // The tail completes the final dabs into the plan of the samples so far.
                     let mut previewed = actual.clone();
-                    previewed.extend(planner.tail());
+                    append(&mut previewed, planner.tail());
                     let seen = path.len().min((index + 1) * batch);
                     assert_eq!(previewed, flat_dabs(&plan_dabs(&path[..seen], &brush)));
                 }
-                actual.extend(planner.finish());
+                append(&mut actual, planner.finish());
                 assert_eq!(actual, expected, "smooth {smooth}, batch {batch}");
                 assert!(planner.finish().is_empty());
             }
@@ -1111,39 +1495,214 @@ mod tests {
     fn pressure_shrinks_the_dabs_and_their_spacing_together() {
         let brush = BrushSettings {
             size: 20.0,
-            spacing: 0.25,
+            spacing: 1.25,
             smooth: false,
             ..BrushSettings::default()
         };
         let full = plan_dabs(&[point(0.0, 0.0, 1.0), point(100.0, 0.0, 1.0)], &brush);
         let half = plan_dabs(&[point(0.0, 0.0, 0.5), point(100.0, 0.0, 0.5)], &brush);
-        assert_eq!(full.len(), 21);
-        assert_eq!(half.len(), 41);
+        assert_eq!(full.len(), 5);
+        assert_eq!(half.len(), 9);
         assert!(half.iter().all(|d| d.diameter == 10.0));
     }
 
+    /// The coverage along row 50 from a click at (50.5, 50.5), from the centre outwards.
+    fn click_profile(brush: &BrushSettings) -> Vec<u8> {
+        let cover = stroke_coverage(101, 101, &[point(50.5, 50.5, 1.0)], brush);
+        (50..101).map(|x| cover[50 * 101 + x]).collect()
+    }
+
     #[test]
-    fn hardness_sets_the_core_and_falloff_of_the_sprite() {
-        let hard = tip_sprite(&BrushSettings {
-            size: 64.0,
-            hardness: 1.0,
+    fn hardness_is_the_solid_fraction_of_the_tip_with_a_soft_bell_outside_it() {
+        let brush = |hardness: f32| BrushSettings {
+            size: 60.0,
+            hardness,
             ..BrushSettings::default()
-        });
-        assert!(hard.iter().all(|&v| v == 0.0 || v == 1.0));
-        let soft = tip_sprite(&BrushSettings {
-            size: 64.0,
+        };
+        // Hardness 1: solid up to the last pixel, a 1 px ramp centred on the 30 px radius.
+        let hard = click_profile(&brush(1.0));
+        assert!(hard[..30].iter().all(|&c| c == 255), "{hard:?}");
+        assert!((127..=128).contains(&hard[30]) && hard[31] == 0, "{hard:?}");
+        // Hardness 0: no flat core, a smooth bell over the whole reach (30.5 px):
+        // (1 − ρ²)⁴ with ρ = distance / reach.
+        let soft = click_profile(&brush(0.0));
+        assert_eq!(soft[0], 255);
+        assert!(soft[3] < 255, "{soft:?}");
+        assert!(soft.windows(2).all(|w| w[1] <= w[0]), "{soft:?}");
+        for (d, &c) in soft.iter().enumerate().take(31) {
+            let rho = d as f32 / 30.5;
+            let expected = (1.0 - rho * rho).powi(4) * ((1.0 - rho) * 30.5).min(1.0) * 255.0;
+            assert!(
+                (f32::from(c) - expected).abs() <= 1.0,
+                "{d}: {c} vs {expected}"
+            );
+        }
+        assert!(soft[15] < 90 && soft[15] > 75, "half radius {}", soft[15]);
+        assert_eq!(soft[31], 0);
+        // Hardness 0.5: solid over half the reach, then the bell.
+        let half = click_profile(&brush(0.5));
+        assert!(half[..16].iter().all(|&c| c == 255), "{half:?}");
+        assert!(half[17] < 255 && half[25] > 0 && half[25] < 128, "{half:?}");
+    }
+
+    #[test]
+    fn aliased_brushes_force_full_hardness_and_no_filtering() {
+        let brush = BrushSettings {
+            size: 32.0,
             hardness: 0.0,
+            antialias: false,
             ..BrushSettings::default()
-        });
-        let n = 64;
-        // Sprite pixel (i, n/2) has rho between the core edge (0.594) and 1: a linear ramp.
-        let at = |i: usize| soft[(n / 2) * n + i];
-        let center = at(n / 2);
-        let edge_of_core = at(n / 2 + (0.6 * n as f32 / 2.0) as usize);
-        assert_eq!(center, 1.0);
-        assert!(edge_of_core < 1.0 && edge_of_core > 0.0, "{edge_of_core}");
-        assert!(at(n - 1) < at(n / 2 + 16));
-        assert!((soft[0]).abs() < 1e-6);
+        };
+        let cover = stroke_coverage(
+            80,
+            60,
+            &[point(20.0, 30.0, 1.0), point(60.0, 25.0, 1.0)],
+            &brush,
+        );
+        assert!(cover.iter().all(|&c| c == 0 || c == 255));
+        assert!(cover.contains(&255));
+    }
+
+    /// The largest spread of alpha along any row over columns `x0..x1`.
+    fn row_spread(dst: &[u8], w: usize, h: usize, x0: usize, x1: usize) -> u8 {
+        (0..h)
+            .map(|y| {
+                let row = (x0..x1).map(|x| dst[(y * w + x) * 4 + 3]);
+                row.clone().max().unwrap() - row.min().unwrap()
+            })
+            .max()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_straight_soft_stroke_has_no_ripple_along_its_edge_at_any_spacing() {
+        for size in [5.0f32, 20.0, 60.0] {
+            for spacing in [0.01, 0.15, 0.5, 0.99] {
+                let brush = BrushSettings {
+                    size,
+                    hardness: 0.0,
+                    spacing,
+                    pressure: false,
+                    ..BrushSettings::default()
+                };
+                let (w, h) = (300, (size as usize) + 20);
+                let y = h as f32 / 2.0 + 0.37;
+                let path: Vec<StrokePoint> = (0..80)
+                    .map(|i| point(10.0 + i as f32 * 3.3, y, 1.0))
+                    .collect();
+                let mut dst = canvas(w, h);
+                stroke(&mut dst, w, h, &path, &brush).unwrap();
+                let (x0, x1) = (12 + size as usize, 270 - size as usize);
+                let spread = row_spread(&dst, w, h, x0, x1);
+                assert!(
+                    spread <= 1,
+                    "size {size}, spacing {spacing}: spread {spread}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_curved_soft_stroke_depends_only_on_the_distance_from_its_path() {
+        // An arc of radius 120 sampled every 4 px: pixels at the same distance from the arc have
+        // the same coverage, within the profile's slope over a 0.02 px bin and the tolerance of
+        // the joined segments (0.02 px), so no seams show where segments join.
+        let brush = BrushSettings {
+            size: 40.0,
+            hardness: 0.0,
+            pressure: false,
+            ..BrushSettings::default()
+        };
+        let (w, c, r) = (300usize, 150.0f32, 120.0f32);
+        let steps = (std::f32::consts::PI * r / 4.0) as usize;
+        let path: Vec<StrokePoint> = (0..=steps)
+            .map(|i| {
+                let t = std::f32::consts::PI * i as f32 / steps as f32;
+                point(c + r * t.cos(), c + r * t.sin(), 1.0)
+            })
+            .collect();
+        let mut dst = canvas(w, w);
+        stroke(&mut dst, w, w, &path, &brush).unwrap();
+        let mut low = [255u8; 1100];
+        let mut high = [0u8; 1100];
+        for y in 150..w {
+            for x in 0..w {
+                let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
+                let angle = dy.atan2(dx);
+                if !(0.3..=2.8).contains(&angle) {
+                    continue;
+                }
+                let bin = (((dx * dx + dy * dy).sqrt() - r).abs() * 50.0) as usize;
+                if bin < low.len() {
+                    let a = dst[(y * w + x) * 4 + 3];
+                    low[bin] = low[bin].min(a);
+                    high[bin] = high[bin].max(a);
+                }
+            }
+        }
+        let spread = (0..low.len())
+            .filter(|&b| high[b] >= low[b])
+            .map(|b| high[b] - low[b])
+            .max()
+            .unwrap();
+        assert!(spread <= 2, "spread {spread}");
+    }
+
+    #[test]
+    fn a_pressure_taper_narrows_steadily() {
+        let brush = BrushSettings {
+            size: 40.0,
+            hardness: 0.5,
+            smooth: false,
+            ..BrushSettings::default()
+        };
+        let (w, h) = (220, 60);
+        let mut dst = canvas(w, h);
+        let path = [point(10.0, 30.0, 1.0), point(200.0, 30.0, 0.1)];
+        stroke(&mut dst, w, h, &path, &brush).unwrap();
+        let width = |x: usize| (0..h).filter(|&y| dst[(y * w + x) * 4 + 3] > 0).count();
+        let row = |x: usize| dst[(36 * w + x) * 4 + 3];
+        for x in 31..195 {
+            assert!(width(x + 1) <= width(x), "width at {x}");
+            assert!(row(x + 1) <= row(x), "coverage at {x}");
+        }
+        assert!(width(30) > 30 && width(195) < 10);
+    }
+
+    #[test]
+    fn a_square_tip_sweeps_a_crisp_box() {
+        let brush = BrushSettings {
+            square: true,
+            ..hard_brush(10.0)
+        };
+        let path = [point(20.5, 20.5, 1.0), point(60.5, 20.5, 1.0)];
+        let cover = stroke_coverage(80, 40, &path, &brush);
+        for y in 0..40 {
+            for x in 0..80 {
+                let inside = (16..=64).contains(&x) && (16..=24).contains(&y);
+                assert_eq!(
+                    cover[y * 80 + x],
+                    if inside { 255 } else { 0 },
+                    "({x}, {y})"
+                );
+            }
+        }
+        // Diagonally, the swept square reaches its corners but not past the segment's sides.
+        let path = [point(20.5, 20.5, 1.0), point(40.5, 40.5, 1.0)];
+        let cover = stroke_coverage(80, 80, &path, &brush);
+        assert_eq!(cover[36 * 80 + 44], 255);
+        assert_eq!(cover[24 * 80 + 31], 255);
+        assert_eq!(cover[22 * 80 + 35], 0);
+        // An antialiased hard square keeps its corners square.
+        let soft_edged = BrushSettings {
+            square: true,
+            hardness: 1.0,
+            antialias: true,
+            ..hard_brush(10.0)
+        };
+        let cover = stroke_coverage(80, 40, &[point(20.0, 20.0, 1.0)], &soft_edged);
+        assert_eq!(cover[15 * 80 + 15], 255);
+        assert_eq!(cover[24 * 80 + 24], 255);
     }
 
     /// The alpha down column `x` of a `w`-wide RGBA8 buffer.
@@ -1164,28 +1723,18 @@ mod tests {
                 ..BrushSettings::default()
             };
             let mut dab = canvas(w, h);
-            stroke(&mut dab, w, h, &[point(50.0, 20.0, 1.0)], &brush).unwrap();
+            stroke(&mut dab, w, h, &[point(50.5, 20.0, 1.0)], &brush).unwrap();
             let mut line = canvas(w, h);
             let path = [point(10.0, 20.0, 1.0), point(90.0, 20.0, 1.0)];
             stroke(&mut line, w, h, &path, &brush).unwrap();
             let single = alpha_column(&dab, w, h, 50);
             let across = alpha_column(&line, w, h, 50);
-            // The single dab's radial profile: a wide ramp from the core to the rim.
+            // The single dab's radial profile: a wide ramp from the centre to the rim.
             let ramp = single.iter().filter(|&&a| a > 0 && a < 255).count() / 2;
-            assert!(ramp >= 5, "single dab ramp {single:?}");
-            // Overlapping dabs never exceed the coverage of the nearest dab, so the stroke's
+            assert!(ramp >= 10, "single dab ramp {single:?}");
+            // The swept tip never exceeds the coverage of the nearest tip, so the stroke's
             // profile across its width is the dab's profile, not a saturated edge.
-            for y in 0..h {
-                let (a, b) = (i32::from(across[y]), i32::from(single[y]));
-                let tolerance = if spacing <= 0.01 { 3 } else { 255 };
-                assert!(
-                    a >= b - tolerance && a <= b + 3,
-                    "spacing {spacing} y {y}: {a} vs {b}"
-                );
-            }
-            // Halfway out the ramp, the old accumulated stroke reached nearly full alpha.
-            let half = single.iter().position(|&a| a > 0).unwrap() + ramp / 2;
-            assert!(across[half] < 200, "spacing {spacing}: edge {across:?}");
+            assert_eq!(across, single, "spacing {spacing}");
         }
     }
 
@@ -1210,25 +1759,6 @@ mod tests {
         .unwrap();
         let max = dst.as_chunks::<4>().0.iter().map(|p| p[3]).max().unwrap();
         assert_eq!(max, 100);
-    }
-
-    #[test]
-    fn aliased_brushes_force_full_hardness_and_no_filtering() {
-        let aliased = tip_sprite(&BrushSettings {
-            size: 32.0,
-            hardness: 0.0,
-            antialias: false,
-            ..BrushSettings::default()
-        });
-        assert!(aliased.iter().all(|&v| v == 0.0 || v == 1.0));
-    }
-
-    #[test]
-    fn small_tips_are_rendered_at_32_pixels() {
-        assert_eq!(tip_resolution(2.0), 32);
-        assert_eq!(tip_resolution(40.0), 40);
-        assert_eq!(tip_resolution(40.2), 41);
-        assert_eq!(tip_sprite(&BrushSettings::default()).len(), 32 * 32);
     }
 
     #[test]
@@ -1339,7 +1869,7 @@ mod tests {
         assert_eq!(fnv1a(&dst), GOLDEN_STROKE);
     }
 
-    const GOLDEN_STROKE: u64 = 18_011_631_598_814_807_980;
+    const GOLDEN_STROKE: u64 = 3_072_595_067_021_559_737;
 
     /// The tile bit that TL-OPT-FILL names for each pattern, written as a formula over (x, y).
     fn expected_hatch(style: u8, x: usize, y: usize) -> bool {

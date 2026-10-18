@@ -282,7 +282,7 @@ mod tests {
             &mut dst,
             16,
             16,
-            &[point(8.0, 8.0)],
+            &[point(8.5, 8.5)],
             &brush,
             &spec(RED, BLUE, 255),
         )
@@ -365,15 +365,17 @@ mod tests {
         let mut whole = original.clone();
         recolor(&mut whole, w, h, &points, &brush, &spec).expect("recolor");
 
-        // The part from (6, 2) to (18, 12), covered dab by dab, then recolored.
+        // The part from (6, 2) to (18, 12), covered segment by segment (each pair of joined
+        // dabs), then recolored.
         let (ox, oy, pw, ph) = (6, 2, 12, 10);
         let dabs: Vec<f32> = plan_dabs(&points, &brush)
             .iter()
             .flat_map(|d| [d.x, d.y, d.diameter])
             .collect();
+        assert!(dabs.len() >= 6);
         let mut cover = vec![0u8; pw * ph];
-        for dab in dabs.chunks(3) {
-            cover_dabs(&mut cover, pw, ph, (ox, oy), dab, &brush).expect("cover");
+        for pair in dabs.windows(6).step_by(3) {
+            cover_dabs(&mut cover, pw, ph, (ox, oy), pair, &brush).expect("cover");
         }
         let mut part: Vec<u8> = (0..ph)
             .flat_map(|y| original[((y + oy) * w + ox) * 4..][..pw * 4].to_vec())

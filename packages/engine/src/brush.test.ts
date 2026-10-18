@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { LayerBlendMode, Surface } from "@openpaint/document";
 import { beforeAll, describe, expect, it } from "vitest";
 import { type BrushOptions, strokeBrush, strokeBrushCpu, strokePencilCpu } from "./brush";
-import { BrushSettings, brushDabs, brushTipSprite, initCpu } from "./cpu";
+import { BrushSettings, brushDabs, brushJoinsDabs, initCpu } from "./cpu";
 
 function pixelAt(surface: Surface, x: number, y: number): number[] {
   const i = (y * surface.width + x) * 4;
@@ -22,20 +22,20 @@ describe("brush kernels (Rust/WASM)", () => {
   });
 
   it("lists the dabs of a path in stamping order", () => {
-    const dabs = brushDabs(
-      new Float32Array([0, 0, 1, 20, 0, 1]),
-      brush({ size: 10, spacing: 0.5, smooth: false, pressure: false }),
-    );
+    const spaced = brush({ size: 10, spacing: 1.5, smooth: false, pressure: false });
+    const dabs = brushDabs(new Float32Array([0, 0, 1, 60, 0, 1]), spaced);
     const xs = Array.from(dabs).filter((_, i) => i % 3 === 0);
-    expect(xs).toEqual([0, 5, 10, 15, 20]);
+    expect(xs).toEqual([0, 15, 30, 45, 60]);
     expect(Array.from(dabs).filter((_, i) => i % 3 === 2)).toEqual([10, 10, 10, 10, 10]);
+    expect(brushJoinsDabs(spaced)).toBe(false);
   });
 
-  it("returns a square tip sprite with coverage between 0 and 1", () => {
-    const sprite = brushTipSprite(new BrushSettings());
-    expect(sprite.length).toBe(32 * 32);
-    expect(Math.min(...sprite)).toBeGreaterThanOrEqual(0);
-    expect(Math.max(...sprite)).toBe(1);
+  it("joins the dabs below 100 % spacing: a straight line is one segment", () => {
+    const joined = brush({ size: 10, spacing: 0.15, smooth: false, pressure: false });
+    expect(brushJoinsDabs(joined)).toBe(true);
+    expect(Array.from(brushDabs(new Float32Array([0, 0, 1, 20, 0, 1]), joined))).toEqual([
+      0, 0, 10, 20, 0, 10,
+    ]);
   });
 
   it("paints a copy of the surface and leaves the input untouched", () => {

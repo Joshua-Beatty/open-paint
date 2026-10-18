@@ -182,9 +182,10 @@ export {
 } from "./v2/composite-plan";
 export { GpuCompositorV2 } from "./v2/compositor";
 export { EngineV2, type EngineV2Host, type StrokeCommit } from "./v2/engine-v2";
-export { V2_COMPOSITE_CASES, V2_STROKE_CASES } from "./v2/gpu-cases";
+export { V1_BRUSH_CASES, V2_COMPOSITE_CASES, V2_STROKE_CASES } from "./v2/gpu-cases";
 export {
   type CheckResult,
+  checkBrushV1,
   checkCompositeV2,
   checkPartialSyncV2,
   checkStrokeV2,

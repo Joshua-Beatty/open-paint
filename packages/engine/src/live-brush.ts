@@ -1,5 +1,6 @@
 import { bytesOf, EMPTY_RECT, type Rect, rectFromEdges, type Surface } from "@openpaint/document";
 import { type BrushOptions, brushSettingsOf } from "./brush";
+import { tipPad } from "./brush-segments";
 import {
   type BrushSettings,
   brushCoverDabs,
@@ -12,8 +13,10 @@ import {
  * A brush stroke drawn while its samples arrive (TL-BRUSH-01), on the CPU. Each call stamps only
  * the dabs that are new, so a frame costs the new part of the stroke rather than all of it. Over
  * the whole stroke the dabs, their order and the pixels are those of `strokeBrush`, except that
- * hatch patterns are anchored to the image origin. Points and dabs are in image pixels. Call
- * `free` when done.
+ * hatch patterns are anchored to the image origin. Points and dabs are in image pixels. When the
+ * brush joins its dabs (spacing below 100 %), each batch after the first starts with the last dab
+ * before it, so stamping the batches one by one sweeps the tip along the whole path. Call `free`
+ * when done.
  */
 export class LiveBrushStroke {
   readonly #settings: BrushSettings;
@@ -123,7 +126,11 @@ export class LiveBrushStroke {
   }
 }
 
-/** The integer image rectangle that dabs (`x, y, diameter` triples) can touch. Empty for none. */
+/**
+ * The integer image rectangle that dabs (`x, y, diameter` triples) can touch, the tip swept
+ * between joined dabs included, with an antialiased tip's half pixel past its radius. Empty for
+ * none.
+ */
 export function dabBounds(dabs: Float32Array): Rect {
   if (dabs.length === 0) return EMPTY_RECT;
   let left = Number.POSITIVE_INFINITY;
@@ -131,7 +138,7 @@ export function dabBounds(dabs: Float32Array): Rect {
   let right = Number.NEGATIVE_INFINITY;
   let bottom = Number.NEGATIVE_INFINITY;
   for (let i = 0; i + 2 < dabs.length; i += 3) {
-    const r = (dabs[i + 2] ?? 0) / 2;
+    const r = (dabs[i + 2] ?? 0) / 2 + tipPad(true);
     const x = dabs[i] ?? 0;
     const y = dabs[i + 1] ?? 0;
     left = Math.min(left, x - r);

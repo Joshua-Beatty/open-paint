@@ -1,6 +1,7 @@
 import { TILE_SIZE } from "@openpaint/document";
 import { type BrushOptions, brushSettingsOf } from "../brush";
-import { brushTipSprite, DabPlanner } from "../cpu";
+import { clampHardness, tipPad } from "../brush-segments";
+import { brushJoinsDabs, DabPlanner } from "../cpu";
 import { BufferUsage } from "../gpu-device";
 import type { GpuDocument } from "./gpu-document";
 import { SLOT_BYTES, type SlotBuffer } from "./slot-buffer";
@@ -69,7 +70,6 @@ export class StrokePipelines {
       entries: [
         uniform(0, false),
         uniform(1, true),
-        storage(2, "read-only-storage"),
         storage(3, "read-only-storage"),
         storage(4, "read-only-storage"),
         storage(5, "storage"),
@@ -138,11 +138,16 @@ export class GpuStroke {
   readonly #slots: SlotBuffer;
   readonly #mask: StrokeMask | undefined;
   readonly #planner: DabPlanner;
+  /** Whether consecutive dabs are joined into swept segments (spacing below 100 %). */
+  readonly #joined: boolean;
+  readonly #pad: number;
   readonly #strokeUniform: GPUBuffer;
-  readonly #tip: GPUBuffer;
   readonly #tiles = new Map<number, Tile>();
   readonly #buffers = new Map<string, GPUBuffer>();
-  /** Final dabs not stamped yet, as `x, y, diameter` triples. */
+  /**
+   * Final dabs not stamped yet, as `x, y, diameter` triples. When joined, they start with the last
+   * dab already stamped, so their segments continue the stroke.
+   */
   #pendingDabs: number[] = [];
   /** The provisional dabs to preview, replaced by every batch. */
   #tail: Float32Array = new Float32Array();
@@ -168,19 +173,13 @@ export class GpuStroke {
     if (options.blend > OVERWRITE_BLEND)
       throw new RangeError(`unknown blend mode ${options.blend}`);
     const settings = brushSettingsOf(options);
-    let sprite: Float32Array;
     try {
       this.#planner = new DabPlanner(settings);
-      sprite = brushTipSprite(settings);
+      this.#joined = brushJoinsDabs(settings);
     } finally {
       settings.free();
     }
-    this.#tip = device.createBuffer({
-      label: "v2 brush tip",
-      size: sprite.byteLength,
-      usage: BufferUsage.STORAGE | BufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(this.#tip, 0, sprite as Float32Array<ArrayBuffer>);
+    this.#pad = tipPad(options.antialias);
     this.#strokeUniform = device.createBuffer({
       label: "v2 stroke",
       size: STROKE_BYTES,
@@ -192,11 +191,12 @@ export class GpuStroke {
         ? PAINT.overwrite
         : PAINT.blend;
     const { color, background } = options;
+    const hardness = new Uint32Array(new Float32Array([clampHardness(options.hardness)]).buffer);
     device.queue.writeBuffer(
       this.#strokeUniform,
       0,
       new Uint32Array([
-        Math.round(Math.sqrt(sprite.length)),
+        hardness[0] ?? 0,
         paint,
         options.blend,
         options.antialias ? 1 : 0,
@@ -211,7 +211,7 @@ export class GpuStroke {
         options.erase ? 0 : options.hatch,
         doc.width,
         doc.height,
-        0,
+        options.square ? 1 : 0,
       ]),
     );
   }
@@ -224,16 +224,25 @@ export class GpuStroke {
   /** Adds pointer samples (flat `x, y, pressure` triples in image pixels). */
   push(samples: Float32Array): void {
     if (this.#finished) return;
-    for (const value of this.#planner.push(samples)) this.#pendingDabs.push(value);
+    this.#queue(this.#planner.push(samples));
     this.#tail = this.#planner.tail();
   }
 
   /** Places the stroke's last dabs. The next `encode` stamps them, then `commit` records it. */
   finish(): void {
     if (this.#finished) return;
-    for (const value of this.#planner.finish()) this.#pendingDabs.push(value);
+    this.#queue(this.#planner.finish());
     this.#tail = new Float32Array();
     this.#finished = true;
+  }
+
+  /**
+   * Adds a batch of final dabs to the pending ones. A joined batch repeats the last dab before it,
+   * which is already the last pending dab when the pending ones are not stamped yet.
+   */
+  #queue(batch: Float32Array): void {
+    const skip = this.#joined && this.#pendingDabs.length > 0 && batch.length > 0 ? 3 : 0;
+    for (let i = skip; i < batch.length; i++) this.#pendingDabs.push(batch[i] ?? 0);
   }
 
   /**
@@ -243,8 +252,8 @@ export class GpuStroke {
    */
   encode(encoder: GPUCommandEncoder): void {
     const { width, height } = this.#doc;
-    const finals = planStamps(this.#pendingDabs, width, height);
-    const tails = planStamps(this.#tail, width, height);
+    const finals = planStamps(this.#pendingDabs, width, height, this.#joined, this.#pad);
+    const tails = planStamps(this.#tail, width, height, this.#joined, this.#pad);
     const finalDabs = this.#pendingDabs;
     this.#pendingDabs = [];
     for (const stamp of [...finals, ...tails]) this.#tile(stamp.tx, stamp.ty);
@@ -301,7 +310,7 @@ export class GpuStroke {
         stamp.y0,
         stamp.x1,
         stamp.y1,
-        stamp.dabs.length,
+        stamp.segments.length / 2,
         this.#slots.wordOffset(tile.original),
         this.#slots.wordOffset(tile.cover),
         final ? 1 : 0,
@@ -309,7 +318,7 @@ export class GpuStroke {
       words.forEach((word, k) => {
         view.setUint32(i * STRIDE + k * 4, word, true);
       });
-      for (const index of stamp.dabs) indices.push(base + index);
+      for (const index of stamp.segments) indices.push(base + index);
     });
     const device = this.#device;
     const dabBuffer = this.#buffer("dabs", Math.max(16, dabs.byteLength), BufferUsage.STORAGE);
@@ -327,7 +336,6 @@ export class GpuStroke {
       entries: [
         { binding: 0, resource: { buffer: this.#strokeUniform } },
         { binding: 1, resource: { buffer: paramBuffer, size: TILE_PARAMS_BYTES } },
-        { binding: 2, resource: { buffer: this.#tip } },
         { binding: 3, resource: { buffer: dabBuffer } },
         { binding: 4, resource: { buffer: indexBuffer } },
         { binding: 5, resource: { buffer } },
@@ -486,7 +494,6 @@ export class GpuStroke {
       }
     }
     this.#planner.free();
-    this.#tip.destroy();
     this.#strokeUniform.destroy();
     for (const buffer of this.#buffers.values()) buffer.destroy();
     this.#buffers.clear();

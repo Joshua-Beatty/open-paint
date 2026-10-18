@@ -35,6 +35,7 @@ import {
   benchmarkPerformanceClass,
   type ComposedTile,
   type CompositeDocument,
+  checkBrushV1,
   checkCompositeV2,
   checkFloat,
   checkPartialSyncV2,
@@ -84,6 +85,7 @@ import {
   GpuZoomBlur,
   initCpu,
   requestDevice as requestEngineDevice,
+  V1_BRUSH_CASES,
   V2_COMPOSITE_CASES,
   V2_STROKE_CASES,
 } from "@openpaint/engine";
@@ -195,6 +197,7 @@ declare global {
     runTransformCase: (id: string) => Promise<GoldenResult | null>;
     runV2CompositeCase: (id: string) => Promise<GoldenResult | null>;
     runV2StrokeCase: (id: string) => Promise<GoldenResult | null>;
+    runV1BrushCase: (id: string) => Promise<GoldenResult | null>;
     runV2SyncCase: (id: string) => Promise<GoldenResult | null>;
     runPresentEdgeCase: (id: string) => Promise<GoldenResult | null>;
     runFloatCase: (id: string) => Promise<GoldenResult | null>;
@@ -1209,6 +1212,17 @@ async function runV2StrokeCase(id: string): Promise<GoldenResult | null> {
 }
 
 window.runV2StrokeCase = runV2StrokeCase;
+
+async function runV1BrushCase(id: string): Promise<GoldenResult | null> {
+  const device = await getDevice();
+  if (!device) return null;
+  const kase = V1_BRUSH_CASES.find((candidate) => candidate.id === id);
+  if (!kase) throw new Error(`Unknown v1 brush case ${id}.`);
+  await ensureCpu();
+  return { id, ...(await checkBrushV1(device, kase)) };
+}
+
+window.runV1BrushCase = runV1BrushCase;
 
 async function runV2SyncCase(id: string): Promise<GoldenResult | null> {
   const device = await getDevice();

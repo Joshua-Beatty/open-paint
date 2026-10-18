@@ -35,6 +35,9 @@ const CASES: Record<string, Partial<BrushSettings>> = {
   overwrite: { blend: 14, r: 20, g: 200, b: 90, a: 180, size: 8 },
   multiply: { blend: 1, r: 200, g: 120, b: 40, a: 200, size: 14 },
   "pressure off": { pressure: false, size: 10 },
+  "feathered circle": { size: 30, hardness: 0 },
+  "feathered square": { size: 16, square: true, hardness: 0 },
+  "spaced dabs": { size: 9, spacing: 1.5 },
 };
 
 /** Deterministic noise with varied alpha, so every run exercises the same pixels. */

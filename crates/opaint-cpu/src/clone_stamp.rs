@@ -239,7 +239,7 @@ mod tests {
             pressure: false,
             ..BrushSettings::default()
         };
-        clone_stamp(&mut dst, &source, 16, 16, &[point(8.0, 8.0)], &brush).expect("clone");
+        clone_stamp(&mut dst, &source, 16, 16, &[point(8.5, 8.5)], &brush).expect("clone");
         assert_eq!(pixel(&dst, 16, 8, 8), BLUE);
         let rim = pixel(&dst, 16, 13, 8);
         assert!(

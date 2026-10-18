@@ -1,9 +1,10 @@
 import { rect, Surface, TILE_SIZE, TiledPixelStore } from "@openpaint/document";
 import { clipToCoverage } from "@openpaint/effects";
-import { type BrushOptions, strokeBrush } from "../brush";
+import { type BrushOptions, brushSettingsOf, strokeBrush } from "../brush";
 import type { CompositeDocument } from "../composite";
 import { compositeCpu } from "../composite-cpu";
 import { DocumentMirror, type DocumentSync } from "../document-sync";
+import { GpuBrush } from "../gpu-brush";
 import { BufferUsage } from "../gpu-device";
 import { compositeKey } from "./composite-plan";
 import { GpuCompositorV2 } from "./compositor";
@@ -240,6 +241,8 @@ export interface StrokeCheck {
   readonly path: readonly number[];
   /** Samples per batch, as the main thread sends them once per frame. */
   readonly batch: number;
+  /** Batches pushed before each frame is encoded (1 when omitted), as when frames fall behind. */
+  readonly perFrame?: number;
   /** Coverage over the whole image, one byte per pixel, or undefined for no selection. */
   readonly mask?: Uint8Array;
   /** Leaves the layer transparent instead of filling it with noise. */
@@ -281,9 +284,11 @@ export async function checkStrokeV2(device: GPUDevice, check: StrokeCheck): Prom
       doc.pool.afterSubmit();
     };
     const step = check.batch * 3;
-    for (let i = 0; i < check.path.length; i += step) {
+    const perFrame = check.perFrame ?? 1;
+    for (let i = 0, batches = 0; i < check.path.length; i += step) {
       stroke.push(new Float32Array(check.path.slice(i, i + step)));
-      frame((encoder) => stroke.encode(encoder));
+      batches += 1;
+      if (batches % perFrame === 0) frame((encoder) => stroke.encode(encoder));
     }
     stroke.finish();
     let read: ReturnType<GpuStroke["commit"]> | undefined;
@@ -302,5 +307,22 @@ export async function checkStrokeV2(device: GPUDevice, check: StrokeCheck): Prom
     slots.destroy();
     doc.destroy();
     store.dispose();
+  }
+}
+
+/**
+ * Renders a whole stroke with the engine v1 `GpuBrush` over noise and compares it with
+ * `strokeBrush`, the Rust reference.
+ */
+export async function checkBrushV1(device: GPUDevice, check: StrokeCheck): Promise<CheckResult> {
+  const { width, height, options } = check;
+  const original = noiseSurface(11, width, height);
+  const path = new Float32Array(check.path);
+  const settings = brushSettingsOf(options);
+  try {
+    const actual = await new GpuBrush(device).run(original, path, settings);
+    return compare(actual.data, strokeBrush(original, path, options).data);
+  } finally {
+    settings.free();
   }
 }

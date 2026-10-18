@@ -1,8 +1,8 @@
-import { V2_COMPOSITE_CASES, V2_STROKE_CASES } from "@openpaint/engine/v2-cases";
+import { V1_BRUSH_CASES, V2_COMPOSITE_CASES, V2_STROKE_CASES } from "@openpaint/engine/v2-cases";
 import { expect, type Page, test } from "@playwright/test";
 import { GPU_TOLERANCE } from "../src/compare";
 
-type Runner = "runV2CompositeCase" | "runV2StrokeCase" | "runV2SyncCase";
+type Runner = "runV2CompositeCase" | "runV2StrokeCase" | "runV2SyncCase" | "runV1BrushCase";
 
 async function check(page: Page, runner: Runner, id: string) {
   const errors: string[] = [];
@@ -34,6 +34,12 @@ test.describe("engine v2 compositor: WGSL against compositeCpu (±1)", () => {
 test.describe("engine v2 stroke: committed GPU stroke against strokeBrushCpu (±1)", () => {
   for (const kase of V2_STROKE_CASES) {
     test(kase.id, ({ page }) => check(page, "runV2StrokeCase", kase.id));
+  }
+});
+
+test.describe("engine v1 brush: GpuBrush against strokeBrushCpu (±1)", () => {
+  for (const kase of V1_BRUSH_CASES) {
+    test(kase.id, ({ page }) => check(page, "runV1BrushCase", kase.id));
   }
 });
 

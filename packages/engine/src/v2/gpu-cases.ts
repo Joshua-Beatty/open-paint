@@ -97,6 +97,69 @@ export const V2_STROKE_CASES: readonly (StrokeCheck & { readonly id: string })[]
     batch: 3,
     mask: ellipseMask(WIDTH, HEIGHT),
   },
+  {
+    id: "feathered-batches-behind",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 120, hardness: 0 },
+    path: wavyPath(40),
+    batch: 2,
+    perFrame: 3,
+  },
+  {
+    id: "feathered-square",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 50, hardness: 0, square: true },
+    path: wavyPath(30),
+    batch: 3,
+  },
+  {
+    id: "spaced-dabs",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 30, spacing: 1.5 },
+    path: wavyPath(30),
+    batch: 2,
+    perFrame: 2,
+  },
+];
+
+/** Whole strokes for the engine v1 `GpuBrush`, against the Rust reference. */
+export const V1_BRUSH_CASES: readonly (StrokeCheck & { readonly id: string })[] = [
+  { id: "default", width: WIDTH, height: HEIGHT, options: BRUSH, path: wavyPath(40), batch: 1 },
+  {
+    id: "feathered",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 120, hardness: 0 },
+    path: wavyPath(40),
+    batch: 1,
+  },
+  {
+    id: "hard-square-aliased",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 30, hardness: 1, square: true, antialias: false },
+    path: wavyPath(30),
+    batch: 1,
+  },
+  {
+    id: "soft-square-erase",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 40, hardness: 0.2, square: true, erase: true },
+    path: wavyPath(30),
+    batch: 1,
+  },
+  {
+    id: "spaced-overwrite",
+    width: WIDTH,
+    height: HEIGHT,
+    options: { ...BRUSH, size: 30, spacing: 1.5, blend: 14 },
+    path: wavyPath(30),
+    batch: 1,
+  },
 ];
 
 export const V2_COMPOSITE_CASES: readonly {
