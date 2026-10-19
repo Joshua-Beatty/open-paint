@@ -181,6 +181,7 @@ import { engineStrokeChannel } from "./tools/engine-strokes";
 import { finishOnLayerSwitch } from "./tools/finish-on-switch";
 import { FloatingHandoff, movementToolRuntime } from "./tools/move-tools";
 import { builtinToolRuntime, type PaintHost } from "./tools/paint-tools";
+import { followPendingResults } from "./tools/pending-results";
 import { TOOL_REGISTRY } from "./tools/roster";
 import { selectionToolRuntime } from "./tools/select-tools";
 import { ToolOptionsStrip } from "./tools/ToolOptionsStrip";
@@ -931,8 +932,11 @@ export function App({
   useEffect(() => {
     if (activeDocument === undefined) return undefined;
     const stop = finishOnLayerSwitch(activeDocument, () => toolController.finishPending());
+    // An undo or redo that makes a result pending again switches to its tool.
+    const stopFollowing = followPendingResults(activeDocument, toolController);
     return () => {
       stop();
+      stopFollowing();
       if (images.state.items.some((item) => item.value.document === activeDocument)) {
         toolController.finishPending();
       }

@@ -1,7 +1,6 @@
 import {
   type ColorRgba8,
   type Document,
-  type HistoryCommand,
   intersectRects,
   type Layer,
   type Rect,
@@ -51,6 +50,8 @@ import { type LineCurveHandles, lineCurveHandles } from "./line-curve-handles";
 import { NudgeBurst, nudgeOffset } from "./nudge-burst";
 import { blendValue, hatchValue } from "./paint-stroke";
 import type { PaintHost } from "./paint-tools";
+import { HistoryFollower, PendingResults, type PendingStep } from "./pending-results";
+import { restoreSettings, type SettingSnapshot, snapshotSettings } from "./pending-steps";
 import { reportToolFailure } from "./tool-failure";
 
 /** The history name of each option change made while a line is pending (TL-FRAME-02). */
@@ -66,6 +67,19 @@ const OPTION_HISTORY_NAMES: Readonly<Record<string, MessageId>> = {
   "tools.blendMode": "history.changeBlendMode",
   "tools.selection.renderingQuality": "history.changeSelectionQuality",
 };
+
+/** The settings a line step depends on, which undo and redo write back. */
+const OPTION_PATHS = Object.keys(OPTION_HISTORY_NAMES);
+
+/** A pending line after one of its steps, which undo and redo give back to it (TL-FRAME-01). */
+interface LineStep extends PendingStep {
+  readonly line: LineCurve;
+  readonly curve: CurveKind;
+  readonly color: ColorRgba8;
+  readonly background: ColorRgba8;
+  readonly touched: boolean;
+  readonly options: SettingSnapshot;
+}
 
 /** A grabbable handle: an endpoint, an interior control point by its index, or the line itself. */
 type Handle = "start" | "end" | 0 | 1 | "body";
@@ -88,9 +102,19 @@ interface LineSession {
   curve: CurveKind;
   /** Whether a handle has been dragged since the line was drawn. Drives the status prompt. */
   touched: boolean;
-  /** The history item the session recorded last. Any other applied item ends the session. */
-  top: HistoryCommand | undefined;
+  /** The step the history stands at, undefined until the drawing is recorded. */
+  step: LineStep | undefined;
 }
+
+/**
+ * The lines' steps, kept with their history items: an undo or redo that lands on one makes that
+ * line pending again, as it was after the step (owner request). Only on its own layer while that
+ * layer is active, since switching layers finishes a line.
+ */
+const LINE_RESULTS = new PendingResults<LineSession, LineStep>(
+  "lineCurve",
+  (session) => session.pixels.valid && session.document.activeLayer === session.layer,
+);
 
 /** A handle drag, which keeps the line it started from so a cancel can restore it. */
 interface HandleDrag {
@@ -206,6 +230,8 @@ class LineCurveRuntime implements ToolRuntime {
   #zone: ClickDeadZone | undefined;
   #handlesHidden = false;
   #unsubscribe: (() => void) | undefined;
+  /** Set while the runtime writes settings back itself, so the writes are not recorded as option changes. */
+  #quiet = false;
   /** Draws the drag's preview once per frame, at the latest pointer position only. */
   readonly #frames: FrameCoalescer;
   /** The last pointer sample, which the cursor is chosen for. */
@@ -215,10 +241,15 @@ class LineCurveRuntime implements ToolRuntime {
   readonly #colors: ColorEdits;
   /** Arrow nudges of the pending line, recorded as one "Adjust" step per burst (TL-MOVE-01). */
   readonly #nudges: NudgeBurst;
+  /** Follows the open image's history, so an undo or redo can make a line pending again. */
+  readonly #follow: HistoryFollower;
 
   constructor(host: PaintHost) {
     this.#host = host;
     this.#frames = new FrameCoalescer(host.scheduleFrame);
+    this.#follow = new HistoryFollower(host, () => {
+      if (this.#draw === undefined && this.#drag === undefined) this.#live();
+    });
     this.#nudges = new NudgeBurst(() => {
       const session = this.#idle();
       if (session === undefined) return;
@@ -265,11 +296,13 @@ class LineCurveRuntime implements ToolRuntime {
 
   activate(): void {
     this.#unsubscribe = this.#host.settings()?.onChange((change) => this.#optionChanged(change));
+    this.#follow.start();
   }
 
   deactivate(): void {
     this.#settle();
     this.cancel();
+    this.#follow.stop();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
     this.#end();
@@ -321,7 +354,7 @@ class LineCurveRuntime implements ToolRuntime {
     this.#settle();
     const session = this.#live();
     if (session !== undefined) {
-      this.#record(session, "history.finishLineCurve");
+      this.#record(session, "history.finishLineCurve", true);
       this.#end();
     }
     this.#refresh();
@@ -390,7 +423,7 @@ class LineCurveRuntime implements ToolRuntime {
       line: createLine(anchor, anchor),
       curve: curveOf(settings.get("tools.shapes.curveType")),
       touched: false,
-      top: undefined,
+      step: undefined,
     };
     this.#draw = { session, anchor };
     this.#refresh();
@@ -507,9 +540,21 @@ class LineCurveRuntime implements ToolRuntime {
    * Writes the session's line as one history item named `name`. The layer is first put back to the
    * last recorded step, so the item's before-state is right, even after previews.
    */
-  #record(session: LineSession, name: MessageId): boolean {
+  #record(session: LineSession, name: MessageId, finished = false): boolean {
     if (!session.pixels.record(this.#host.translate(name), this.#render(session))) return false;
-    session.top = session.document.history.appliedCommands.at(-1);
+    const command = session.document.history.appliedCommands.at(-1);
+    const settings = this.#host.settings();
+    const step: LineStep = {
+      line: session.line,
+      curve: session.curve,
+      color: session.color,
+      background: session.background,
+      touched: session.touched,
+      options: settings === null ? {} : snapshotSettings(settings, OPTION_PATHS),
+      finished,
+    };
+    session.step = step;
+    if (command !== undefined) LINE_RESULTS.remember(command, session, step);
     return true;
   }
 
@@ -564,17 +609,53 @@ class LineCurveRuntime implements ToolRuntime {
   }
 
   /**
-   * The pending session, if the document's latest history item is still its own. Undo, redo and
-   * other edits end the session, so the history stays the only record of what happened.
+   * The pending session, if the document's latest history item is one of a line's steps that
+   * Finish did not record. Undo and redo that land on such a step make that line pending again,
+   * as it was after the step, its options included (owner request); any other latest item ends the
+   * session.
    */
   #live(): LineSession | undefined {
-    const session = this.#session;
-    if (session === undefined) return undefined;
-    if (session.document.history.appliedCommands.at(-1) !== session.top) {
+    const own = this.#session?.document;
+    const document = own ?? this.#host.document();
+    const found = document === undefined ? undefined : LINE_RESULTS.at(document, this.#session);
+    if (found === undefined || found.step.finished) {
+      if (this.#session === undefined) return undefined;
       this.#end();
-      return undefined;
+      return own !== this.#host.document() ? this.#live() : undefined;
     }
-    return session;
+    const { owner, step } = found;
+    if (owner !== this.#session || step !== owner.step) this.#adopt(owner, step);
+    return owner;
+  }
+
+  /**
+   * Makes `session` the pending line as `step` left it. The layer already shows the step, so
+   * nothing is written or recorded; the step is rendered again only to know its pixels.
+   */
+  #adopt(session: LineSession, step: LineStep): void {
+    this.#frames.cancel();
+    this.#nudges.cancel();
+    this.#colors.cancel();
+    this.#drag = undefined;
+    this.#handlesHidden = false;
+    session.line = step.line;
+    session.curve = step.curve;
+    session.color = step.color;
+    session.background = step.background;
+    session.touched = step.touched;
+    session.step = step;
+    this.#session = session;
+    const settings = this.#host.settings();
+    if (settings !== null) {
+      this.#quiet = true;
+      try {
+        restoreSettings(settings, step.options);
+      } finally {
+        this.#quiet = false;
+      }
+    }
+    session.pixels.adopt(this.#render(session));
+    this.#refresh();
   }
 
   #end(): void {
@@ -621,7 +702,7 @@ class LineCurveRuntime implements ToolRuntime {
   }
 
   #optionChanged(change: SettingChange): void {
-    if (change.source !== "local") return;
+    if (this.#quiet || change.source !== "local") return;
     if (isColorChange(change)) {
       this.#colorChanged();
       return;

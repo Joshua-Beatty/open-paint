@@ -3,6 +3,9 @@ import { expect, type Page, test } from "@playwright/test";
 /** The history panel's step names, oldest first (UI-FTW-04). */
 const LAST_STEP = "ol.app-history-list li:last-child .app-history-name";
 
+/** The step the history stands at; undone steps stay listed after it until a new step drops them. */
+const CURRENT_STEP = 'ol.app-history-list li[aria-current="step"] .app-history-name';
+
 /** The engine canvas, without the overlays that sit on top of it. */
 const ENGINE_CANVAS = "[data-backend] canvas:not(.app-canvas-overlay)";
 
@@ -406,6 +409,90 @@ test("Shapes drag draws the default Rectangle, and Enter finishes it", async ({ 
   await expect(page.locator(LAST_STEP)).toHaveText("Draw Rectangle");
   await page.keyboard.press("Enter");
   await expect(page.locator(LAST_STEP)).toHaveText("Finish Rectangle");
+});
+
+test("undoing Finish Rectangle brings back its handles, a corner drag records Adjust, and redo finishes it", async ({
+  page,
+}) => {
+  const center = await canvasCenter(page);
+  const canvas = page.locator(ENGINE_CANVAS);
+  await selectTool(page, "Shapes");
+  await drag(page, [offset(center, -120, -80), offset(center, 120, 80)]);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Rectangle");
+  const corner = offset(center, 120, 80);
+  await page.mouse.move(corner.x - 3, corner.y);
+  await page.mouse.move(corner.x, corner.y, { steps: 2 });
+  await expect(canvas).toHaveCSS("cursor", "crosshair");
+
+  await page.keyboard.press("Control+Z");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Draw Rectangle");
+  await page.mouse.move(corner.x - 3, corner.y);
+  await page.mouse.move(corner.x, corner.y, { steps: 2 });
+  await expect(canvas).toHaveCSS("cursor", "nwse-resize");
+  await page.keyboard.press("Control+Y");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Rectangle");
+  await page.mouse.move(corner.x - 3, corner.y);
+  await page.mouse.move(corner.x, corner.y, { steps: 2 });
+  await expect(canvas).toHaveCSS("cursor", "crosshair");
+
+  await page.keyboard.press("Control+Z");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Draw Rectangle");
+  await page.mouse.move(corner.x - 3, corner.y);
+  await page.mouse.move(corner.x, corner.y, { steps: 2 });
+  await expect(canvas).toHaveCSS("cursor", "nwse-resize");
+  await drag(page, [corner, offset(center, 140, 100)]);
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Adjust Rectangle");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Rectangle");
+});
+
+test("undoing Finish Rectangle from another tool switches back to Shapes with the handles", async ({
+  page,
+}) => {
+  const center = await canvasCenter(page);
+  const canvas = page.locator(ENGINE_CANVAS);
+  await selectTool(page, "Shapes");
+  await drag(page, [offset(center, -120, -80), offset(center, 120, 80)]);
+  await selectTool(page, "Pencil");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Rectangle");
+  await page.locator(".app-canvas-area").click({ position: { x: 4, y: 4 } });
+  await page.keyboard.press("Control+Z");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Draw Rectangle");
+  await expect(page.getByRole("radio", { name: "Shapes", exact: true })).toBeChecked();
+  const corner = offset(center, 120, 80);
+  await page.mouse.move(corner.x - 3, corner.y);
+  await page.mouse.move(corner.x, corner.y, { steps: 2 });
+  await expect(canvas).toHaveCSS("cursor", "nwse-resize");
+});
+
+test("undoing Finish Line / Curve brings back its handles, an endpoint drag records Adjust, and redo finishes it", async ({
+  page,
+}) => {
+  const center = await canvasCenter(page);
+  const canvas = page.locator(ENGINE_CANVAS);
+  await selectTool(page, "Line / Curve");
+  await drag(page, [offset(center, -120, -60), offset(center, 120, 60)]);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Line / Curve");
+  const end = offset(center, 120, 60);
+
+  await page.keyboard.press("Control+Z");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Draw Line / Curve");
+  await page.mouse.move(end.x - 3, end.y);
+  await page.mouse.move(end.x, end.y, { steps: 2 });
+  await expect(canvas).toHaveCSS("cursor", "grab");
+  await page.keyboard.press("Control+Y");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Line / Curve");
+  await page.mouse.move(end.x - 3, end.y);
+  await page.mouse.move(end.x, end.y, { steps: 2 });
+  await expect(canvas).toHaveCSS("cursor", "crosshair");
+
+  await page.keyboard.press("Control+Z");
+  await drag(page, [end, offset(center, 140, 40)]);
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Adjust Line / Curve");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Line / Curve");
 });
 
 test("a palette click recolors the pending shape live, recorded as one Change Color step (TL-FRAME-01)", async ({

@@ -427,4 +427,74 @@ describe("Line / Curve (TL-LINE-01)", () => {
     drag([25.5, 10.5], [25.5, 30.5]);
     expect(status.mock.lastCall?.[0]).toContain("tool.status.lineFinish");
   });
+
+  describe("undo back into editing (owner request)", () => {
+    /** Draws a line, bends it, widens it and finishes it. */
+    function drawAndFinish(): void {
+      drag([5.5, 10.5], [25.5, 10.5]);
+      drag([15.5, 10.5], [15.5, 20.5]);
+      settings.set("tools.brush.size", 4);
+      runtime.commit?.();
+    }
+
+    it("makes a finished line pending again with its handles and options, and redo finishes it", async () => {
+      drawAndFinish();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(lineCurveHandles.state).toEqual({});
+      const entries = doc.history.entries.length;
+      settings.set("tools.brush.size", 1);
+      settings.set("tools.shapes.curveType", "Straight");
+
+      await doc.history.undo();
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(lineCurveHandles.state.start).toEqual({ x: 5.5, y: 10.5 });
+      expect(lineCurveHandles.state.end).toEqual({ x: 25.5, y: 10.5 });
+      expect(lineCurveHandles.state.curve).toBe("Spline");
+      expect(lineCurveHandles.state.controls).toBeDefined();
+      expect(settings.get("tools.brush.size")).toBe(4);
+      expect(settings.get("tools.shapes.curveType")).toBe("Spline");
+      expect(doc.history.undoName).toBe("history.changeBrushSize");
+      expect(doc.history.entries.length).toBe(entries);
+
+      await doc.history.redo();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(lineCurveHandles.state).toEqual({});
+    });
+
+    it("keeps editing after the undo: an endpoint drag records Adjust", async () => {
+      drawAndFinish();
+      await doc.history.undo();
+      drag([25.5, 10.5], [32.5, 10.5]);
+      expect(doc.history.undoName).toBe("history.adjustLineCurve");
+      expect(doc.history.canRedo).toBe(false);
+      expect(lineCurveHandles.state.end).toEqual({ x: 32.5, y: 10.5 });
+      expect(pixel(31, 10)).toEqual(GREEN);
+    });
+
+    it("steps back through each pending step, and undoing the drawing ends it", async () => {
+      drawAndFinish();
+      await doc.history.undo(); // Finish
+      await doc.history.undo(); // Change Brush Size
+      expect(settings.get("tools.brush.size")).toBe(2);
+      expect(runtime.hasPending?.()).toBe(true);
+      await doc.history.undo(); // Edit (the bend)
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(lineCurveHandles.state.start).toEqual({ x: 5.5, y: 10.5 });
+      expect(pixel(15, 20)).toEqual(WHITE);
+      await doc.history.undo(); // Draw
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(lineCurveHandles.state).toEqual({});
+      expect(pixel(10, 10)).toEqual(WHITE);
+    });
+
+    it("comes back pending when the tool is active again after a switch", async () => {
+      drawAndFinish();
+      runtime.deactivate();
+      await doc.history.undo();
+      expect(lineCurveHandles.state).toEqual({});
+      runtime.activate();
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(lineCurveHandles.state.end).toEqual({ x: 25.5, y: 10.5 });
+    });
+  });
 });

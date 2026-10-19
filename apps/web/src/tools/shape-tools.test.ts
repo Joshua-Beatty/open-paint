@@ -604,6 +604,118 @@ describe("Shapes (TL-SHAPE-01)", () => {
     expect(runtime.hasPending?.()).toBe(false);
   });
 
+  describe("undo back into editing (owner request)", () => {
+    const RED = { r: 255, g: 0, b: 0, a: 255 };
+
+    /** Draws, changes the width, drags a corner, recolours and finishes a rectangle. */
+    function drawAndFinish(): void {
+      drag([5, 5], [25, 15]);
+      settings.set("tools.brush.size", 4);
+      drag([25, 15], [35, 25]);
+      settings.set("tools.primaryColor", RED);
+      settleColorEdits();
+      runtime.commit?.();
+    }
+
+    it("makes a finished shape pending again with its handles and options, and redo finishes it", async () => {
+      drawAndFinish();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(transformFrame.state).toBeUndefined();
+      const finished = [
+        ...(doc.activeLayer?.pixels.readRegion(doc.activeLayer.pixels.bounds).data ?? []),
+      ];
+      const entries = doc.history.entries.length;
+      settings.set("tools.brush.size", 9);
+      settings.set("tools.shapes.drawType", "Interior");
+
+      await doc.history.undo();
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(frameBox()).toEqual({ left: 5, top: 5, right: 35, bottom: 25 });
+      expect(settings.get("tools.brush.size")).toBe(4);
+      expect(settings.get("tools.shapes.drawType")).toBe("Outline");
+      expect(doc.history.undoName).toContain("history.changeColor");
+      expect(doc.history.entries.length).toBe(entries);
+      expect(status.mock.lastCall?.[0]).toContain("tool.status.shapeFinish");
+
+      await doc.history.redo();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(transformFrame.state).toBeUndefined();
+      expect([
+        ...(doc.activeLayer?.pixels.readRegion(doc.activeLayer.pixels.bounds).data ?? []),
+      ]).toEqual(finished);
+    });
+
+    it("keeps editing after the undo: a corner drag records Adjust and redraws in the step's colour", async () => {
+      drawAndFinish();
+      await doc.history.undo();
+      drag([5, 5], [2, 2]);
+      expect(doc.history.undoName).toContain("history.adjustShape");
+      expect(doc.history.canRedo).toBe(false);
+      expect(frameBox()).toEqual({ left: 2, top: 2, right: 35, bottom: 25 });
+      expect(pixel(2, 10)).toEqual(RED);
+      // The old edge's pixels are gone: the step drew over the layer before the shape.
+      expect(pixel(5, 10)).toEqual(PAPER);
+      runtime.commit?.();
+      expect(doc.history.undoName).toContain("history.finishShape");
+      expect(runtime.hasPending?.()).toBe(false);
+    });
+
+    it("steps back through each pending step with that step's state, and undoing the drawing ends it", async () => {
+      drawAndFinish();
+      await doc.history.undo(); // Finish
+      await doc.history.undo(); // Change Color
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(pixel(5, 10)).toEqual(GREEN);
+      settings.set("tools.primaryColor", GREEN);
+      await doc.history.undo(); // Adjust
+      expect(frameBox()).toEqual({ left: 5, top: 5, right: 25, bottom: 15 });
+      await doc.history.undo(); // Change Brush Size
+      expect(settings.get("tools.brush.size")).toBe(2);
+      expect(runtime.hasPending?.()).toBe(true);
+      await doc.history.undo(); // Draw
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(transformFrame.state).toBeUndefined();
+      expect(pixel(5, 10)).toEqual(PAPER);
+      await doc.history.redo();
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(frameBox()).toEqual({ left: 5, top: 5, right: 25, bottom: 15 });
+    });
+
+    it("comes back pending when the tool is active again after a switch", async () => {
+      drawAndFinish();
+      runtime.deactivate();
+      await doc.history.undo();
+      expect(transformFrame.state).toBeUndefined();
+      runtime.activate();
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(frameBox()).toEqual({ left: 5, top: 5, right: 35, bottom: 25 });
+    });
+
+    it("undoes as plain pixels when its layer is no longer active", async () => {
+      const bottom = doc.activeLayer;
+      if (bottom === undefined) throw new Error("no active layer");
+      const top = doc.addLayer();
+      doc.setActiveLayer(bottom);
+      drawAndFinish();
+      doc.setActiveLayer(top);
+      await doc.history.undo();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(transformFrame.state).toBeUndefined();
+      expect(bottom.pixels.getPixel(5, 10)).toEqual(RED);
+    });
+
+    it("undoes as plain pixels when its layer's pixels were replaced", async () => {
+      drawAndFinish();
+      expect(doc.resize({ width: 30, height: 30 }, { filter: "nearest", linearLight: false })).toBe(
+        true,
+      );
+      await doc.history.undo();
+      await doc.history.undo();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(report).not.toHaveBeenCalled();
+    });
+  });
+
   it("restores the layer when a drawing is cancelled, and records nothing", () => {
     const before = doc.history.entries.length;
     runtime.pointer(event("down", 5, 5));

@@ -368,18 +368,37 @@ export class SessionPixels {
   readonly layer: Layer;
   /** The layer before the session. Every step draws over it. */
   readonly base: LayerSnapshot;
+  readonly #store: TiledPixelStore;
   #committed: LayerPatches = [];
   #region = new TileRegion();
 
   constructor(document: Document, layer: Layer) {
     this.document = document;
     this.layer = layer;
+    this.#store = layer.pixels;
     this.base = new LayerSnapshot(layer.pixels);
   }
 
   /** The output of the last recorded step, empty before the first. */
   get committed(): LayerPatches {
     return this.#committed;
+  }
+
+  /**
+   * Whether the session can still draw on its layer: the layer is in the image and holds the
+   * pixels the session began on (a resize or a deleted layer replaces them).
+   */
+  get valid(): boolean {
+    return this.document.layers.includes(this.layer) && this.layer.pixels === this.#store;
+  }
+
+  /**
+   * Takes `patches` as the output of the recorded step the layer shows now, after an undo or a redo
+   * landed on one of the session's steps. Nothing is written.
+   */
+  adopt(patches: LayerPatches): void {
+    this.#committed = patches;
+    this.#region = patchRegion(patches);
   }
 
   /** Shows `patches` on the layer, with no history item. */
