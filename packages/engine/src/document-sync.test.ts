@@ -61,6 +61,22 @@ describe("DocumentMirror overlays (TL-FRAME-01)", () => {
     replica.apply(mirror.describe(doc()));
     expect(store?.getPixel(305, 10)).toEqual(RED);
   });
+
+  it("sends only the tiles whose patches changed (L2)", () => {
+    const layer = new TiledPixelStore(600, 300);
+    const mirror = new DocumentMirror();
+    const patch = (x: number) => ({ area: rect(x, 0, 10, 10), output: new Surface(10, 10) });
+    const first = patch(0);
+    let overlay: LayerOverlay | undefined = { patches: [first] };
+    const doc = (): MirroredDocument => ({
+      width: 600,
+      height: 300,
+      layers: [{ id: 1, visible: true, opacity: 255, blendMode: 0, pixels: layer, overlay }],
+    });
+    mirror.describe(doc());
+    overlay = { patches: [first, patch(300)] };
+    expect(mirror.describe(doc()).tiles[0]?.tiles.map(({ tx }) => tx)).toEqual([1]);
+  });
 });
 
 describe("DocumentMirror and DocumentReplica", () => {

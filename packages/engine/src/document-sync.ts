@@ -372,8 +372,23 @@ export class DocumentMirror {
       const known = changed.get(key);
       changed.set(key, known === undefined ? area : joinArea(known, area));
     };
-    for (const patch of overlay?.patches ?? []) add(patch);
-    if (!whole) for (const patch of sent?.overlay.patches ?? []) add(patch);
+    // Only tiles whose patches changed are sent again (L2): a gradient landing tile by tile keeps
+    // the patches of the tiles that landed before.
+    const same = (key: number) => {
+      const before = sent?.tiles.get(key);
+      const now = tiles.get(key);
+      return (
+        before !== undefined &&
+        now !== undefined &&
+        before.length === now.length &&
+        before.every((patch, i) => patch === now[i])
+      );
+    };
+    for (const [key, list] of tiles) if (whole || !same(key)) for (const patch of list) add(patch);
+    if (!whole) {
+      for (const [key, list] of sent?.tiles ?? [])
+        if (!same(key)) for (const patch of list) add(patch);
+    }
     for (const [key, area] of changed) {
       const tx = key % store.tilesX;
       const ty = Math.floor(key / store.tilesX);
