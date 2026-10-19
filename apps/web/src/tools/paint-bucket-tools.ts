@@ -9,6 +9,7 @@ import {
   type Rect,
   rect,
   rectFromEdges,
+  type Selection,
   Surface,
   TiledPixelStore,
   translateRect,
@@ -19,20 +20,24 @@ import { bucketFillCpu } from "@openpaint/engine";
 import type { ToolPointerEvent, ToolRuntime, ToolViewState } from "@openpaint/extension-api";
 import type { MessageId } from "@openpaint/i18n";
 import type { SettingChange } from "@openpaint/storage";
+import { PRIMARY_COLOR_PATH, SECONDARY_COLOR_PATH } from "../colors/use-colors";
 import { ColorEdits, isColorChange, paintColors, sameColor } from "./color-edits";
 import { CROSSHAIR_CURSOR, GRAB_CURSOR, GRABBING_CURSOR, nearHandle } from "./cursors";
 import { floodMask, toleranceOf } from "./flood";
-import { hatchAligned } from "./layer-patch";
+import { hatchAligned, LayerSnapshot } from "./layer-patch";
 import { blendValue, hatchValue, selectionCoverage } from "./paint-stroke";
 import type { PaintHost } from "./paint-tools";
-import {
-  PendingSteps,
-  restoreSettings,
-  type SettingSnapshot,
-  snapshotSettings,
-} from "./pending-steps";
+import type { SettingSnapshot } from "./pending-steps";
 import type { PixelPoint } from "./select-geometry";
 import { reportToolFailure } from "./tool-failure";
+import {
+  layerIndex,
+  PendingOptions,
+  recordStep,
+  type StepContext,
+  type StepKind,
+  type SteppedRuntime,
+} from "./tool-history";
 import { wandHandles } from "./wand-handles";
 
 /** The history name of each option change made while a fill is pending (TL-FRAME-02). */
@@ -48,8 +53,12 @@ const OPTION_HISTORY_NAMES: Readonly<Record<string, MessageId>> = {
   "tools.sampleAllLayers": "history.changeSampling",
 };
 
-/** The settings a fill step depends on, which undo and redo restore. */
-const OPTION_PATHS = Object.keys(OPTION_HISTORY_NAMES);
+/** The settings a fill step depends on, which undo and redo restore, colors included. */
+const OPTION_PATHS = [
+  ...Object.keys(OPTION_HISTORY_NAMES),
+  PRIMARY_COLOR_PATH,
+  SECONDARY_COLOR_PATH,
+];
 
 type PixelEdit = Parameters<Document["editLayerPixels"]>[3];
 
@@ -123,7 +132,10 @@ function imageBaseOf(session: BucketSession): Surface {
   return session.imageBase;
 }
 
-/** The state of a fill after one of its steps (TL-FRAME-01). */
+/**
+ * A pending fill as one of its history items keeps it (TL-FRAME-01): everything needed to take it
+ * up again and fill it as it was.
+ */
 interface BucketStep {
   /** The flood's origin, moved by the origin handle (TL-BUCKET-01). */
   readonly seed: PixelPoint;
@@ -134,8 +146,12 @@ interface BucketStep {
   /** The fill colors of the step, which undo and redo give back to the pending fill. */
   readonly color: ColorRgba8;
   readonly background: ColorRgba8;
-  /** Whether Finish recorded this step. A finished fill is no longer pending. */
-  readonly finished: boolean;
+  /** The button that clicked, which decides which color is `color` (TL-FRAME-03). */
+  readonly button: number;
+  /** Shift forced Global for the click. */
+  readonly forceGlobal: boolean;
+  /** The selection the fill is clipped to, as it was when the fill was clicked (TL-FRAME-04). */
+  readonly clip: Selection;
 }
 
 /** The stencil a step filled: the flood's mask, its set pixels' bounds, and the pixels it wrote. */
@@ -174,11 +190,14 @@ interface BucketSession {
   imageBase: Surface | undefined;
   /** Shift forced Global for the click. Later recomputes keep it. */
   readonly forceGlobal: boolean;
-  readonly steps: PendingSteps<BucketStep>;
+  /** The selection the fill is clipped to, kept from the click. */
+  readonly clip: Selection;
   /** The state the history stands at. */
   step: BucketStep;
-  /** Stops the listener that follows undo and redo. */
-  readonly stopListening: () => void;
+  /** Whether the fill's first step is recorded. */
+  recorded: boolean;
+  /** Names the fill's history items (`ToolStep.session`). */
+  readonly key: object;
 }
 
 /**
@@ -191,7 +210,7 @@ interface BucketSession {
  * state of the step they land on, options included, so it stays Dirty. A flood runs in the WASM
  * worker, and while it runs the spinner shows and pointer input waits.
  */
-class PaintBucketRuntime implements ToolRuntime {
+class PaintBucketRuntime implements SteppedRuntime {
   readonly #host: PaintHost;
   #session: BucketSession | undefined;
   #drag: { readonly session: BucketSession; seed: PixelPoint } | undefined;
@@ -202,8 +221,8 @@ class PaintBucketRuntime implements ToolRuntime {
   #unsubscribe: (() => void) | undefined;
   /** Set while the runtime writes option values back, so their change events are ignored. */
   #restoring = false;
-  /** Set while the runtime changes the document, so its own changes are not read as undo or redo. */
-  #writing = false;
+  /** The option values of the pending fill on the options bar. */
+  readonly #options: PendingOptions;
   /** The last pointer sample, which the cursor is chosen for. */
   #hover: ToolPointerEvent | undefined;
   /** Color changes of the pending fill: drawn per frame, recorded as one "Change Color" step. */
@@ -213,6 +232,15 @@ class PaintBucketRuntime implements ToolRuntime {
 
   constructor(host: PaintHost) {
     this.#host = host;
+    this.#options = new PendingOptions(OPTION_PATHS, (action) => {
+      const restoring = this.#restoring;
+      this.#restoring = true;
+      try {
+        action();
+      } finally {
+        this.#restoring = restoring;
+      }
+    });
     this.#colors = new ColorEdits({
       ...(host.scheduleFrame && { scheduleFrame: host.scheduleFrame }),
       preview: () => this.#guard(() => this.#previewColors()),
@@ -269,14 +297,79 @@ class PaintBucketRuntime implements ToolRuntime {
     const session = this.#live();
     if (session === undefined) return;
     const { step } = session;
-    if (isEmptyRect(step.painted)) return;
+    if (isEmptyRect(step.painted)) {
+      this.#end();
+      return;
+    }
     this.#record(
       session,
       this.#host.translate("history.finishPaintBucket"),
       step.painted,
       () => undefined,
-      { ...step, finished: true },
+      step,
+      "finish",
     );
+    this.#end();
+  }
+
+  pendingSession(): object | undefined {
+    const session = this.#session;
+    return session?.recorded === true ? session.key : undefined;
+  }
+
+  /**
+   * Takes up the fill a history item kept, or lets go of the pending one (TL-FRAME-01), even after
+   * a tool switch. The layer already shows the fill, so nothing is written or recorded. A fill of
+   * another session floods the layer as it was before that session's first item, read from the
+   * history.
+   */
+  async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
+    this.#colors.cancel();
+    this.#recolored = undefined;
+    this.#drag = undefined;
+    this.#queued = undefined;
+    const step = state as BucketStep | undefined;
+    const settings = this.#host.settings();
+    if (step === undefined || context === undefined) {
+      if (context !== undefined) this.#options.leave(settings);
+      else this.#options.edited();
+      this.#end();
+      return;
+    }
+    let session = this.#session;
+    const fromIdle = session?.recorded !== true;
+    if (
+      session === undefined ||
+      session.key !== context.session ||
+      session.layer !== context.layer
+    ) {
+      const { tiles } = await context.before();
+      const { document, layer } = context;
+      session = {
+        document,
+        layer,
+        button: step.button,
+        color: step.color,
+        background: step.background,
+        fill: undefined,
+        layerBase: new LayerSnapshot(layer.pixels, tiles).read(
+          rect(0, 0, document.width, document.height),
+        ),
+        imageBase: undefined,
+        forceGlobal: step.forceGlobal,
+        clip: step.clip,
+        step,
+        recorded: true,
+        key: context.session,
+      };
+    }
+    session.step = step;
+    session.recorded = true;
+    session.color = step.color;
+    session.background = step.background;
+    this.#session = session;
+    this.#options.enter(settings, step.options, fromIdle);
+    this.#showHandles();
   }
 
   /** Stops an origin drag. The fill is not changed and nothing is recorded. */
@@ -317,9 +410,11 @@ class PaintBucketRuntime implements ToolRuntime {
     const initial: BucketStep = {
       seed,
       painted: EMPTY_RECT,
-      options: snapshotSettings(settings, OPTION_PATHS),
+      options: this.#options.snapshot(settings),
       ...colors,
-      finished: false,
+      button: event.button,
+      forceGlobal: event.shiftKey,
+      clip: document.selection,
     };
     const session: BucketSession = {
       document,
@@ -330,9 +425,10 @@ class PaintBucketRuntime implements ToolRuntime {
       layerBase: layer.pixels.readRegion({ x: 0, y: 0, width, height }),
       imageBase: undefined,
       forceGlobal: event.shiftKey,
-      steps: new PendingSteps(document.history.appliedCommands.at(-1), initial),
+      clip: document.selection,
       step: initial,
-      stopListening: document.subscribe(() => this.#sync()),
+      recorded: false,
+      key: {},
     };
     this.#session = session;
     this.#refresh(session, "history.paintBucket", seed);
@@ -400,10 +496,12 @@ class PaintBucketRuntime implements ToolRuntime {
     const step: BucketStep = {
       seed,
       painted,
-      options: snapshotSettings(settings, OPTION_PATHS),
+      options: this.#options.snapshot(settings),
       color: session.color,
       background: session.background,
-      finished: false,
+      button: session.button,
+      forceGlobal: session.forceGlobal,
+      clip: session.clip,
     };
     this.#record(
       session,
@@ -414,6 +512,7 @@ class PaintBucketRuntime implements ToolRuntime {
         pixels.writeRegion(output, written.x, written.y, translateRect(written, -work.x, -work.y));
       },
       step,
+      session.recorded ? "edit" : "draw",
     );
     if (session.step === step) session.fill = { step, mask, area, written };
   }
@@ -449,7 +548,7 @@ class PaintBucketRuntime implements ToolRuntime {
       background: colors.background,
     });
     const coverage = selectionCoverage(
-      document.selection,
+      session.clip,
       work,
       read("selection.renderingQuality") === "Aliased",
     );
@@ -457,19 +556,34 @@ class PaintBucketRuntime implements ToolRuntime {
     return { work, output };
   }
 
-  /** Applies `edit` to `area` as one history item, and records `step` as the state it ends. */
+  /**
+   * Applies `edit` to `area` as one history item that keeps the fill's state on either side, and
+   * makes `step` the state it ends.
+   */
   #record(
     session: BucketSession,
     name: string,
     area: Rect,
     edit: PixelEdit,
     step: BucketStep,
+    kind: StepKind,
   ): void {
-    this.#write(() => session.document.editLayerPixels(name, session.layer, area, edit));
-    const command = session.document.history.appliedCommands.at(-1);
-    if (command === undefined) return;
-    session.steps.record(command, step);
+    const { document, layer } = session;
+    recordStep(
+      document,
+      {
+        tool: "paintBucket",
+        layer: layerIndex(document, layer),
+        kind,
+        session: session.key,
+        before: kind === "draw" ? undefined : session.step,
+        after: kind === "finish" ? undefined : step,
+      },
+      () => document.editLayerPixels(name, layer, area, edit),
+    );
     session.step = step;
+    session.recorded = true;
+    this.#options.edited();
     this.#showHandles();
   }
 
@@ -582,10 +696,8 @@ class PaintBucketRuntime implements ToolRuntime {
     const write = (pixels: Layer["pixels"]) => {
       pixels.writeRegion(output, written.x, written.y, translateRect(written, -work.x, -work.y));
     };
-    this.#write(() => {
-      if (restore) session.document.restoreLayerPixels(session.layer, write);
-      else session.document.previewLayerPixels(session.layer, write);
-    });
+    if (restore) session.document.restoreLayerPixels(session.layer, write);
+    else session.document.previewLayerPixels(session.layer, write);
   }
 
   #guard(work: () => void): void {
@@ -596,65 +708,13 @@ class PaintBucketRuntime implements ToolRuntime {
     }
   }
 
-  /** Follows the history after an undo, redo or other change. Our own writes are not followed. */
-  #sync(): void {
-    if (this.#writing) return;
-    this.#current();
-  }
-
-  /** Runs `action` as a document change of this runtime. */
-  #write(action: () => void): void {
-    this.#writing = true;
-    try {
-      action();
-    } finally {
-      this.#writing = false;
-    }
-  }
-
-  /**
-   * The session, if the document's latest history item is one of its steps. Undo and redo move
-   * it to that step's state, with the option values of the step. A session whose latest item is
-   * anything else has ended.
-   */
-  #current(): BucketSession | undefined {
-    const session = this.#session;
-    if (session === undefined) return undefined;
-    const state = session.steps.locate(session.document.history.appliedCommands.at(-1));
-    if (state === undefined) {
-      this.#end();
-      return undefined;
-    }
-    if (state !== session.step) this.#adopt(session, state);
-    return session;
-  }
-
-  /** The pending session, unless it is committed (a finished fill is not pending). */
+  /** The pending session. */
   #live(): BucketSession | undefined {
-    const session = this.#current();
-    return session?.step.finished === true ? undefined : session;
+    return this.#session;
   }
-
-  #adopt(session: BucketSession, state: BucketStep): void {
-    session.step = state;
-    session.color = state.color;
-    session.background = state.background;
-    const settings = this.#host.settings();
-    if (settings !== null) {
-      this.#restoring = true;
-      try {
-        restoreSettings(settings, state.options);
-      } finally {
-        this.#restoring = false;
-      }
-    }
-    this.#showHandles();
-  }
-
   #end(): void {
     this.#colors.cancel();
     this.#recolored = undefined;
-    this.#session?.stopListening();
     this.#session = undefined;
     this.#drag = undefined;
     wandHandles.set({});
@@ -662,7 +722,7 @@ class PaintBucketRuntime implements ToolRuntime {
 
   #showHandles(): void {
     const session = this.#session;
-    if (session === undefined || session.step.finished) {
+    if (session === undefined) {
       wandHandles.set({});
       return;
     }

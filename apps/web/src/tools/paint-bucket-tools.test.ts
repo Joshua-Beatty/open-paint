@@ -20,6 +20,7 @@ import type { ColorSettings } from "../colors/use-colors";
 import { settleColorEdits } from "./color-edits";
 import { paintBucketToolRuntime } from "./paint-bucket-tools";
 import type { PaintHost } from "./paint-tools";
+import { bindToolHistory, soloSwitcher } from "./tool-history";
 import { wandHandles } from "./wand-handles";
 
 beforeAll(async () => {
@@ -125,12 +126,14 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     await vi.waitFor(() => expect(wandHandles.state.busy).toBeUndefined());
   }
 
+  let host: PaintHost;
+
   beforeEach(() => {
     doc = Document.createBlank({ width: 32, height: 32 });
     paint(0, 0, 16, 32, RED);
     paint(16, 0, 16, 32, BLUE);
     settings = new FakeSettings();
-    const host: PaintHost = {
+    host = {
       settings: () => settings as unknown as ColorSettings,
       document: () => doc,
       translate: (messageId) => messageId,
@@ -139,6 +142,7 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     };
     runtime = paintBucketToolRuntime(host);
     runtime.activate();
+    bindToolHistory(doc, soloSwitcher("paintBucket", runtime));
     notify.mockClear();
     report.mockClear();
   });
@@ -296,13 +300,13 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     expect(wandHandles.state.seed).toEqual({ x: 20, y: 1 });
   });
 
-  it("undo takes the pending fill back, and redo brings it forward, still pending", async () => {
+  it("undo takes the fill back, and redo brings it forward, pending again", async () => {
     click(1, 1);
     await settle(() => expect(pixel(1, 1)).toEqual(GREEN));
 
     expect(await doc.history.undo()).toBe(true);
     expect(pixel(1, 1)).toEqual(RED);
-    expect(runtime.hasPending?.()).toBe(true);
+    expect(runtime.hasPending?.()).toBe(false);
 
     expect(await doc.history.redo()).toBe(true);
     expect(pixel(1, 1)).toEqual(GREEN);
@@ -341,6 +345,27 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     settings.set("tools.tolerance", 1);
     await settle(() => expect(pixel(20, 1)).toEqual(GREEN));
     expect(doc.history.undoName).toBe("history.changeTolerance");
+  });
+
+  it("a new runtime (after a tool switch) takes up a finished fill and floods the layer before it", async () => {
+    click(1, 1);
+    await settle(() => expect(pixel(1, 1)).toEqual(GREEN));
+    runtime.commit?.();
+    runtime.deactivate();
+    runtime = paintBucketToolRuntime(host);
+    runtime.activate();
+    bindToolHistory(doc, soloSwitcher("paintBucket", runtime));
+
+    expect(await doc.history.undo()).toBe(true);
+    expect(runtime.hasPending?.()).toBe(true);
+    expect(wandHandles.state.seed).toEqual({ x: 1, y: 1 });
+    runtime.pointer(event("down", 1.5, 1.5));
+    runtime.pointer(event("move", 20, 1));
+    runtime.pointer(event("up", 20, 1));
+    await settle(() => expect(pixel(20, 1)).toEqual(GREEN));
+    expect(doc.history.undoName).toBe("history.moveOrigin");
+    // The flood reads the layer before the fill: the left half is red again.
+    expect(pixel(1, 1)).toEqual(RED);
   });
 
   it("an edit that is not one of the fill's steps ends the pending fill", async () => {
