@@ -616,6 +616,50 @@ for (const reentry of REENTRIES) {
   });
 }
 
+for (const engine of ["v1", "v2"]) {
+  test(`a pending result drawn over its layer looks exactly as it does once finished (engine ${engine})`, async ({
+    page,
+  }) => {
+    if (engine === "v2") {
+      await page.goto("/?engine=v2");
+      await expect(page.locator(".app-status-zoom")).toHaveText(/\d+%/);
+    }
+    const center = await canvasCenter(page);
+    const clip = { x: center.x - 200, y: center.y - 150, width: 400, height: 300 };
+    const canvasPixels = async () =>
+      (await page.screenshot({ clip, style: CANVAS_ONLY })).toString("base64");
+    const steady = async (expected: string) =>
+      expect.poll(canvasPixels, { timeout: 10_000 }).toBe(expected);
+    // A rotated rectangle and a gradient, each previewed and then finished.
+    await selectTool(page, "Shapes");
+    await drag(page, [offset(center, -120, -80), offset(center, 120, 80)]);
+    await drag(page, [offset(center, 130, -20), offset(center, 90, 70)]);
+    await expect(page.locator(CURRENT_STEP)).toHaveText("Adjust Rectangle");
+    await page.mouse.move(center.x + 400, center.y + 300);
+    await page.waitForTimeout(300);
+    const pending = await canvasPixels();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(CURRENT_STEP)).toHaveText(/^Finish/);
+    await steady(pending);
+
+    await selectTool(page, "Gradient");
+    await drag(page, [offset(center, -150, 0), offset(center, 150, 40)]);
+    await expect(page.locator(CURRENT_STEP)).toHaveText("Gradient");
+    await page.waitForTimeout(500);
+    const gradient = await canvasPixels();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Gradient");
+    await steady(gradient);
+    // Undo shows it pending again, the same; redo draws it again, the same.
+    await page.keyboard.press("Control+Z");
+    await expect(page.locator(CURRENT_STEP)).toHaveText("Gradient");
+    await steady(gradient);
+    await page.keyboard.press("Control+Y");
+    await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Gradient");
+    await steady(gradient);
+  });
+}
+
 test("a palette click recolors the pending shape live, recorded as one Change Color step (TL-FRAME-01)", async ({
   page,
 }) => {
