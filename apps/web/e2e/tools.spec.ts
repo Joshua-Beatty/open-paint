@@ -495,6 +495,127 @@ test("undoing Finish Line / Curve brings back its handles, an endpoint drag reco
   await expect(page.locator(CURRENT_STEP)).toHaveText("Finish Line / Curve");
 });
 
+/**
+ * One editable tool's result for the undo-into-editing checks: how it is drawn, its history names,
+ * a handle and the cursor over it, and a drag of that handle with the step it records.
+ */
+interface Reentry {
+  readonly tool: string;
+  readonly draw: (page: Page, center: Point) => Promise<void>;
+  readonly drawn: string;
+  readonly finished: string;
+  readonly handle: (center: Point) => Point;
+  readonly cursor: string;
+  readonly edit: (center: Point) => readonly Point[];
+  readonly edited: string;
+}
+
+const REENTRIES: readonly Reentry[] = [
+  {
+    tool: "Shapes",
+    draw: (page, center) => drag(page, [offset(center, -120, -80), offset(center, 120, 80)]),
+    drawn: "Draw Rectangle",
+    finished: "Finish Rectangle",
+    handle: (center) => offset(center, 120, 80),
+    cursor: "nwse-resize",
+    edit: (center) => [offset(center, 120, 80), offset(center, 140, 100)],
+    edited: "Adjust Rectangle",
+  },
+  {
+    tool: "Line / Curve",
+    draw: (page, center) => drag(page, [offset(center, -120, -60), offset(center, 120, 60)]),
+    drawn: "Draw Line / Curve",
+    finished: "Finish Line / Curve",
+    handle: (center) => offset(center, 120, 60),
+    cursor: "grab",
+    edit: (center) => [offset(center, 120, 60), offset(center, 140, 40)],
+    edited: "Adjust Line / Curve",
+  },
+  {
+    tool: "Gradient",
+    draw: (page, center) => drag(page, [offset(center, -120, 0), offset(center, 120, 0)]),
+    drawn: "Gradient",
+    finished: "Finish Gradient",
+    handle: (center) => offset(center, 120, 0),
+    cursor: "grab",
+    edit: (center) => [offset(center, 120, 0), offset(center, 140, 30)],
+    edited: "Edit Gradient",
+  },
+  {
+    tool: "Paint Bucket",
+    draw: (page, center) => click(page, offset(center, 0, 0)),
+    drawn: "Paint Bucket",
+    finished: "Finish Paint Bucket",
+    handle: (center) => center,
+    cursor: "grab",
+    edit: (center) => [center, offset(center, 40, 30)],
+    edited: "Move Origin",
+  },
+  {
+    tool: "Magic Wand",
+    draw: (page, center) => click(page, center),
+    drawn: "Magic Wand",
+    finished: "Finish Magic Wand",
+    handle: (center) => center,
+    cursor: "grab",
+    edit: (center) => [center, offset(center, 40, 30)],
+    edited: "Move Origin",
+  },
+  {
+    tool: "Move Selected Pixels",
+    // Nothing is selected: the drag selects all first. Away from the centre, where the rotation
+    // anchor of a Select All sits.
+    draw: (page, center) => drag(page, [offset(center, -60, -40), offset(center, 0, -10)]),
+    drawn: "Move Pixels",
+    finished: "Finish Pixels",
+    handle: (center) => offset(center, 0, -30),
+    cursor: "move",
+    edit: (center) => [offset(center, 0, -30), offset(center, 30, 0)],
+    edited: "Move Pixels",
+  },
+];
+
+for (const reentry of REENTRIES) {
+  test(`undoing Finish of ${reentry.tool} from another tool switches back to it with its handles, and edits and redo continue (TL-FRAME-01)`, async ({
+    page,
+  }) => {
+    const center = await canvasCenter(page);
+    const canvas = page.locator(ENGINE_CANVAS);
+    const hover = async (point: Point) => {
+      await page.mouse.move(point.x - 3, point.y);
+      await page.mouse.move(point.x, point.y, { steps: 2 });
+    };
+    await selectTool(page, reentry.tool);
+    await reentry.draw(page, center);
+    await expect(page.locator(CURRENT_STEP)).toHaveText(reentry.drawn);
+    await selectTool(page, "Pencil");
+    await expect(page.locator(CURRENT_STEP)).toHaveText(reentry.finished);
+    await page.locator(".app-canvas-area").click({ position: { x: 4, y: 4 } });
+
+    await page.keyboard.press("Control+Z");
+    await expect(page.locator(CURRENT_STEP)).toHaveText(reentry.drawn);
+    await expect(page.getByRole("radio", { name: reentry.tool, exact: true })).toBeChecked();
+    await hover(reentry.handle(center));
+    await expect(canvas).toHaveCSS("cursor", reentry.cursor);
+
+    // Redo finishes it again, on its own tool.
+    await page.keyboard.press("Control+Y");
+    await expect(page.locator(CURRENT_STEP)).toHaveText(reentry.finished);
+    await expect(page.getByRole("radio", { name: reentry.tool, exact: true })).toBeChecked();
+
+    // Back into editing: a drag of the handle records the tool's own step.
+    await page.keyboard.press("Control+Z");
+    await expect(page.locator(CURRENT_STEP)).toHaveText(reentry.drawn);
+    const steps = await page.locator("ol.app-history-list li").count();
+    await drag(page, reentry.edit(center));
+    await expect(page.locator(CURRENT_STEP)).toHaveText(reentry.edited);
+    // The new step replaced the undone Finish.
+    await expect(page.locator("ol.app-history-list li")).toHaveCount(steps);
+    await page.keyboard.press("Enter");
+    await expect(page.locator(CURRENT_STEP)).toHaveText(reentry.finished);
+  });
+}
+
 test("a palette click recolors the pending shape live, recorded as one Change Color step (TL-FRAME-01)", async ({
   page,
 }) => {
