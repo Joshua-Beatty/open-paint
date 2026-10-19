@@ -84,12 +84,6 @@ describe("history memory of a pending shape (owner request)", () => {
     runtime.pointer(event("down", 500, 500));
     runtime.pointer(event("move", 3500, 2500));
     runtime.pointer(event("up", 3500, 2500));
-    await spill.flush();
-    const afterDraw = storage.bytes;
-    const rawAfterDraw = raw.mock.results.reduce(
-      (sum, r) => sum + (r.value as { rawBytes: number }).rawBytes,
-      0,
-    );
     for (let i = 0; i < 50; i++) {
       // A body drag of 7 px each time.
       runtime.pointer(event("down", 2000 + i * 7, 1500));
@@ -102,16 +96,10 @@ describe("history memory of a pending shape (owner request)", () => {
       0,
     );
     expect(doc.history.entries.length).toBe(52);
-    process.stderr.write(
-      `HISTORY-MEMORY draw: ${afterDraw} B stored (${rawAfterDraw} B raw); 50 edits: ${
-        storage.bytes - afterDraw
-      } B stored (${rawTotal - rawAfterDraw} B raw); per edit ${Math.round(
-        (storage.bytes - afterDraw) / 50,
-      )} B stored (${Math.round((rawTotal - rawAfterDraw) / 50)} B raw)\n`,
-    );
     // The steps keep only the shape's state: no pixels (before the overlay: about 290 KB stored,
     // 21 MB raw, per step).
     expect(rawTotal).toBe(0);
+    expect(storage.bytes).toBe(0);
     runtime.commit?.();
     await spill.flush();
     // Finish keeps only the pixels it overwrote: one tile patch of the outline's tiles.
