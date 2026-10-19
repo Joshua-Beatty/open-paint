@@ -10,7 +10,7 @@ import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColorSettings } from "../colors/use-colors";
-import { settleColorEdits } from "./color-edits";
+import { settleEditBursts } from "./edit-burst";
 import { gradientHandles } from "./gradient-handles";
 import {
   type GradientLanes,
@@ -203,7 +203,7 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
     await vi.waitFor(() => expect(pixel(31, 16)).toEqual(BLUE));
     expect(pixel(0, 16)).toEqual(RED);
     expect(doc.history.entries.length).toBe(before);
-    settleColorEdits();
+    settleEditBursts();
     await vi.waitFor(() => expect(doc.history.undoName).toBe("history.changeColor"));
     expect(doc.history.entries.length).toBe(before + 1);
     expect(runtime.hasPending?.()).toBe(true);
@@ -330,6 +330,7 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
   it("an option change re-renders the pending gradient as one step", () => {
     drag(2, 16, 30, 16);
     settings.set("tools.gradient.repeatType", "RepeatWrapped");
+    settleEditBursts();
     expect(doc.history.undoName).toBe("history.changeRepeatType");
     expect(runtime.hasPending?.()).toBe(true);
     expect(pixel(31, 16)).not.toEqual(YELLOW);
@@ -479,10 +480,25 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
   it("the history names of the option changes follow the spec", () => {
     drag(2, 16, 30, 16);
     settings.set("tools.gradient.type", "Radial");
+    settleEditBursts();
     expect(doc.history.undoName).toBe("history.changeGradientType");
     settings.set("tools.gradient.alphaOnly", true);
+    settleEditBursts();
     expect(doc.history.undoName).toBe("history.toggleAlphaMode");
     settings.set("tools.antialiasing", true);
+    settleEditBursts();
+    expect(doc.history.undoName).toBe("history.toggleAntialiasing");
+  });
+
+  it("merges a burst of option changes into one step named after the latest", () => {
+    drag(2, 16, 30, 16);
+    const entries = doc.history.entries.length;
+    settings.set("tools.gradient.type", "Radial");
+    settings.set("tools.gradient.repeatType", "RepeatWrapped");
+    settings.set("tools.antialiasing", true);
+    expect(doc.history.entries.length).toBe(entries);
+    settleEditBursts();
+    expect(doc.history.entries.length).toBe(entries + 1);
     expect(doc.history.undoName).toBe("history.toggleAntialiasing");
   });
 });

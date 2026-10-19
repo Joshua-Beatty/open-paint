@@ -223,8 +223,8 @@ function pixelTarget(
       session.cancel();
     },
     finish: (name, record) => session.finish(name, step(record)),
-    rerender: (name, record) => {
-      if (session.preview(session.transform, options())) session.commit(name, step(record));
+    rerender: () => {
+      session.preview(session.transform, options());
     },
     settling: () => session.settling(),
   };

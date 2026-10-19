@@ -33,9 +33,9 @@ import {
   strokeShapes,
 } from "@openpaint/tools";
 import { PRIMARY_COLOR_PATH, SECONDARY_COLOR_PATH } from "../colors/use-colors";
-import { ColorEdits, isColorChange, paintColors, sameColor } from "./color-edits";
 import { coverageParts } from "./coverage-cells";
 import { CROSSHAIR_CURSOR, GRAB_CURSOR, GRABBING_CURSOR, nearHandle, viewScaleOf } from "./cursors";
+import { EditBurst, isColorChange, paintColors, sameColor } from "./edit-burst";
 import { FrameCoalescer } from "./frame-coalescer";
 import { type CoveragePart, type LayerPatches, renderCoverage, SessionPixels } from "./layer-patch";
 import { NudgeBurst, nudgeOffset } from "./nudge-burst";
@@ -329,7 +329,7 @@ class ShapeRuntime implements SteppedRuntime {
   #hover: ToolPointerEvent | undefined;
 
   /** Color changes of the pending shape: drawn per frame, recorded as one "Change Color" step. */
-  readonly #colors: ColorEdits;
+  readonly #edits: EditBurst;
   /** Arrow nudges of the pending shape, recorded as one "Adjust" step per burst (TL-MOVE-01). */
   readonly #nudges: NudgeBurst;
   /** The option values of the pending shape on the options bar. */
@@ -345,16 +345,16 @@ class ShapeRuntime implements SteppedRuntime {
       this.#guard(() => this.#record(session, "history.adjustShape"));
       this.#refresh();
     });
-    this.#colors = new ColorEdits({
+    this.#edits = new EditBurst({
       ...(host.scheduleFrame && { scheduleFrame: host.scheduleFrame }),
       preview: () => {
         const session = this.#idle();
         if (session !== undefined) this.#guard(() => this.#show(session));
       },
-      record: () => {
+      record: (name) => {
         const session = this.#idle();
         if (session === undefined) return;
-        this.#guard(() => this.#record(session, "history.changeColor"));
+        this.#guard(() => this.#record(session, name as MessageId));
         this.#refresh();
       },
     });
@@ -367,7 +367,7 @@ class ShapeRuntime implements SteppedRuntime {
   nudge(dx: number, dy: number, step: number): boolean {
     const session = this.#idle();
     if (session === undefined) return false;
-    this.#colors.flush();
+    this.#edits.flush();
     const offset = nudgeOffset(dx, dy, step);
     const { box } = session;
     session.box = {
@@ -386,7 +386,7 @@ class ShapeRuntime implements SteppedRuntime {
   /** Records waiting nudges and color changes, before anything else changes the shape. */
   #settle(): void {
     this.#nudges.flush();
-    this.#colors.flush();
+    this.#edits.flush();
   }
 
   activate(): void {
@@ -467,7 +467,7 @@ class ShapeRuntime implements SteppedRuntime {
   async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
     this.#frames.cancel();
     this.#nudges.cancel();
-    this.#colors.cancel();
+    this.#edits.cancel();
     this.#drag = undefined;
     this.#draw = undefined;
     const snapshot = state as ShapeSnapshot | undefined;
@@ -940,8 +940,8 @@ class ShapeRuntime implements SteppedRuntime {
   }
 
   /**
-   * Recomputes the pending shape when its option changes (TL-FRAME-02). A shape-type change
-   * switches the shape and records "Change to {shape}".
+   * Recomputes the pending shape when its option changes (TL-FRAME-02). A burst of changes records
+   * one step, named after the latest change; a shape-type change records "Change to {shape}".
    */
   #optionChanged(change: SettingChange): void {
     if (this.#quiet || change.source !== "local") return;
@@ -949,25 +949,25 @@ class ShapeRuntime implements SteppedRuntime {
       this.#colorChanged();
       return;
     }
-    const session = this.#live();
+    const inHand = this.#draw?.session ?? this.#drag?.session;
+    const session = inHand ?? this.#live();
     if (session === undefined) return;
-    this.#settle();
+    this.#nudges.flush();
+    let name: MessageId | undefined = OPTION_HISTORY_NAMES[change.path];
     if (change.path === SHAPE_SETTING_PATH) {
       const shape = drawableShapeOf(change.value);
       if (shape === undefined || shape.id === session.shape.id) return;
       session.shape = shape;
       session.touched = true;
-      this.#record(session, "history.changeToShape");
-      this.#refresh();
-      return;
+      name = "history.changeToShape";
     }
-    const name = OPTION_HISTORY_NAMES[change.path];
     if (name === undefined) return;
     if (change.path === "tools.shapes.radius") {
       session.radius = numberOf(change.value, session.radius);
       session.touched = true;
     }
-    this.#record(session, name);
+    if (inHand !== undefined) this.#showOnNextFrame(inHand);
+    else this.#edits.changed(name);
     this.#refresh();
   }
 
@@ -986,7 +986,7 @@ class ShapeRuntime implements SteppedRuntime {
     session.color = color;
     session.background = background;
     if (inHand !== undefined) this.#showOnNextFrame(inHand);
-    else this.#colors.changed();
+    else this.#edits.changed("history.changeColor");
   }
 
   /** The pending shape while no drawing or handle drag is in progress. */

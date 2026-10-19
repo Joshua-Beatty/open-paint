@@ -17,7 +17,7 @@ import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColorSettings } from "../colors/use-colors";
-import { settleColorEdits } from "./color-edits";
+import { settleEditBursts } from "./edit-burst";
 import { paintBucketToolRuntime } from "./paint-bucket-tools";
 import type { PaintHost } from "./paint-tools";
 import { bindToolHistory, soloSwitcher } from "./tool-history";
@@ -198,7 +198,7 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     expect(pixel(1, 31)).toEqual(BLUE);
     expect(pixel(20, 1)).toEqual(BLUE);
     expect(doc.history.entries.length).toBe(before);
-    settleColorEdits();
+    settleEditBursts();
     expect(doc.history.undoName).toBe("history.changeColor");
     expect(doc.history.entries.length).toBe(before + 1);
     expect(runtime.hasPending?.()).toBe(true);
@@ -208,7 +208,7 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     expect(pixel(1, 1)).toEqual(YELLOW);
     expect(runtime.hasPending?.()).toBe(true);
     settings.set("tools.secondaryColor", GREEN);
-    settleColorEdits();
+    settleEditBursts();
     await settle(() => expect(pixel(1, 1)).toEqual(GREEN));
     expect(doc.history.undoName).toBe("history.changeColor");
     runtime.commit?.();
@@ -243,7 +243,11 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     expect(pixel(1, 0)).toEqual(GREEN);
     expect(pixel(1, 4)).toEqual(GREEN);
     expect(pixel(20, 1)).toEqual(BLUE);
-    expect(doc.history.undoName).toBe("history.changeFill");
+    // Shown at once, recorded as one step once the burst of changes ends.
+    expect(doc.history.undoName).toBe("history.paintBucket");
+    settleEditBursts();
+    await settle(() => expect(doc.history.undoName).toBe("history.changeFill"));
+    expect(pixel(1, 1)).toEqual(YELLOW);
 
     expect(await doc.history.undo()).toBe(true);
     expect(pixel(1, 1)).toEqual(GREEN);
@@ -283,7 +287,8 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
 
     settings.set("tools.tolerance", 1);
     await settle(() => expect(pixel(20, 1)).toEqual(GREEN));
-    expect(doc.history.undoName).toBe("history.changeTolerance");
+    settleEditBursts();
+    await settle(() => expect(doc.history.undoName).toBe("history.changeTolerance"));
     expect(pixel(1, 1)).toEqual(GREEN);
   });
 
@@ -320,6 +325,8 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     settings.set("tools.brush.fillType", "Hatch");
     settings.set("tools.brush.hatchStyle", "Horizontal");
     await settle(() => expect(pixel(1, 1)).toEqual(YELLOW));
+    settleEditBursts();
+    await settle(() => expect(doc.history.undoName).toBe("history.changeFill"));
 
     expect(await doc.history.undo()).toBe(true);
     expect(settings.get("tools.brush.fillType")).toBe("Solid");
@@ -344,7 +351,28 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
 
     settings.set("tools.tolerance", 1);
     await settle(() => expect(pixel(20, 1)).toEqual(GREEN));
-    expect(doc.history.undoName).toBe("history.changeTolerance");
+    settleEditBursts();
+    await settle(() => expect(doc.history.undoName).toBe("history.changeTolerance"));
+  });
+
+  it("merges a burst of option changes into one step, and puts the layer back before recording it", async () => {
+    click(1, 1);
+    await settle(() => expect(pixel(1, 1)).toEqual(GREEN));
+    const entries = doc.history.entries.length;
+    settings.set("tools.tolerance", 1);
+    await settle(() => expect(pixel(20, 1)).toEqual(GREEN));
+    settings.set("tools.tolerance", 0.5);
+    await settle(() => expect(pixel(20, 1)).toEqual(BLUE));
+    settings.set("tools.brush.fillType", "Hatch");
+    settings.set("tools.brush.hatchStyle", "Horizontal");
+    await settle(() => expect(pixel(1, 1)).toEqual(YELLOW));
+    expect(doc.history.entries.length).toBe(entries);
+    settleEditBursts();
+    await settle(() => expect(doc.history.entries.length).toBe(entries + 1));
+    expect(doc.history.undoName).toBe("history.changeFill");
+    expect(await doc.history.undo()).toBe(true);
+    expect(pixel(1, 1)).toEqual(GREEN);
+    expect(pixel(20, 1)).toEqual(BLUE);
   });
 
   it("a new runtime (after a tool switch) takes up a finished fill and floods the layer before it", async () => {

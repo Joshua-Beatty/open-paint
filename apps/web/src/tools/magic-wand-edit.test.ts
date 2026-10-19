@@ -8,6 +8,7 @@ import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColorSettings } from "../colors/use-colors";
+import { settleEditBursts } from "./edit-burst";
 import { magicWandToolRuntime } from "./magic-wand-tools";
 import type { PaintHost } from "./paint-tools";
 import { bindToolHistory, soloSwitcher } from "./tool-history";
@@ -148,7 +149,8 @@ describe("Magic Wand editing (TL-SEL-WAND-01, TL-FRAME-01, TL-FRAME-02)", () => 
 
     settings.set("tools.tolerance", 1);
     await settle(() => expect(doc.selection.area()).toBe(1024));
-    expect(doc.history.undoName).toBe("history.changeTolerance");
+    settleEditBursts();
+    await settle(() => expect(doc.history.undoName).toBe("history.changeTolerance"));
 
     expect(await doc.history.undo()).toBe(true);
     expect(doc.selection.area()).toBe(512);
@@ -284,6 +286,8 @@ describe("Magic Wand editing (TL-SEL-WAND-01, TL-FRAME-01, TL-FRAME-02)", () => 
     await settle(() => expect(doc.selection.area()).toBe(512));
     settings.set("tools.tolerance", 1);
     await settle(() => expect(doc.selection.area()).toBe(1024));
+    settleEditBursts();
+    await settle(() => expect(doc.history.undoName).toBe("history.changeTolerance"));
 
     expect(await doc.history.undo()).toBe(true);
     expect(doc.selection.area()).toBe(512);
@@ -320,7 +324,8 @@ describe("Magic Wand editing (TL-SEL-WAND-01, TL-FRAME-01, TL-FRAME-02)", () => 
     // Selection Mode back to Replace: the flood replaces the selection it started with.
     settings.set("tools.selection.combineMode", "Replace");
     await settle(() => expect(doc.selection.area()).toBe(512));
-    expect(doc.history.undoName).toBe("history.changeSelectionMode");
+    settleEditBursts();
+    await settle(() => expect(doc.history.undoName).toBe("history.changeSelectionMode"));
     runtime.commit?.();
     expect(await doc.history.undo()).toBe(true);
     expect(await doc.history.undo()).toBe(true);

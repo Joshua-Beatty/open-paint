@@ -35,7 +35,6 @@ import {
   translateLine,
 } from "@openpaint/tools";
 import { PRIMARY_COLOR_PATH, SECONDARY_COLOR_PATH } from "../colors/use-colors";
-import { ColorEdits, isColorChange, paintColors, sameColor } from "./color-edits";
 import { coverageParts } from "./coverage-cells";
 import {
   CROSSHAIR_CURSOR,
@@ -45,6 +44,7 @@ import {
   nearHandle,
   viewScaleOf,
 } from "./cursors";
+import { EditBurst, isColorChange, paintColors, sameColor } from "./edit-burst";
 import { FrameCoalescer } from "./frame-coalescer";
 import { type CoveragePart, type LayerPatches, renderCoverage, SessionPixels } from "./layer-patch";
 import { type LineCurveHandles, lineCurveHandles } from "./line-curve-handles";
@@ -245,7 +245,7 @@ class LineCurveRuntime implements SteppedRuntime {
   #hover: ToolPointerEvent | undefined;
 
   /** Color changes of the pending line: drawn per frame, recorded as one "Change Color" step. */
-  readonly #colors: ColorEdits;
+  readonly #edits: EditBurst;
   /** Arrow nudges of the pending line, recorded as one "Adjust" step per burst (TL-MOVE-01). */
   readonly #nudges: NudgeBurst;
   /** The option values of the pending line on the options bar. */
@@ -261,16 +261,16 @@ class LineCurveRuntime implements SteppedRuntime {
       this.#guard(() => this.#record(session, "history.adjustLineCurve"));
       this.#refresh();
     });
-    this.#colors = new ColorEdits({
+    this.#edits = new EditBurst({
       ...(host.scheduleFrame && { scheduleFrame: host.scheduleFrame }),
       preview: () => {
         const session = this.#idle();
         if (session !== undefined) this.#guard(() => this.#show(session));
       },
-      record: () => {
+      record: (name) => {
         const session = this.#idle();
         if (session === undefined) return;
-        this.#guard(() => this.#record(session, "history.changeColor"));
+        this.#guard(() => this.#record(session, name as MessageId));
         this.#refresh();
       },
     });
@@ -283,7 +283,7 @@ class LineCurveRuntime implements SteppedRuntime {
   nudge(dx: number, dy: number, step: number): boolean {
     const session = this.#handlesHidden ? undefined : this.#idle();
     if (session === undefined) return false;
-    this.#colors.flush();
+    this.#edits.flush();
     const offset = nudgeOffset(dx, dy, step);
     session.line = translateLine(session.line, offset.dx, offset.dy);
     session.touched = true;
@@ -296,7 +296,7 @@ class LineCurveRuntime implements SteppedRuntime {
   /** Records waiting nudges and color changes, before anything else changes the line. */
   #settle(): void {
     this.#nudges.flush();
-    this.#colors.flush();
+    this.#edits.flush();
   }
 
   activate(): void {
@@ -592,7 +592,7 @@ class LineCurveRuntime implements SteppedRuntime {
   async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
     this.#frames.cancel();
     this.#nudges.cancel();
-    this.#colors.cancel();
+    this.#edits.cancel();
     this.#drag = undefined;
     this.#draw = undefined;
     this.#handlesHidden = false;
@@ -756,14 +756,17 @@ class LineCurveRuntime implements SteppedRuntime {
       return;
     }
     const name = OPTION_HISTORY_NAMES[change.path];
-    const session = this.#live();
+    const inHand = this.#draw?.session ?? this.#drag?.session;
+    const session = inHand ?? this.#live();
     if (session === undefined || name === undefined) return;
-    this.#settle();
+    this.#nudges.flush();
     if (change.path === "tools.shapes.curveType") {
       session.curve = curveOf(change.value);
       session.touched = true;
     }
-    this.#record(session, name);
+    // A burst of changes records one step, named after the latest (TL-FRAME-02).
+    if (inHand !== undefined) this.#showOnNextFrame(inHand);
+    else this.#edits.changed(name);
     this.#refresh();
   }
 
@@ -782,7 +785,7 @@ class LineCurveRuntime implements SteppedRuntime {
     session.color = color;
     session.background = background;
     if (inHand !== undefined) this.#showOnNextFrame(inHand);
-    else this.#colors.changed();
+    else this.#edits.changed("history.changeColor");
   }
 
   /** The pending line while no drawing or handle drag is in progress. */

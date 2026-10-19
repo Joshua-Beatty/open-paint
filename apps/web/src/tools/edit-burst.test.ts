@@ -1,18 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { COLOR_MERGE_MS, ColorEdits, paintColors, settleColorEdits } from "./color-edits";
+import { EDIT_MERGE_MS, EditBurst, paintColors, settleEditBursts } from "./edit-burst";
 
-describe("ColorEdits", () => {
+describe("EditBurst", () => {
   const frames: (() => void)[] = [];
   const preview = vi.fn();
   const record = vi.fn();
-  let edits: ColorEdits;
+  let edits: EditBurst;
 
   beforeEach(() => {
     vi.useFakeTimers();
     frames.length = 0;
     preview.mockClear();
     record.mockClear();
-    edits = new ColorEdits({
+    edits = new EditBurst({
       scheduleFrame: (callback) => {
         frames.push(callback);
         return () => frames.splice(frames.indexOf(callback), 1);
@@ -28,41 +28,51 @@ describe("ColorEdits", () => {
   });
 
   it("draws a burst of changes once, on the next frame (L1)", () => {
-    edits.changed();
-    edits.changed();
-    edits.changed();
+    edits.changed("history.changeColor");
+    edits.changed("history.changeColor");
+    edits.changed("history.changeColor");
     expect(preview).not.toHaveBeenCalled();
     expect(frames).toHaveLength(1);
     frames.shift()?.();
     expect(preview).toHaveBeenCalledTimes(1);
   });
 
-  it("records changes that follow each other once, after they stop", () => {
-    edits.changed();
-    vi.advanceTimersByTime(COLOR_MERGE_MS - 1);
-    edits.changed();
-    vi.advanceTimersByTime(COLOR_MERGE_MS - 1);
+  it("records changes that follow each other once, after they stop, named after the latest", () => {
+    edits.changed("history.changeColor");
+    vi.advanceTimersByTime(EDIT_MERGE_MS - 1);
+    edits.changed("history.changeBrushSize");
+    vi.advanceTimersByTime(EDIT_MERGE_MS - 1);
     expect(record).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith("history.changeBrushSize");
     expect(edits.pending).toBe(false);
   });
 
+  it("keeps the burst open while a mouse button is held, and records on its release", () => {
+    window.dispatchEvent(new MouseEvent("pointerdown", { buttons: 1 }));
+    edits.changed("history.changeTolerance");
+    vi.advanceTimersByTime(EDIT_MERGE_MS * 4);
+    expect(record).not.toHaveBeenCalled();
+    window.dispatchEvent(new MouseEvent("pointerup", { buttons: 0 }));
+    expect(record).toHaveBeenCalledWith("history.changeTolerance");
+  });
+
   it("records at once on flush or settle, and not again", () => {
-    edits.changed();
-    settleColorEdits();
+    edits.changed("history.changeColor");
+    settleEditBursts();
     expect(record).toHaveBeenCalledTimes(1);
     expect(frames).toHaveLength(0);
     edits.flush();
-    vi.advanceTimersByTime(COLOR_MERGE_MS);
+    vi.advanceTimersByTime(EDIT_MERGE_MS);
     expect(record).toHaveBeenCalledTimes(1);
   });
 
   it("forgets changes on cancel", () => {
-    edits.changed();
+    edits.changed("history.changeColor");
     edits.cancel();
-    vi.advanceTimersByTime(COLOR_MERGE_MS);
-    settleColorEdits();
+    vi.advanceTimersByTime(EDIT_MERGE_MS);
+    settleEditBursts();
     expect(record).not.toHaveBeenCalled();
     expect(preview).not.toHaveBeenCalled();
   });

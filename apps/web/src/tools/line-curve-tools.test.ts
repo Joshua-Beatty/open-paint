@@ -8,6 +8,7 @@ import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColorSettings } from "../colors/use-colors";
+import { settleEditBursts } from "./edit-burst";
 import { lineCurveHandles } from "./line-curve-handles";
 import { lineCurveToolRuntime } from "./line-curve-tools";
 import { NUDGE_MERGE_MS } from "./nudge-burst";
@@ -345,6 +346,7 @@ describe("Line / Curve (TL-LINE-01)", () => {
     drag([5.5, 10.5], [25.5, 10.5]);
     expect(pixel(15, 8)).toEqual(WHITE);
     settings.set("tools.brush.size", 6);
+    settleEditBursts();
     expect(doc.history.undoName).toBe("history.changeBrushSize");
     expect(pixel(15, 8)).toEqual(GREEN);
     expect(await doc.history.undo()).toBe(true);
@@ -354,6 +356,7 @@ describe("Line / Curve (TL-LINE-01)", () => {
   it("changes the curve type as Change Curve Type", () => {
     drag([5.5, 10.5], [25.5, 10.5]);
     settings.set("tools.shapes.curveType", "Bezier");
+    settleEditBursts();
     expect(doc.history.undoName).toBe("history.changeCurveType");
     expect(lineCurveHandles.state.curve).toBe("Bezier");
   });
@@ -438,6 +441,7 @@ describe("Line / Curve (TL-LINE-01)", () => {
       drag([5.5, 10.5], [25.5, 10.5]);
       drag([15.5, 10.5], [15.5, 20.5]);
       settings.set("tools.brush.size", 4);
+      settleEditBursts();
       runtime.commit?.();
     }
 

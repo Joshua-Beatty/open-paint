@@ -19,6 +19,7 @@ import {
   nearHandle,
   selectionBounds,
 } from "./cursors";
+import { EditBurst } from "./edit-burst";
 import { floodMask, toleranceOf } from "./flood";
 import type { PaintHost } from "./paint-tools";
 import type { SettingSnapshot } from "./pending-steps";
@@ -207,8 +208,19 @@ class MagicWandRuntime implements SteppedRuntime {
   #drag: WandDrag | undefined;
   #busy = false;
   #queued:
-    | { readonly session: WandSession; readonly name: MessageId; readonly request: WandRequest }
+    | {
+        readonly session: WandSession;
+        readonly name: MessageId | undefined;
+        readonly request: WandRequest;
+      }
     | undefined;
+  /**
+   * Option changes of the pending result: previewed per change, a burst recorded as one step named
+   * after its latest change (TL-FRAME-02).
+   */
+  readonly #edits: EditBurst;
+  /** The Selection Mode a burst of option changes has chosen, if it changed it. */
+  #burstMode: SelectionCombineMode | undefined;
   #unsubscribe: (() => void) | undefined;
   /** Set while the runtime writes option values back, so their change events are ignored. */
   #restoring = false;
@@ -228,6 +240,20 @@ class MagicWandRuntime implements SteppedRuntime {
         this.#restoring = restoring;
       }
     });
+    this.#edits = new EditBurst({
+      ...(host.scheduleFrame && { scheduleFrame: host.scheduleFrame }),
+      preview: () => this.#burst(undefined),
+      record: (name) => this.#burst(name as MessageId),
+    });
+  }
+
+  /** Floods the pending result under the burst's options: a preview, or the step named `name`. */
+  #burst(name: MessageId | undefined): void {
+    const session = this.#live();
+    if (session === undefined) return;
+    const mode = this.#burstMode ?? session.step.mode;
+    if (name !== undefined) this.#burstMode = undefined;
+    this.#refresh(session, name, { seed: session.step.seed, mode });
   }
 
   activate(): void {
@@ -235,6 +261,7 @@ class MagicWandRuntime implements SteppedRuntime {
   }
 
   deactivate(): void {
+    this.#edits.flush();
     this.cancel();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
@@ -278,6 +305,7 @@ class MagicWandRuntime implements SteppedRuntime {
   /** Commits the pending result with "Finish Magic Wand". A flood still running waits for the next key. */
   commit(): void {
     if (this.#drag !== undefined) this.cancel();
+    this.#edits.flush();
     if (this.#busy) return;
     const session = this.#live();
     if (session === undefined) return;
@@ -345,6 +373,7 @@ class MagicWandRuntime implements SteppedRuntime {
   #down(event: ToolPointerEvent): void {
     if (this.#busy || this.#drag !== undefined) return;
     if (event.button !== 0 && event.button !== 2) return;
+    this.#edits.flush();
     const session = this.#live();
     if (session !== undefined) {
       const seed = session.step.seed;
@@ -405,7 +434,7 @@ class MagicWandRuntime implements SteppedRuntime {
    * combined with the session's base, as one history step named `name`. A request that comes while
    * a flood runs waits for it, and the latest one runs after.
    */
-  #refresh(session: WandSession, name: MessageId, request: WandRequest): void {
+  #refresh(session: WandSession, name: MessageId | undefined, request: WandRequest): void {
     if (this.#busy) {
       this.#queued = { session, name, request };
       return;
@@ -432,6 +461,12 @@ class MagicWandRuntime implements SteppedRuntime {
           translatedPolygons(polygons, started.offset),
           request.mode,
         );
+        // Without a name the flood is a preview of options still changing.
+        if (name === undefined) {
+          session.document.previewSelection(result);
+          this.#showHandles();
+          return;
+        }
         this.#record(
           session,
           this.#host.translate(name),
@@ -466,6 +501,8 @@ class MagicWandRuntime implements SteppedRuntime {
    */
   #record(session: WandSession, name: string, step: WandStep, kind: StepKind): void {
     const { document } = session;
+    // The item's "before" selection is the recorded one, not a preview left on screen.
+    if (session.recorded) document.restoreSelection(session.step.result);
     const layer = document.activeLayer;
     recordStep(
       document,
@@ -556,11 +593,9 @@ class MagicWandRuntime implements SteppedRuntime {
     const name = OPTION_HISTORY_NAMES[change.path];
     const session = this.#live();
     if (session === undefined || name === undefined) return;
-    const mode =
-      change.path === "tools.selection.combineMode"
-        ? combineModeOf(change.value)
-        : session.step.mode;
-    this.#refresh(session, name, { seed: session.step.seed, mode });
+    if (change.path === "tools.selection.combineMode")
+      this.#burstMode = combineModeOf(change.value);
+    this.#edits.changed(name);
   }
 
   /** The pending session. */
@@ -568,6 +603,8 @@ class MagicWandRuntime implements SteppedRuntime {
     return this.#session;
   }
   #end(): void {
+    this.#edits.cancel();
+    this.#burstMode = undefined;
     this.#session = undefined;
     this.#drag = undefined;
     wandHandles.set({});

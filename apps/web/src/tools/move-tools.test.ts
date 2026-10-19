@@ -17,6 +17,7 @@ import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColorSettings } from "../colors/use-colors";
+import { settleEditBursts } from "./edit-burst";
 import { finishOnLayerSwitch } from "./finish-on-switch";
 import { NUDGE_MERGE_MS } from "./frame-tool";
 import { FloatingHandoff, movePixelsToolRuntime, moveSelectionToolRuntime } from "./move-tools";
@@ -683,7 +684,13 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
   it("re-records the current transform when the resampling option changes", () => {
     drag(BODY_PRESS, { x: BODY_PRESS.x + 5, y: BODY_PRESS.y });
     settings.set("tools.move.resampling", "Linear");
-    expect(doc.history.undoName).toBe("history.changeSampling");
+    settings.set("tools.gammaMode", "Companded");
+    expect(doc.history.undoName).toBe("history.movePixels");
+    settleEditBursts();
+    expect(doc.history.undoName).toBe("history.changeGammaMode");
+    // The burst was one step: one undo goes back to the move.
+    const entries = doc.history.entries.filter((entry) => entry.applied).length;
+    expect(doc.history.entries.at(entries - 2)?.name).toBe("history.movePixels");
   });
 
   it("ends when an undo changes the document behind it", async () => {

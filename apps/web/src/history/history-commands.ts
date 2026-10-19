@@ -1,7 +1,7 @@
 import type { Document } from "@openpaint/document";
 import type { BuiltInCommandId } from "../commands/catalog";
 import type { ShortcutController } from "../commands/shortcuts";
-import { settleColorEdits } from "../tools/color-edits";
+import { settleEditBursts } from "../tools/edit-burst";
 import { engineStrokesSettled } from "../tools/engine-stroke";
 import { settleNudges } from "../tools/nudge-burst";
 
@@ -22,7 +22,7 @@ export function historyRunning(): Promise<void> | undefined {
  */
 export function settlePendingEdits(): void {
   settleNudges();
-  settleColorEdits();
+  settleEditBursts();
 }
 
 /** Runs `step` after any Undo or Redo before it, and tracks it until it lands. */

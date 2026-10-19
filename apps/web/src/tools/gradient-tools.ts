@@ -19,8 +19,8 @@ import type { MessageId } from "@openpaint/i18n";
 import type { SettingChange } from "@openpaint/storage";
 import { ClickDeadZone } from "@openpaint/tools";
 import { type ColorSettings, PRIMARY_COLOR_PATH, SECONDARY_COLOR_PATH } from "../colors/use-colors";
-import { ColorEdits, isColorChange, paintColors, sameColor } from "./color-edits";
 import { CROSSHAIR_CURSOR, GRAB_CURSOR, GRABBING_CURSOR, MOVE_CURSOR, nearHandle } from "./cursors";
+import { EditBurst, isColorChange, paintColors, sameColor } from "./edit-burst";
 import { FrameCoalescer } from "./frame-coalescer";
 import { type GradientHandles, gradientHandles, type HandlePoint } from "./gradient-handles";
 import {
@@ -248,7 +248,7 @@ class GradientRuntime implements SteppedRuntime {
   #hover: ToolPointerEvent | undefined;
 
   /** Color changes of the pending gradient: drawn per frame, recorded as one "Change Color" step. */
-  readonly #colors: ColorEdits;
+  readonly #edits: EditBurst;
   /** The option values of the pending gradient on the options bar. */
   readonly #options: PendingOptions;
   /** Set while the runtime writes settings back itself, so the writes are not recorded as option changes. */
@@ -259,7 +259,7 @@ class GradientRuntime implements SteppedRuntime {
     this.#lanes = host.gradientLanes?.() ?? new InlineGradientLanes();
     this.#frames = new FrameCoalescer(host.scheduleFrame);
     this.#options = new PendingOptions(OPTION_PATHS, (action) => this.#quietly(action));
-    this.#colors = new ColorEdits({
+    this.#edits = new EditBurst({
       ...(host.scheduleFrame && { scheduleFrame: host.scheduleFrame }),
       preview: () => {
         const session = this.#idle();
@@ -271,10 +271,10 @@ class GradientRuntime implements SteppedRuntime {
           this.#fail(cause);
         }
       },
-      record: () => {
+      record: (name) => {
         const session = this.#idle();
         if (session === undefined) return;
-        this.#record(session, "history.changeColor");
+        this.#record(session, name as MessageId);
         this.#refresh();
       },
     });
@@ -285,7 +285,7 @@ class GradientRuntime implements SteppedRuntime {
   }
 
   deactivate(): void {
-    this.#colors.flush();
+    this.#edits.flush();
     this.#revert();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
@@ -333,7 +333,7 @@ class GradientRuntime implements SteppedRuntime {
   /** Commits the pending gradient with "Finish Gradient". */
   commit(): void {
     this.#revert();
-    this.#colors.flush();
+    this.#edits.flush();
     const session = this.#live();
     if (session !== undefined) {
       this.#record(session, "history.finishGradient", "finish");
@@ -351,7 +351,7 @@ class GradientRuntime implements SteppedRuntime {
   #down(event: ToolPointerEvent): void {
     if (this.#drag !== undefined || this.#draw !== undefined) return;
     if (event.button !== 0 && event.button !== 2) return;
-    this.#colors.flush();
+    this.#edits.flush();
     this.#zone = new ClickDeadZone(event);
     const session = this.#live();
     if (session !== undefined) {
@@ -748,7 +748,7 @@ class GradientRuntime implements SteppedRuntime {
    */
   async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
     this.#frames.cancel();
-    this.#colors.cancel();
+    this.#edits.cancel();
     const drag = this.#drag;
     this.#drag = undefined;
     if (drag !== undefined) drag.session.render?.renderer.cancel();
@@ -859,10 +859,12 @@ class GradientRuntime implements SteppedRuntime {
       return;
     }
     const name = OPTION_HISTORY_NAMES[change.path];
-    const session = this.#live();
+    const inHand = this.#draw ?? this.#drag?.session;
+    const session = inHand ?? this.#live();
     if (session === undefined || name === undefined) return;
-    this.#colors.flush();
-    this.#record(session, name);
+    // A burst of changes records one step, named after the latest (TL-FRAME-02).
+    if (inHand !== undefined) this.#previewOnNextFrame(inHand);
+    else this.#edits.changed(name);
     this.#refresh();
   }
 
@@ -880,7 +882,7 @@ class GradientRuntime implements SteppedRuntime {
     session.primary = primary;
     session.secondary = secondary;
     if (inHand !== undefined) this.#previewOnNextFrame(inHand);
-    else this.#colors.changed();
+    else this.#edits.changed("history.changeColor");
   }
 
   /** The pending gradient while no drawing or handle drag is in progress. */

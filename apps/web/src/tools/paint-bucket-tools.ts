@@ -8,6 +8,7 @@ import {
   type Layer,
   type Rect,
   rect,
+  rectContainsRect,
   rectFromEdges,
   type Selection,
   Surface,
@@ -21,8 +22,8 @@ import type { ToolPointerEvent, ToolRuntime, ToolViewState } from "@openpaint/ex
 import type { MessageId } from "@openpaint/i18n";
 import type { SettingChange } from "@openpaint/storage";
 import { PRIMARY_COLOR_PATH, SECONDARY_COLOR_PATH } from "../colors/use-colors";
-import { ColorEdits, isColorChange, paintColors, sameColor } from "./color-edits";
 import { CROSSHAIR_CURSOR, GRAB_CURSOR, GRABBING_CURSOR, nearHandle } from "./cursors";
+import { EditBurst, isColorChange, paintColors, sameColor } from "./edit-burst";
 import { floodMask, toleranceOf } from "./flood";
 import { hatchAligned, LayerSnapshot } from "./layer-patch";
 import { blendValue, hatchValue, selectionCoverage } from "./paint-stroke";
@@ -216,7 +217,11 @@ class PaintBucketRuntime implements SteppedRuntime {
   #drag: { readonly session: BucketSession; seed: PixelPoint } | undefined;
   #busy = false;
   #queued:
-    | { readonly session: BucketSession; readonly name: MessageId; readonly seed: PixelPoint }
+    | {
+        readonly session: BucketSession;
+        readonly name: MessageId | undefined;
+        readonly seed: PixelPoint;
+      }
     | undefined;
   #unsubscribe: (() => void) | undefined;
   /** Set while the runtime writes option values back, so their change events are ignored. */
@@ -225,10 +230,16 @@ class PaintBucketRuntime implements SteppedRuntime {
   readonly #options: PendingOptions;
   /** The last pointer sample, which the cursor is chosen for. */
   #hover: ToolPointerEvent | undefined;
-  /** Color changes of the pending fill: drawn per frame, recorded as one "Change Color" step. */
-  readonly #colors: ColorEdits;
-  /** The session whose fill shows a color change that is not recorded yet. */
-  #recolored: BucketSession | undefined;
+  /**
+   * Option and color changes of the pending fill: previewed per frame, a burst recorded as one step
+   * named after its latest change (TL-FRAME-02).
+   */
+  readonly #edits: EditBurst;
+  /**
+   * The pixels a preview of the burst wrote over, as the last recorded step left them, so they are
+   * put back before the burst is recorded.
+   */
+  #shown: { readonly region: Rect; readonly pixels: Surface } | undefined;
 
   constructor(host: PaintHost) {
     this.#host = host;
@@ -241,10 +252,10 @@ class PaintBucketRuntime implements SteppedRuntime {
         this.#restoring = restoring;
       }
     });
-    this.#colors = new ColorEdits({
+    this.#edits = new EditBurst({
       ...(host.scheduleFrame && { scheduleFrame: host.scheduleFrame }),
-      preview: () => this.#guard(() => this.#previewColors()),
-      record: () => this.#guard(() => this.#recordColors()),
+      preview: () => this.#guard(() => this.#previewEdits()),
+      record: (name) => this.#guard(() => this.#recordEdits(name as MessageId)),
     });
   }
 
@@ -253,7 +264,7 @@ class PaintBucketRuntime implements SteppedRuntime {
   }
 
   deactivate(): void {
-    this.#colors.flush();
+    this.#edits.flush();
     this.cancel();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
@@ -292,7 +303,7 @@ class PaintBucketRuntime implements SteppedRuntime {
   /** Commits the pending fill with "Finish Paint Bucket". A flood still running waits for the next key. */
   commit(): void {
     if (this.#drag !== undefined) this.cancel();
-    this.#colors.flush();
+    this.#edits.flush();
     if (this.#busy) return;
     const session = this.#live();
     if (session === undefined) return;
@@ -324,8 +335,8 @@ class PaintBucketRuntime implements SteppedRuntime {
    * history.
    */
   async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
-    this.#colors.cancel();
-    this.#recolored = undefined;
+    this.#edits.cancel();
+    this.#shown = undefined;
     this.#drag = undefined;
     this.#queued = undefined;
     const step = state as BucketStep | undefined;
@@ -382,7 +393,7 @@ class PaintBucketRuntime implements SteppedRuntime {
   #down(event: ToolPointerEvent): void {
     if (this.#busy || this.#drag !== undefined) return;
     if (event.button !== 0 && event.button !== 2) return;
-    this.#colors.flush();
+    this.#edits.flush();
     const session = this.#live();
     if (session !== undefined) {
       const seed = session.step.seed;
@@ -438,7 +449,7 @@ class PaintBucketRuntime implements SteppedRuntime {
    * Floods `seed` under the current settings, then fills the stencil as one history step named
    * `name`. A request that comes while a flood runs waits for it, and the latest one runs after.
    */
-  #refresh(session: BucketSession, name: MessageId, seed: PixelPoint): void {
+  #refresh(session: BucketSession, name: MessageId | undefined, seed: PixelPoint): void {
     if (this.#busy) {
       this.#queued = { session, name, seed };
       return;
@@ -462,7 +473,9 @@ class PaintBucketRuntime implements SteppedRuntime {
         // moved the session makes this flood stale, so this one records nothing.
         if (this.#live() !== session || session.step !== base || this.#queued?.session === session)
           return;
-        this.#paint(session, mask, name, seed);
+        // Without a name the flood is a preview of options still changing (`#previewEdits`).
+        if (name === undefined) this.#showFill(session, mask);
+        else this.#paint(session, mask, name, seed);
       })
       .catch((cause: unknown) => this.#fail(cause))
       .finally(() => {
@@ -623,8 +636,7 @@ class PaintBucketRuntime implements SteppedRuntime {
     const name = OPTION_HISTORY_NAMES[change.path];
     const session = this.#live();
     if (session === undefined || name === undefined) return;
-    this.#colors.flush();
-    this.#refresh(session, name, session.step.seed);
+    this.#edits.changed(name);
   }
 
   /**
@@ -639,7 +651,7 @@ class PaintBucketRuntime implements SteppedRuntime {
     if (sameColor(color, session.color) && sameColor(background, session.background)) return;
     session.color = color;
     session.background = background;
-    if (!this.#busy) this.#colors.changed();
+    this.#edits.changed("history.changeColor");
   }
 
   /** The stencil of the step the session stands at, when it is known without a new flood. */
@@ -648,58 +660,92 @@ class PaintBucketRuntime implements SteppedRuntime {
     return fill !== undefined && fill.step === session.step ? fill : undefined;
   }
 
-  /** Shows the stencil in the session's colors, with no history item. */
-  #previewColors(): void {
-    const session = this.#live();
-    if (session === undefined || this.#busy) return;
-    const fill = this.#currentFill(session);
-    if (fill === undefined) return;
-    this.#show(session, fill, session);
-    this.#recolored = session;
-  }
-
   /**
-   * Records the color change as one step. The layer first goes back to the step's own colors, so
-   * the item's before-state is the recorded one. Colors changed back to the step's record nothing.
+   * Shows the pending fill under the changed options and colors, with no history item: the stencil
+   * the step filled in the new colors when only colors changed, or a new flood otherwise.
    */
-  #recordColors(): void {
+  #previewEdits(): void {
     const session = this.#live();
     if (session === undefined) return;
     const fill = this.#currentFill(session);
-    if (this.#busy || fill === undefined) {
-      this.#refresh(session, "history.changeColor", session.step.seed);
+    if (fill !== undefined && this.#onlyColors(session)) {
+      this.#showFill(session, fill.mask, fill.area);
       return;
     }
-    if (this.#recolored === session) {
-      this.#recolored = undefined;
-      this.#show(session, fill, session.step, true);
-    }
-    const { step } = session;
-    if (sameColor(session.color, step.color) && sameColor(session.background, step.background)) {
-      return;
-    }
-    this.#paint(session, fill.mask, "history.changeColor", step.seed);
+    this.#refresh(session, undefined, session.step.seed);
   }
 
   /**
-   * Writes the stencil filled in colors over the pixels it covers, as a preview, or, with
-   * estore, as the recorded state coming back.
+   * Records the burst as one step named `name`. The layer first goes back to the recorded step,
+   * so the item's before-state is right. A burst that changed nothing records nothing.
    */
-  #show(
-    session: BucketSession,
-    fill: BucketFill,
-    colors: { readonly color: ColorRgba8; readonly background: ColorRgba8 },
-    restore = false,
-  ): void {
-    const { work, output } = this.#fill(session, fill.mask, fill.area, colors);
-    const { written } = fill;
-    const write = (pixels: Layer["pixels"]) => {
-      pixels.writeRegion(output, written.x, written.y, translateRect(written, -work.x, -work.y));
-    };
-    if (restore) session.document.restoreLayerPixels(session.layer, write);
-    else session.document.previewLayerPixels(session.layer, write);
+  #recordEdits(name: MessageId): void {
+    const session = this.#live();
+    if (session === undefined) return;
+    this.#unshow(session);
+    const fill = this.#currentFill(session);
+    if (fill !== undefined && this.#onlyColors(session)) {
+      const { step } = session;
+      if (sameColor(session.color, step.color) && sameColor(session.background, step.background)) {
+        return;
+      }
+      this.#paint(session, fill.mask, name, step.seed);
+      return;
+    }
+    this.#refresh(session, name, session.step.seed);
   }
 
+  /** Whether the options a fill depends on are those of the step it stands at. */
+  #onlyColors(session: BucketSession): boolean {
+    const settings = this.#host.settings();
+    const now = this.#options.snapshot(settings);
+    const then = session.step.options;
+    return Object.keys(OPTION_HISTORY_NAMES).every(
+      (path) => JSON.stringify(now[path]) === JSON.stringify(then[path]),
+    );
+  }
+
+  /**
+   * Shows the fill of `mask` over the session's base, with no history item, as `#paint` would
+   * record it. The pixels it writes over are kept first, so `#unshow` can put them back.
+   */
+  #showFill(session: BucketSession, mask: Uint8Array, known?: Rect): void {
+    const { document, layer, layerBase } = session;
+    const area = known ?? stencilBounds(mask, document.width, document.height);
+    if (isEmptyRect(area)) return;
+    const { work, output } = this.#fill(session, mask, area);
+    const { painted } = session.step;
+    const region = isEmptyRect(painted) ? area : unionRects(painted, area);
+    const written = intersectRects(work, region);
+    const shown = this.#shown;
+    if (shown === undefined) {
+      this.#shown = { region, pixels: layer.pixels.readRegion(region) };
+    } else if (!rectContainsRect(shown.region, region)) {
+      const grown = unionRects(shown.region, region);
+      const pixels = layer.pixels.readRegion(grown);
+      pixels.copyFrom(
+        shown.pixels,
+        shown.pixels.bounds,
+        shown.region.x - grown.x,
+        shown.region.y - grown.y,
+      );
+      this.#shown = { region: grown, pixels };
+    }
+    document.previewLayerPixels(layer, (pixels) => {
+      pixels.writeRegion(layerBase, region.x, region.y, region);
+      pixels.writeRegion(output, written.x, written.y, translateRect(written, -work.x, -work.y));
+    });
+  }
+
+  /** Puts back what the burst's previews wrote over. */
+  #unshow(session: BucketSession): void {
+    const shown = this.#shown;
+    this.#shown = undefined;
+    if (shown === undefined) return;
+    session.document.restoreLayerPixels(session.layer, (pixels) => {
+      pixels.writeRegion(shown.pixels, shown.region.x, shown.region.y);
+    });
+  }
   #guard(work: () => void): void {
     try {
       work();
@@ -713,8 +759,8 @@ class PaintBucketRuntime implements SteppedRuntime {
     return this.#session;
   }
   #end(): void {
-    this.#colors.cancel();
-    this.#recolored = undefined;
+    this.#edits.cancel();
+    this.#shown = undefined;
     this.#session = undefined;
     this.#drag = undefined;
     wandHandles.set({});

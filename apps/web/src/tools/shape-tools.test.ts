@@ -8,7 +8,7 @@ import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColorSettings } from "../colors/use-colors";
-import { COLOR_MERGE_MS, settleColorEdits } from "./color-edits";
+import { EDIT_MERGE_MS, settleEditBursts } from "./edit-burst";
 import { finishOnLayerSwitch } from "./finish-on-switch";
 import { NUDGE_MERGE_MS, settleNudges } from "./nudge-burst";
 import type { PaintHost } from "./paint-tools";
@@ -508,6 +508,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
     drag([5, 5], [25, 15]);
     expect(pixel(15, 10)).toEqual(PAPER);
     settings.set("tools.shapes.drawType", "Interior");
+    settleEditBursts();
     expect(doc.history.undoName).toContain("history.changeDrawMode");
     expect(pixel(15, 10)).toEqual(GREEN);
   });
@@ -529,7 +530,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
       settings.set("tools.primaryColor", BLUE);
       expect(pixel(5, 10)).toEqual(BLUE);
       expect(doc.history.entries.length).toBe(before);
-      vi.advanceTimersByTime(COLOR_MERGE_MS);
+      vi.advanceTimersByTime(EDIT_MERGE_MS);
       expect(doc.history.entries.length).toBe(before + 1);
       expect(doc.history.undoName).toContain("history.changeColor");
       expect(runtime.hasPending?.()).toBe(true);
@@ -560,7 +561,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
 
       drag([30, 30], [50, 50]);
       settings.set("tools.primaryColor", BLUE);
-      settleColorEdits();
+      settleEditBursts();
       expect(doc.history.undoName).toContain("history.changeColor");
       await doc.history.undo();
       expect(pixel(30, 40)).toEqual(RED);
@@ -569,7 +570,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
     it("ignores a color change with no shape pending", () => {
       const before = doc.history.entries.length;
       settings.set("tools.primaryColor", RED);
-      settleColorEdits();
+      settleEditBursts();
       expect(doc.history.entries.length).toBe(before);
     });
   });
@@ -577,6 +578,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
   it("records a shape-type change while pending as one step", () => {
     drag([5, 5], [25, 15]);
     settings.set("tools.shapes.shape", { name: "ellipse" });
+    settleEditBursts();
     expect(doc.history.undoName).toContain("history.changeToShape");
     expect(doc.history.undoName).toContain("shape.ellipse");
     expect(pixel(15, 10)).toEqual(PAPER);
@@ -617,7 +619,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
       settings.set("tools.brush.size", 4);
       drag([25, 15], [35, 25]);
       settings.set("tools.primaryColor", RED);
-      settleColorEdits();
+      settleEditBursts();
       runtime.commit?.();
     }
 

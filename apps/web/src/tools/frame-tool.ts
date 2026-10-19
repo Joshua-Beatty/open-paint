@@ -14,6 +14,7 @@ import type { MessageId } from "@openpaint/i18n";
 import type { SettingChange } from "@openpaint/storage";
 import { ClickDeadZone } from "@openpaint/tools";
 import { viewScaleOf } from "./cursors";
+import { EditBurst } from "./edit-burst";
 import { FrameCoalescer } from "./frame-coalescer";
 import { NudgeBurst, nudgeOffset } from "./nudge-burst";
 import type { PaintHost } from "./paint-tools";
@@ -71,8 +72,8 @@ export interface FrameTarget {
   cancel(): void;
   /** Records one item named `name` and ends the target. */
   finish(name: string, step: TargetStep): boolean;
-  /** Records the current transform again under a new option (TL-FRAME-02). */
-  rerender?(name: string, step: TargetStep): void;
+  /** Draws the current transform again under a changed option, to be recorded by `commit` (TL-FRAME-02). */
+  rerender?(): void;
   /**
    * While a step is still computed off this thread before it is recorded, a promise that settles
    * once it is (`ToolRuntime.settling`). Calls made meanwhile run after it, in order.
@@ -179,6 +180,8 @@ class FrameRuntime implements SteppedRuntime {
   readonly #pendingOptions: PendingOptions;
   /** A press that starts the target once it leaves its dead zone (`startsOnDrag`). */
   #lazy: { readonly gesture: FrameGesture; readonly zone: ClickDeadZone } | undefined;
+  /** Option changes of the target: drawn per change, a burst recorded as one step (TL-FRAME-02). */
+  readonly #edits: EditBurst;
   #drag: Drag | undefined;
   /** Arrow nudges that follow each other, recorded as one "move" step. */
   readonly #nudges: NudgeBurst;
@@ -214,6 +217,18 @@ class FrameRuntime implements SteppedRuntime {
       if (target?.pending !== true) return;
       target.commit(this.#name(this.#options.names.move), this.#stepFor(target, "edit"));
       this.#show();
+    });
+    this.#edits = new EditBurst({
+      ...(options.host.scheduleFrame && { scheduleFrame: options.host.scheduleFrame }),
+      preview: () => {
+        if (this.#drag === undefined) this.#current()?.rerender?.();
+      },
+      record: (name) => {
+        const target = this.#current();
+        if (target?.pending !== true || this.#drag !== undefined) return;
+        target.commit(this.#name(name as MessageId), this.#stepFor(target, "edit"));
+        this.#show();
+      },
     });
   }
 
@@ -439,6 +454,7 @@ class FrameRuntime implements SteppedRuntime {
     this.#lazy = undefined;
     this.#frames.cancel();
     this.#nudges.cancel();
+    this.#edits.cancel();
     this.#idle = undefined;
     transformFrame.set(undefined);
     this.#showIdle();
@@ -661,6 +677,7 @@ class FrameRuntime implements SteppedRuntime {
 
   /** Records the nudges that are waiting to merge, as one "move" step. */
   #flushNudge(): void {
+    this.#edits.flush();
     this.#nudges.flush();
   }
 
@@ -669,8 +686,7 @@ class FrameRuntime implements SteppedRuntime {
     const key = this.#options.optionNames?.[change.path];
     const target = this.#current();
     if (key === undefined || target?.rerender === undefined || this.#drag !== undefined) return;
-    target.rerender(this.#name(key), this.#stepFor(target, "edit"));
-    this.#show();
+    this.#edits.changed(key);
   }
 
   #fail(cause: unknown): void {
