@@ -3,18 +3,13 @@ import {
   type Document,
   EMPTY_RECT,
   flattenRegion,
-  intersectRects,
   isEmptyRect,
   type Layer,
   type Rect,
   rect,
-  rectContainsRect,
   rectFromEdges,
   type Selection,
   Surface,
-  TiledPixelStore,
-  translateRect,
-  unionRects,
 } from "@openpaint/document";
 import { clipToCoverage } from "@openpaint/effects";
 import { bucketFillCpu } from "@openpaint/engine";
@@ -25,7 +20,7 @@ import { PRIMARY_COLOR_PATH, SECONDARY_COLOR_PATH } from "../colors/use-colors";
 import { CROSSHAIR_CURSOR, GRAB_CURSOR, GRABBING_CURSOR, nearHandle } from "./cursors";
 import { EditBurst, isColorChange, paintColors, sameColor } from "./edit-burst";
 import { floodMask, toleranceOf } from "./flood";
-import { hatchAligned, LayerSnapshot } from "./layer-patch";
+import { hatchAligned, type LayerPatches, tilePatches } from "./layer-patch";
 import { blendValue, hatchValue, selectionCoverage } from "./paint-stroke";
 import type { PaintHost } from "./paint-tools";
 import type { SettingSnapshot } from "./pending-steps";
@@ -34,7 +29,6 @@ import { reportToolFailure } from "./tool-failure";
 import {
   layerIndex,
   PendingOptions,
-  recordStep,
   type StepContext,
   type StepKind,
   type SteppedRuntime,
@@ -60,8 +54,6 @@ const OPTION_PATHS = [
   PRIMARY_COLOR_PATH,
   SECONDARY_COLOR_PATH,
 ];
-
-type PixelEdit = Parameters<Document["editLayerPixels"]>[3];
 
 function pixelOf(event: ToolPointerEvent): PixelPoint {
   return { x: Math.floor(event.x), y: Math.floor(event.y) };
@@ -105,34 +97,90 @@ function cropMask(mask: Uint8Array, width: number, area: Rect): Uint8Array {
 }
 
 /**
- * The flattened image before the session (TL-OPT-FLOOD), composited once when first needed. While
- * no step has painted, the layer still holds its base; otherwise the base stands in for it.
+ * The flattened image under a fill (TL-OPT-FLOOD): the visible layers as they are, without a
+ * pending result shown over them. The layer is not written while a fill is pending.
  */
+function flattenedImage(document: Document): Surface {
+  const visible = document.layers
+    .filter((layer) => layer.visible)
+    .map(({ pixels, blendMode, opacity }) => ({ pixels, blendMode, opacity }));
+  return flattenRegion(visible, rect(0, 0, document.width, document.height));
+}
+
+/** The flattened image of the session, composited the first time a flood samples it (L8). */
 function imageBaseOf(session: BucketSession): Surface {
-  if (session.imageBase !== undefined) return session.imageBase;
-  const { document, layer, layerBase } = session;
-  const bounds = rect(0, 0, document.width, document.height);
-  if (isEmptyRect(session.step.painted)) {
-    session.imageBase = document.composite();
-    return session.imageBase;
-  }
-  const base = new TiledPixelStore(document.width, document.height);
-  try {
-    base.writeRegion(layerBase, 0, 0);
-    const visible = document.layers
-      .filter((candidate) => candidate.visible)
-      .map((candidate) =>
-        candidate === layer
-          ? { blendMode: candidate.blendMode, opacity: candidate.opacity, pixels: base }
-          : candidate,
-      );
-    session.imageBase = flattenRegion(visible, bounds);
-  } finally {
-    base.dispose();
-  }
+  session.imageBase ??= flattenedImage(session.document);
   return session.imageBase;
 }
 
+/** Reads a step's option values by their name under `tools.`. */
+function readOf(options: SettingSnapshot): (key: string) => unknown {
+  return (key) => options[`tools.${key}`];
+}
+
+/**
+ * The stencil's rectangle filled over `layerBase` with `colors` and the fill options `read` gives,
+ * clipped to `clip` (TL-FRAME-04). Only the stencil's rectangle is filled (L2): the antialiasing
+ * feather reads one pixel around each stencil pixel, and the hatch repeats from the layer origin,
+ * so the work area grows by one pixel and starts on the hatch grid, which gives the same pixels as
+ * a whole-layer fill.
+ */
+function fillStencil(
+  layerBase: Surface,
+  mask: Uint8Array,
+  area: Rect,
+  colors: { readonly color: ColorRgba8; readonly background: ColorRgba8 },
+  read: (key: string) => unknown,
+  clip: Selection,
+): { readonly work: Rect; readonly output: Surface } {
+  const work = hatchAligned(
+    rectFromEdges(area.x - 1, area.y - 1, area.x + area.width + 1, area.y + area.height + 1),
+    layerBase.bounds,
+  );
+  const original = new Surface(work.width, work.height);
+  original.copyFrom(layerBase, work, 0, 0);
+  const filled = bucketFillCpu(original, cropMask(mask, layerBase.width, work), {
+    antialias: read("antialiasing") !== false,
+    blend: blendValue(read("blendMode")),
+    hatch: hatchValue(read("brush.fillType"), read("brush.hatchStyle")),
+    color: colors.color,
+    background: colors.background,
+  });
+  const coverage = selectionCoverage(clip, work, read("selection.renderingQuality") === "Aliased");
+  const output = coverage === undefined ? filled : clipToCoverage(original, filled, coverage);
+  return { work, output };
+}
+
+/**
+ * A fill drawn again from a step's state over `layer` as it is: the same flood and fill the step
+ * made, for a redo of Finish or a fill taken up from history.
+ */
+async function fillFromState(
+  document: Document,
+  layer: Layer,
+  step: BucketStep,
+  layerBase: Surface = layer.pixels.readRegion(rect(0, 0, document.width, document.height)),
+): Promise<
+  | {
+      readonly mask: Uint8Array;
+      readonly area: Rect;
+      readonly work: Rect;
+      readonly output: Surface;
+    }
+  | undefined
+> {
+  const read = readOf(step.options);
+  const source = read("sampleAllLayers") === true ? flattenedImage(document) : layerBase;
+  const mask = await floodMask(source, {
+    seed: step.seed,
+    tolerance: toleranceOf(read("tolerance")),
+    straight: read("toleranceAlphaMode") === "Straight",
+    global: step.forceGlobal || read("floodMode") === "Global",
+  });
+  const area = stencilBounds(mask, document.width, document.height);
+  if (isEmptyRect(area)) return undefined;
+  return { mask, area, ...fillStencil(layerBase, mask, area, step, read, step.clip) };
+}
 /**
  * A pending fill as one of its history items keeps it (TL-FRAME-01): everything needed to take it
  * up again and fill it as it was.
@@ -160,7 +208,9 @@ interface BucketFill {
   readonly step: BucketStep;
   readonly mask: Uint8Array;
   readonly area: Rect;
-  readonly written: Rect;
+  /** The fill's rectangle and the layer's pixels there as the fill leaves them. */
+  readonly work: Rect;
+  readonly output: Surface;
 }
 
 /**
@@ -307,19 +357,41 @@ class PaintBucketRuntime implements SteppedRuntime {
     if (this.#busy) return;
     const session = this.#live();
     if (session === undefined) return;
-    const { step } = session;
-    if (isEmptyRect(step.painted)) {
+    const { step, document, layer } = session;
+    const fill = this.#currentFill(session);
+    if (!session.recorded || fill === undefined) {
+      this.#showPatches(session, []);
       this.#end();
       return;
     }
-    this.#record(
-      session,
-      this.#host.translate("history.finishPaintBucket"),
-      step.painted,
-      () => undefined,
-      step,
-      "finish",
+    // The fill is written once, at Finish, which keeps only the pixels it overwrote; its redo
+    // floods and fills again from the step's state.
+    const { work, output } = fill;
+    document.history.withStep(
+      {
+        tool: "paintBucket",
+        layer: layerIndex(document, layer),
+        kind: "finish",
+        session: session.key,
+        before: step,
+        after: undefined,
+      },
+      () =>
+        document.editLayerPixelsRendered(
+          this.#host.translate("history.finishPaintBucket"),
+          layer,
+          [work],
+          (pixels) => pixels.writeRegion(output, work.x, work.y),
+          async () => {
+            const again = await fillFromState(document, layer, step);
+            return (pixels) => {
+              if (again !== undefined) pixels.writeRegion(again.output, again.work.x, again.work.y);
+            };
+          },
+        ),
     );
+    this.#showPatches(session, []);
+    this.#options.edited();
     this.#end();
   }
 
@@ -344,6 +416,7 @@ class PaintBucketRuntime implements SteppedRuntime {
     if (step === undefined || context === undefined) {
       if (context !== undefined) this.#options.leave(settings);
       else this.#options.edited();
+      if (this.#session !== undefined) this.#showPatches(this.#session, []);
       this.#end();
       return;
     }
@@ -354,7 +427,7 @@ class PaintBucketRuntime implements SteppedRuntime {
       session.key !== context.session ||
       session.layer !== context.layer
     ) {
-      const { tiles } = await context.before();
+      if (session !== undefined) this.#showPatches(session, []);
       const { document, layer } = context;
       session = {
         document,
@@ -363,9 +436,7 @@ class PaintBucketRuntime implements SteppedRuntime {
         color: step.color,
         background: step.background,
         fill: undefined,
-        layerBase: new LayerSnapshot(layer.pixels, tiles).read(
-          rect(0, 0, document.width, document.height),
-        ),
+        layerBase: layer.pixels.readRegion(rect(0, 0, document.width, document.height)),
         imageBase: undefined,
         forceGlobal: step.forceGlobal,
         clip: step.clip,
@@ -380,6 +451,11 @@ class PaintBucketRuntime implements SteppedRuntime {
     session.background = step.background;
     this.#session = session;
     this.#options.enter(settings, step.options, fromIdle);
+    // The layer is as it was under the fill: the fill is made again from its state and shown.
+    const again = await fillFromState(session.document, session.layer, step, session.layerBase);
+    if (this.#session !== session || session.step !== step) return;
+    if (again !== undefined) session.fill = { step, ...again };
+    this.#showRecorded(session);
     this.#showHandles();
   }
 
@@ -491,24 +567,20 @@ class PaintBucketRuntime implements SteppedRuntime {
   }
 
   /**
-   * Fills the stencil over the session's base as one history item named `name`. The item covers
-   * the area of every earlier step too, so undo restores each one in turn. Selection clipping
-   * (TL-FRAME-04) and the fill options are read here.
+   * Fills the stencil over the session's base and records it as one step named `name`, which keeps
+   * only the fill's state: the layer is not written, the fill is shown over it (TL-FRAME-01).
+   * Selection clipping (TL-FRAME-04) and the fill options are read here.
    */
   #paint(session: BucketSession, mask: Uint8Array, name: MessageId, seed: PixelPoint): void {
     const settings = this.#host.settings();
     if (settings === null) return;
-    const { document, layerBase } = session;
+    const { document, layer } = session;
     const area = stencilBounds(mask, document.width, document.height);
     if (isEmptyRect(area)) return;
     const { work, output } = this.#fill(session, mask, area);
-    const painted = isEmptyRect(session.step.painted)
-      ? area
-      : unionRects(session.step.painted, area);
-    const written = intersectRects(work, painted);
     const step: BucketStep = {
       seed,
-      painted,
+      painted: area,
       options: this.#options.snapshot(settings),
       color: session.color,
       background: session.background,
@@ -516,90 +588,51 @@ class PaintBucketRuntime implements SteppedRuntime {
       forceGlobal: session.forceGlobal,
       clip: session.clip,
     };
-    this.#record(
-      session,
-      this.#host.translate(name),
-      painted,
-      (pixels) => {
-        pixels.writeRegion(layerBase, painted.x, painted.y, painted);
-        pixels.writeRegion(output, written.x, written.y, translateRect(written, -work.x, -work.y));
-      },
-      step,
-      session.recorded ? "edit" : "draw",
-    );
-    if (session.step === step) session.fill = { step, mask, area, written };
-  }
-
-  /**
-   * The stencil's rectangle filled over the session's base with the session's colors and the fill
-   * options, clipped to the selection (TL-FRAME-04).
-   */
-  #fill(
-    session: BucketSession,
-    mask: Uint8Array,
-    area: Rect,
-    colors: { readonly color: ColorRgba8; readonly background: ColorRgba8 } = session,
-  ): { readonly work: Rect; readonly output: Surface } {
-    const settings = this.#host.settings();
-    const read = (key: string) => settings?.get(`tools.${key}`);
-    const { document, layerBase } = session;
-    // Only the stencil's rectangle is filled (L2). The antialiasing feather reads one pixel around
-    // each stencil pixel, and the hatch repeats from the layer origin, so the work area grows by
-    // one pixel and starts on the hatch grid, which gives the same pixels as a whole-layer fill.
-    const antialias = read("antialiasing") !== false;
-    const work = hatchAligned(
-      rectFromEdges(area.x - 1, area.y - 1, area.x + area.width + 1, area.y + area.height + 1),
-      layerBase.bounds,
-    );
-    const original = new Surface(work.width, work.height);
-    original.copyFrom(layerBase, work, 0, 0);
-    const filled = bucketFillCpu(original, cropMask(mask, document.width, work), {
-      antialias,
-      blend: blendValue(read("blendMode")),
-      hatch: hatchValue(read("brush.fillType"), read("brush.hatchStyle")),
-      color: colors.color,
-      background: colors.background,
+    const kind: StepKind = session.recorded ? "edit" : "draw";
+    document.history.recordStep(this.#host.translate(name), {
+      tool: "paintBucket",
+      layer: layerIndex(document, layer),
+      kind,
+      session: session.key,
+      before: kind === "draw" ? undefined : session.step,
+      after: step,
     });
-    const coverage = selectionCoverage(
-      session.clip,
-      work,
-      read("selection.renderingQuality") === "Aliased",
-    );
-    const output = coverage === undefined ? filled : clipToCoverage(original, filled, coverage);
-    return { work, output };
-  }
-
-  /**
-   * Applies `edit` to `area` as one history item that keeps the fill's state on either side, and
-   * makes `step` the state it ends.
-   */
-  #record(
-    session: BucketSession,
-    name: string,
-    area: Rect,
-    edit: PixelEdit,
-    step: BucketStep,
-    kind: StepKind,
-  ): void {
-    const { document, layer } = session;
-    recordStep(
-      document,
-      {
-        tool: "paintBucket",
-        layer: layerIndex(document, layer),
-        kind,
-        session: session.key,
-        before: kind === "draw" ? undefined : session.step,
-        after: kind === "finish" ? undefined : step,
-      },
-      () => document.editLayerPixels(name, layer, area, edit),
-    );
     session.step = step;
     session.recorded = true;
+    session.fill = { step, mask, area, work, output };
+    this.#shown = undefined;
+    this.#showPatches(session, tilePatches(output, work));
     this.#options.edited();
     this.#showHandles();
   }
 
+  /** The stencil's rectangle filled over the session's base with the session's colors. */
+  #fill(
+    session: BucketSession,
+    mask: Uint8Array,
+    area: Rect,
+  ): { readonly work: Rect; readonly output: Surface } {
+    const settings = this.#host.settings();
+    return fillStencil(
+      session.layerBase,
+      mask,
+      area,
+      session,
+      (key) => settings?.get(`tools.${key}`),
+      session.clip,
+    );
+  }
+
+  /** Shows `patches` over the session's layer, or nothing. */
+  #showPatches(session: BucketSession, patches: LayerPatches): void {
+    session.document.setLayerOverlay(session.layer, patches.length === 0 ? undefined : { patches });
+  }
+
+  /** Shows the fill of the step the session stands at again. */
+  #showRecorded(session: BucketSession): void {
+    const fill = this.#currentFill(session);
+    this.#showPatches(session, fill === undefined ? [] : tilePatches(fill.output, fill.work));
+  }
   #move(event: ToolPointerEvent): void {
     const drag = this.#drag;
     if (drag === undefined || event.predicted === true) return;
@@ -705,46 +738,20 @@ class PaintBucketRuntime implements SteppedRuntime {
     );
   }
 
-  /**
-   * Shows the fill of `mask` over the session's base, with no history item, as `#paint` would
-   * record it. The pixels it writes over are kept first, so `#unshow` can put them back.
-   */
+  /** Shows the fill of `mask` over the session's layer, with no history item. */
   #showFill(session: BucketSession, mask: Uint8Array, known?: Rect): void {
-    const { document, layer, layerBase } = session;
-    const area = known ?? stencilBounds(mask, document.width, document.height);
+    const area = known ?? stencilBounds(mask, session.document.width, session.document.height);
     if (isEmptyRect(area)) return;
     const { work, output } = this.#fill(session, mask, area);
-    const { painted } = session.step;
-    const region = isEmptyRect(painted) ? area : unionRects(painted, area);
-    const written = intersectRects(work, region);
-    const shown = this.#shown;
-    if (shown === undefined) {
-      this.#shown = { region, pixels: layer.pixels.readRegion(region) };
-    } else if (!rectContainsRect(shown.region, region)) {
-      const grown = unionRects(shown.region, region);
-      const pixels = layer.pixels.readRegion(grown);
-      pixels.copyFrom(
-        shown.pixels,
-        shown.pixels.bounds,
-        shown.region.x - grown.x,
-        shown.region.y - grown.y,
-      );
-      this.#shown = { region: grown, pixels };
-    }
-    document.previewLayerPixels(layer, (pixels) => {
-      pixels.writeRegion(layerBase, region.x, region.y, region);
-      pixels.writeRegion(output, written.x, written.y, translateRect(written, -work.x, -work.y));
-    });
+    this.#shown = { region: work, pixels: output };
+    this.#showPatches(session, tilePatches(output, work));
   }
 
-  /** Puts back what the burst's previews wrote over. */
+  /** Shows the recorded step again after the burst's previews. */
   #unshow(session: BucketSession): void {
-    const shown = this.#shown;
+    if (this.#shown === undefined) return;
     this.#shown = undefined;
-    if (shown === undefined) return;
-    session.document.restoreLayerPixels(session.layer, (pixels) => {
-      pixels.writeRegion(shown.pixels, shown.region.x, shown.region.y);
-    });
+    this.#showRecorded(session);
   }
   #guard(work: () => void): void {
     try {

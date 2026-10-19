@@ -356,6 +356,28 @@ function addCoverage(mask: Uint8Array, area: Rect, part: CoveragePart): boolean 
   return any;
 }
 
+/** `output`, which covers `area`, as patches each inside one store tile (`LayerOverlay`). */
+export function tilePatches(output: Surface, area: Rect): LayerPatches {
+  const patches: LayerPatch[] = [];
+  const right = area.x + area.width;
+  const bottom = area.y + area.height;
+  for (let ty = Math.floor(area.y / TILE_SIZE); ty * TILE_SIZE < bottom; ty++) {
+    for (let tx = Math.floor(area.x / TILE_SIZE); tx * TILE_SIZE < right; tx++) {
+      const part = intersectRects(area, rect(tx * TILE_SIZE, ty * TILE_SIZE, TILE_SIZE, TILE_SIZE));
+      if (isEmptyRect(part)) continue;
+      const pixels = new Surface(part.width, part.height);
+      pixels.copyFrom(
+        output,
+        rect(part.x - area.x, part.y - area.y, part.width, part.height),
+        0,
+        0,
+      );
+      patches.push({ output: pixels, area: part });
+    }
+  }
+  return patches;
+}
+
 /** Writes patches into a layer's pixels; none writes nothing. */
 export function writePatches(pixels: TiledPixelStore, patches: LayerPatches | undefined): void {
   for (const patch of patches ?? []) pixels.writeRegion(patch.output, patch.area.x, patch.area.y);

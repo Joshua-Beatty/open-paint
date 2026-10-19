@@ -6,6 +6,7 @@ import initWasm from "@openpaint/cpu";
 import {
   Document,
   HATCH_PATTERNS,
+  readOverlaid,
   rect,
   rectPolygon,
   Selection,
@@ -112,7 +113,7 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
   function pixel(x: number, y: number) {
     const layer = doc.activeLayer;
     if (layer === undefined) throw new Error("no active layer");
-    return layer.pixels.getPixel(x, y);
+    return readOverlaid(layer.pixels, layer.overlay, rect(x, y, 1, 1)).getPixel(0, 0);
   }
 
   function click(x: number, y: number, button = 0, modifiers = {}): void {
@@ -278,7 +279,9 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
 
     click(21, 5);
     await settle(() => expect(doc.history.undoName).toBe("history.paintBucket"));
-    expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual([...expected.data]);
+    expect([...readOverlaid(layer.pixels, layer.overlay, layer.pixels.bounds).data]).toEqual([
+      ...expected.data,
+    ]);
   });
 
   it("a tolerance change recomputes the pending fill", async () => {
@@ -430,6 +433,33 @@ describe("Paint Bucket (TL-BUCKET-01, TL-FRAME-01, TL-FRAME-02)", () => {
     click(-1, 5);
     expect(runtime.hasPending?.()).toBe(false);
     expect(doc.history.undoName).toBe("paint");
+  });
+
+  it("keeps the layer as it is while pending, and Finish, undo and redo give byte-identical layers", async () => {
+    doc.replaceSelection(new Selection([[3.5, 2.25, 30.5, 6, 25, 29.75]]), "select");
+    settings.set("tools.antialiasing", true);
+    settings.set("tools.brush.fillType", "Hatch");
+    settings.set("tools.brush.hatchStyle", "DiagonalCross");
+    const layer = doc.activeLayer;
+    if (layer === undefined) throw new Error("no active layer");
+    const raw = () => [...layer.pixels.readRegion(layer.pixels.bounds).data];
+    const before = raw();
+    click(21, 5);
+    await settle(() => expect(doc.history.undoName).toBe("history.paintBucket"));
+    settings.set("tools.tolerance", 1);
+    await settle(() => undefined);
+    settleEditBursts();
+    await settle(() => expect(doc.history.undoName).toBe("history.changeTolerance"));
+    expect(raw()).toEqual(before);
+    const shown = [...readOverlaid(layer.pixels, layer.overlay, layer.pixels.bounds).data];
+    runtime.commit?.();
+    const finished = raw();
+    expect(finished).toEqual(shown);
+    await doc.history.undo();
+    expect(raw()).toEqual(before);
+    expect([...readOverlaid(layer.pixels, layer.overlay, layer.pixels.bounds).data]).toEqual(shown);
+    await doc.history.redo();
+    expect(raw()).toEqual(finished);
   });
 
   it("a cancelled origin drag records nothing", async () => {
