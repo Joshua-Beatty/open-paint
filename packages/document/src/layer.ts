@@ -1,6 +1,7 @@
 import { DEFAULT_LAYER_BLEND_MODE, isLayerBlendMode, type LayerBlendMode } from "./blend-mode";
 import type { LayerFloatPreview } from "./float-preview";
 import type { Rect } from "./geometry";
+import type { LayerOverlay } from "./layer-overlay";
 import { MetadataMap } from "./metadata";
 import type { TiledPixelStore } from "./tiled-store";
 
@@ -86,6 +87,7 @@ export class Layer {
   #rawBlendMode: number | undefined;
   #livePreview: LayerLivePreview | undefined;
   #floatPreview: LayerFloatPreview | undefined;
+  #overlay: LayerOverlay | undefined;
 
   constructor(id: number, pixels: TiledPixelStore, init: LayerInit) {
     const normalized = normalizeLayerProperties(init);
@@ -204,6 +206,19 @@ export class Layer {
   /** Called by `Document`. */
   setFloatPreview(preview: LayerFloatPreview | undefined): void {
     this.#floatPreview = preview;
+  }
+
+  /**
+   * A pending tool result shown over this layer's pixels, or undefined (TL-FRAME-01). The pixels
+   * stay as they are. Set through `Document.setLayerOverlay`.
+   */
+  get overlay(): LayerOverlay | undefined {
+    return this.#overlay;
+  }
+
+  /** Called by `Document`. */
+  setOverlay(overlay: LayerOverlay | undefined): void {
+    this.#overlay = overlay;
   }
 
   /** Frees the layer's pixel memory. The layer must not be used afterwards. */

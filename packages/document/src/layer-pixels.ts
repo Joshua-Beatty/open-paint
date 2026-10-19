@@ -3,6 +3,7 @@ import type { LayerBlendMode } from "./blend-mode";
 import type { ColorRgba8 } from "./color";
 import { type Rect, rect } from "./geometry";
 import type { ImageRotation } from "./image-transform";
+import { type LayerOverlay, readOverlaid } from "./layer-overlay";
 import { type ResampleOptions, type ResampleRunner, resampleSurface } from "./resample";
 import { bytesOf, Surface } from "./surface";
 import { TiledPixelStore, type TiledPixelStoreOptions } from "./tiled-store";
@@ -17,6 +18,8 @@ export interface CompositeSource {
   readonly pixels: TiledPixelStore;
   readonly blendMode: LayerBlendMode;
   readonly opacity: number;
+  /** A pending tool result shown over the pixels, which a flattened region includes. */
+  readonly overlay?: LayerOverlay | undefined;
 }
 
 /** Flips applied to the source coordinates, then an optional swap of x and y. */
@@ -196,7 +199,7 @@ export function flattenLayerPixels(
 export function flattenRegion(layers: readonly CompositeSource[], area: Rect): Surface {
   const out = new Surface(area.width, area.height);
   for (const layer of layers) {
-    const upper = layer.pixels.readRegion(area);
+    const upper = readOverlaid(layer.pixels, layer.overlay, area);
     composite_rgba8(bytesOf(out), bytesOf(upper), layer.blendMode, layer.opacity);
   }
   return out;

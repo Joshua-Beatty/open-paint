@@ -1,4 +1,4 @@
-import { rect, Surface, TiledPixelStore } from "@openpaint/document";
+import { type LayerOverlay, rect, Surface, TiledPixelStore } from "@openpaint/document";
 import { describe, expect, it } from "vitest";
 import {
   DocumentMirror,
@@ -27,6 +27,41 @@ function documentOf(
     })),
   };
 }
+
+describe("DocumentMirror overlays (TL-FRAME-01)", () => {
+  it("shows a pending result over the layer in the engine, and takes it away, leaving the layer as it is", () => {
+    const layer = new TiledPixelStore(600, 300);
+    layer.fill(RED, rect(0, 0, 600, 300));
+    const mirror = new DocumentMirror();
+    const replica = new DocumentReplica();
+    let overlay: LayerOverlay | undefined;
+    const doc = (): MirroredDocument => ({
+      width: 600,
+      height: 300,
+      layers: [{ id: 1, visible: true, opacity: 255, blendMode: 0, pixels: layer, overlay }],
+    });
+    replica.apply(mirror.describe(doc()));
+    const patch = new Surface(10, 10);
+    patch.fill(BLUE);
+    overlay = { patches: [{ area: rect(300, 5, 10, 10), output: patch }] };
+    const sync = mirror.describe(doc());
+    expect(sync.tiles[0]?.tiles.map(({ tx, ty, rect: part }) => [tx, ty, part])).toEqual([
+      [1, 0, rect(44, 5, 10, 10)],
+    ]);
+    const store = replica.apply(sync).document.layers[0]?.store;
+    expect(store?.getPixel(305, 10)).toEqual(BLUE);
+    expect(layer.getPixel(305, 10)).toEqual(RED);
+    // Unchanged: nothing is sent again.
+    expect(mirror.describe(doc()).tiles[0]?.tiles).toEqual([]);
+    // A dirty tile under the overlay goes with the overlay drawn in.
+    layer.fill(RED, rect(290, 0, 30, 30));
+    replica.apply(mirror.describe(doc()));
+    expect(store?.getPixel(305, 10)).toEqual(BLUE);
+    overlay = undefined;
+    replica.apply(mirror.describe(doc()));
+    expect(store?.getPixel(305, 10)).toEqual(RED);
+  });
+});
 
 describe("DocumentMirror and DocumentReplica", () => {
   it("sends a full sync that the replica draws exactly", () => {

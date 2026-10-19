@@ -69,6 +69,7 @@ import {
   type LayerLivePreview,
   type LayerProperties,
 } from "./layer";
+import type { LayerOverlay } from "./layer-overlay";
 import {
   cloneLayerPixels,
   compositeLayerPixels,
@@ -201,7 +202,23 @@ type ItemData =
       readonly afterPatch: SpillHandle;
       readonly selectionBefore: Selection;
       readonly selectionAfter: Selection;
+    }
+  | {
+      /** A tool's Finish (`editLayerPixelsRendered`): only the pixels before it are kept. */
+      readonly kind: "rendered";
+      readonly layer: Layer;
+      readonly area: readonly Rect[];
+      readonly beforePatch: SpillHandle;
+      readonly selectionBefore: Selection;
+      readonly selectionAfter: Selection;
+      /** Draws the result again for a redo; undefined for an item restored from a checkpoint. */
+      readonly rerender: RenderAgain | undefined;
+      /** Without `rerender`, the pixels an undo replaced, which the redo writes back. */
+      after: SpillHandle | undefined;
     };
+
+/** Renders a tool's result again, deterministically, and gives the write that draws it. */
+export type RenderAgain = () => Promise<(pixels: TiledPixelStore) => void>;
 
 /**
  * A raster document (DOC-DOC): fixed pixel size, resolution, metadata, an ordered layer list
@@ -927,7 +944,7 @@ export class Document {
   #keepsContent(command: HistoryCommand): boolean {
     if (command.parts !== undefined) return command.parts.every((part) => this.#keepsContent(part));
     const data = this.#items.get(command);
-    if (data === undefined || data.kind === "pixels") return false;
+    if (data === undefined || data.kind !== "snapshot") return false;
     const { before, after } = data;
     return (
       before.width === after.width &&
@@ -1006,7 +1023,22 @@ export class Document {
         return { kind: "compound", name: command.name, items: command.parts.map(itemOf) };
       }
       const data = this.#items.get(command);
-      if (data === undefined) return { kind: "base", name: command.name };
+      if (data === undefined) {
+        // A state-only tool step (`History.recordStep`) stays undoable; the base item does not.
+        return command.undoable === false
+          ? { kind: "base", name: command.name }
+          : { kind: "step", name: command.name };
+      }
+      if (data.kind === "rendered") {
+        return {
+          kind: "rendered",
+          name: command.name,
+          layer: layerInfo(data.layer),
+          beforePatch: historyBlob(data.beforePatch),
+          selectionBefore: selectionJson(data.selectionBefore),
+          selectionAfter: selectionJson(data.selectionAfter),
+        };
+      }
       if (data.kind === "snapshot") {
         return {
           kind: "snapshot",
@@ -1026,7 +1058,22 @@ export class Document {
       };
     };
 
-    const items = [...this.history.appliedCommands, ...this.history.undoneCommands].map(itemOf);
+    // An undone Finish draws itself again on redo, which a restored document cannot: it and the
+    // redo steps behind it are left out.
+    const undone = this.history.undoneCommands;
+    const blocked = undone.findLastIndex(
+      (command) => this.#items.get(command)?.kind === "rendered",
+    );
+    const kept = undone.slice(blocked + 1);
+    const items = [...this.history.appliedCommands, ...kept].map(itemOf);
+    const applied = this.history.appliedCommands.length;
+    const savedAt = this.history.savedLocation;
+    const saved =
+      savedAt.index < applied
+        ? savedAt
+        : savedAt.index - applied <= blocked
+          ? { depth: -1, index: -1 }
+          : { depth: savedAt.depth, index: savedAt.index - (blocked + 1) };
 
     const layers: CheckpointLayer[] = [];
     for (const layer of this.#layers) {
@@ -1054,8 +1101,8 @@ export class Document {
       layers,
       history: {
         items,
-        appliedCount: this.history.appliedCommands.length,
-        saved: this.history.savedLocation,
+        appliedCount: applied,
+        saved,
       },
     };
 
@@ -1150,6 +1197,22 @@ export class Document {
     blob: (name: string) => Uint8Array,
   ): HistoryCommand {
     if (item.kind === "base") return placeholderCommand(item.name);
+    if (item.kind === "step") {
+      return { name: item.name, undo: async () => {}, redo: async () => {}, release: () => {} };
+    }
+    if (item.kind === "rendered") {
+      const layer = layerFor(item.layer);
+      return this.#command(item.name, {
+        kind: "rendered",
+        layer,
+        area: [layer.pixels.bounds],
+        beforePatch: this.#spill.put(blob(item.beforePatch)),
+        selectionBefore: selectionFromJson(item.selectionBefore),
+        selectionAfter: selectionFromJson(item.selectionAfter),
+        rerender: undefined,
+        after: undefined,
+      });
+    }
     if (item.kind === "compound") {
       return compoundCommand(
         item.name,
@@ -1464,6 +1527,41 @@ export class Document {
   }
 
   /**
+   * Writes a tool's result into `layer` through `write` as one item that keeps only the pixels it
+   * overwrites (TL-FRAME-01 Finish, owner request): its redo draws the result again with
+   * `rerender`, which must give the same bytes, as it renders from the same state over the same
+   * layer (the history is linear). `write` must not change pixels outside `area`.
+   */
+  editLayerPixelsRendered(
+    name: string,
+    layer: Layer,
+    area: readonly Rect[],
+    write: (pixels: TiledPixelStore) => void,
+    rerender: RenderAgain,
+  ): void {
+    this.#beginChange();
+    if (!this.#layers.includes(layer)) throw new RangeError("The layer is not in this document.");
+    const beforePatch = this.#spill.put(captureTiles(layer.pixels, area));
+    try {
+      write(layer.pixels);
+    } catch (error) {
+      this.#spill.release(beforePatch);
+      throw error;
+    }
+    const selection = this.#selection;
+    this.#recordItem(name, {
+      kind: "rendered",
+      layer,
+      area,
+      beforePatch,
+      selectionBefore: selection,
+      selectionAfter: selection,
+      rerender,
+      after: undefined,
+    });
+  }
+
+  /**
    * The state of the document before the newest applied items `commands` (newest last), as far as a
    * tool needs it to edit again a result those items drew (TL-FRAME-01): the tiles of `layer` that
    * the items changed, as they were before the oldest of them, keyed `ty * tilesX + tx` (null for a
@@ -1583,6 +1681,18 @@ export class Document {
   setLayerFloatPreview(layer: Layer, preview: LayerFloatPreview | undefined): void {
     if (layer.floatPreview === preview) return;
     layer.setFloatPreview(preview);
+    if (this.#layers.includes(layer)) this.#notify("preview");
+  }
+
+  /**
+   * Shows a pending tool result over `layer` on the canvas and in its thumbnails, or stops showing
+   * one (undefined), without touching its pixels (TL-FRAME-01). Nothing is recorded. It works while
+   * the history is busy, since undo and redo take results up and let go of them. Listeners are
+   * notified.
+   */
+  setLayerOverlay(layer: Layer, overlay: LayerOverlay | undefined): void {
+    if (layer.overlay === overlay) return;
+    layer.setOverlay(overlay);
     if (this.#layers.includes(layer)) this.#notify("preview");
   }
 
@@ -1912,7 +2022,40 @@ export class Document {
   #step(data: ItemData, side: "before" | "after"): Promise<void> {
     if (data.kind === "snapshot")
       return this.#restore(side === "before" ? data.before : data.after);
+    if (data.kind === "rendered") return this.#stepRendered(data, side);
     return this.#restorePatch(data, side);
+  }
+
+  /**
+   * Undoes a tool's Finish from the pixels it kept, or draws it again. One restored from a
+   * checkpoint has no renderer: its undo keeps the pixels it takes away for the redo.
+   */
+  async #stepRendered(
+    data: Extract<ItemData, { kind: "rendered" }>,
+    side: "before" | "after",
+  ): Promise<void> {
+    const pixels = data.layer.pixels;
+    if (side === "before") {
+      const before = await this.#spill.get(data.beforePatch);
+      if (data.rerender === undefined && data.after === undefined) {
+        data.after = this.#spill.put(
+          captureTiles(
+            pixels,
+            readTiles(before).map(({ tx, ty }) => pixels.tileBounds(tx, ty)),
+          ),
+        );
+      }
+      restoreTiles(pixels, before);
+      this.#selection = data.selectionBefore;
+      return;
+    }
+    if (data.rerender !== undefined) {
+      const write = await data.rerender();
+      write(pixels);
+    } else if (data.after !== undefined) {
+      restoreTiles(pixels, await this.#spill.get(data.after));
+    }
+    this.#selection = data.selectionAfter;
   }
 
   async #restorePatch(
@@ -1928,6 +2071,11 @@ export class Document {
     if (data.kind === "snapshot") {
       this.#releaseSnapshot(data.before);
       this.#releaseSnapshot(data.after);
+      return;
+    }
+    if (data.kind === "rendered") {
+      this.#spill.release(data.beforePatch);
+      if (data.after !== undefined) this.#spill.release(data.after);
       return;
     }
     this.#spill.release(data.beforePatch);

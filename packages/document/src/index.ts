@@ -18,6 +18,7 @@ export * from "./history/tile-patch";
 export * from "./image-transform";
 export * from "./job";
 export * from "./layer";
+export * from "./layer-overlay";
 export * from "./layer-pixels";
 export * from "./limits";
 export * from "./memory";

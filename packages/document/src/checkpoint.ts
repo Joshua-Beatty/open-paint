@@ -100,7 +100,18 @@ export type CheckpointItem =
       readonly afterPatch: string;
       readonly selectionBefore: CheckpointSelection;
       readonly selectionAfter: CheckpointSelection;
-    };
+    }
+  | {
+      /** A tool's Finish, which keeps only the pixels it overwrote (`editLayerPixelsRendered`). */
+      readonly kind: "rendered";
+      readonly name: string;
+      readonly layer: LayerInfo;
+      readonly beforePatch: string;
+      readonly selectionBefore: CheckpointSelection;
+      readonly selectionAfter: CheckpointSelection;
+    }
+  /** A step that changed only a tool's pending state (`History.recordStep`). */
+  | { readonly kind: "step"; readonly name: string };
 
 export interface CheckpointSelection {
   readonly polygons: readonly SelectionPolygon[];

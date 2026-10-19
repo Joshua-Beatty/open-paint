@@ -1,8 +1,14 @@
 import {
   type ColorRgba8,
+  drawOverlay,
   type FloatPlacement,
+  intersectRects,
+  isEmptyRect,
   type LayerFloatPreview,
   type LayerLivePreview,
+  type LayerOverlay,
+  type OverlayPatch,
+  overlayByTile,
   type Rect,
   rect,
   Surface,
@@ -31,6 +37,11 @@ export interface MirroredLayer {
   readonly livePreview?: LayerLivePreview | undefined;
   /** The floating content shown over the layer while Move Selected Pixels previews it. */
   readonly floatPreview?: LayerFloatPreview | undefined;
+  /**
+   * A pending tool result shown over the layer (TL-FRAME-01). The engine gets the layer's tiles
+   * with it drawn in, so it composites like the pixels Finish will write; the layer stays as it is.
+   */
+  readonly overlay?: LayerOverlay | undefined;
 }
 
 /** The document as the main thread describes it: its size and layer stack, bottom to top. */
@@ -188,6 +199,11 @@ export class DocumentMirror {
   /** The keys of floating contents and bases, and the ones the worker holds per layer id. */
   readonly #floatKeys = new WeakMap<object, number>();
   readonly #sentFloat = new Map<number, { readonly content: number; readonly base: number }>();
+  /** The overlay the engine's tiles show per layer id, and its patches by tile. */
+  readonly #sentOverlay = new Map<
+    number,
+    { readonly overlay: LayerOverlay; readonly tiles: Map<number, OverlayPatch[]> }
+  >();
 
   /** Makes the next description a full sync, e.g. after the engine lost its GPU document. */
   invalidate(): void {
@@ -226,6 +242,7 @@ export class DocumentMirror {
     if (full) {
       this.#sentCoverage.clear();
       this.#sentFloat.clear();
+      this.#sentOverlay.clear();
     }
     const buffers: ArrayBuffer[] = [];
     const stack: SyncLayer[] = layers.map(
@@ -254,6 +271,9 @@ export class DocumentMirror {
       layer.pixels.clearDirty();
     }
 
+    for (const id of this.#sentOverlay.keys()) {
+      if (!this.#stores.has(id)) this.#sentOverlay.delete(id);
+    }
     let spent = 0;
     const tiles = layers.map((layer) => {
       const store = layer.pixels;
@@ -261,6 +281,7 @@ export class DocumentMirror {
       const regions: DirtyTile[] = store
         .takeDirtyRegions()
         .filter(({ tx, ty }) => !acknowledged?.has(`${tx},${ty}`));
+      const overlay = this.#overlayOf(layer, full || reset.includes(layer.id), regions);
       const waiting = this.#pending.get(layer.id);
       while (waiting !== undefined && waiting.length > 0 && spent < budgetBytes) {
         const next = waiting.shift();
@@ -273,7 +294,8 @@ export class DocumentMirror {
       return {
         id: layer.id,
         tiles: regions.map((region) => {
-          const tile = tileSync(store, region);
+          const patches = overlay?.get(region.ty * store.tilesX + region.tx);
+          const tile = tileSync(store, region, patches);
           if (tile.pixels) buffers.push(tile.pixels.buffer as ArrayBuffer);
           return tile;
         }),
@@ -321,6 +343,46 @@ export class DocumentMirror {
     }
     this.#sentFloat.set(id, { content: contentKey, base: baseKey });
     return float;
+  }
+
+  /**
+   * The overlay the layer's tiles go with, by tile. When it changed since the last sync, the tiles
+   * the old or the new one covers are added to `regions`, so the engine shows the new one and
+   * drops the old (L2: only the patches' areas). A store sent whole gets its overlay's tiles too.
+   */
+  #overlayOf(
+    layer: MirroredLayer,
+    whole: boolean,
+    regions: DirtyTile[],
+  ): Map<number, OverlayPatch[]> | undefined {
+    const store = layer.pixels;
+    const sent = this.#sentOverlay.get(layer.id);
+    const overlay = layer.overlay;
+    if (sent?.overlay === overlay && !whole) return sent?.tiles;
+    const tiles = overlayByTile(overlay, store.tilesX);
+    if (overlay === undefined) this.#sentOverlay.delete(layer.id);
+    else this.#sentOverlay.set(layer.id, { overlay, tiles });
+    const changed = new Map<number, Rect>();
+    const add = (patch: OverlayPatch) => {
+      const area = intersectRects(patch.area, store.bounds);
+      if (isEmptyRect(area)) return;
+      const tx = Math.floor(area.x / TILE_SIZE);
+      const ty = Math.floor(area.y / TILE_SIZE);
+      const key = ty * store.tilesX + tx;
+      const known = changed.get(key);
+      changed.set(key, known === undefined ? area : joinArea(known, area));
+    };
+    for (const patch of overlay?.patches ?? []) add(patch);
+    if (!whole) for (const patch of sent?.overlay.patches ?? []) add(patch);
+    for (const [key, area] of changed) {
+      const tx = key % store.tilesX;
+      const ty = Math.floor(key / store.tilesX);
+      const at = regions.findIndex((region) => region.tx === tx && region.ty === ty);
+      const known = at < 0 ? undefined : regions[at];
+      if (known === undefined) regions.push({ tx, ty, area });
+      else if (known.area !== undefined) regions[at] = { tx, ty, area: joinArea(known.area, area) };
+    }
+    return overlay === undefined ? undefined : tiles;
   }
 
   #keyOf(item: object): number {
@@ -392,7 +454,13 @@ interface DirtyTile extends TileCoord {
  * part sends that part alone (L9), so a small brush dab does not copy 256 KB. The copy is a
  * `slice`: `new Uint8Array(clamped)` would convert the bytes one at a time, which is far slower.
  */
-function tileSync(store: TiledPixelStore, { tx, ty, area }: DirtyTile): SyncTile {
+function tileSync(
+  store: TiledPixelStore,
+  { tx, ty, area }: DirtyTile,
+  overlay?: readonly OverlayPatch[],
+): SyncTile {
+  if (overlay !== undefined && overlay.length > 0)
+    return overlaidTileSync(store, tx, ty, area, overlay);
   const tile = store.getTile(tx, ty);
   if (tile === undefined) return { tx, ty, pixels: undefined };
   const part =
@@ -412,6 +480,41 @@ function tileSync(store: TiledPixelStore, { tx, ty, area }: DirtyTile): SyncTile
     pixels.set(tile.data.subarray(from, from + row), y * row);
   }
   return { tx, ty, pixels, rect: part };
+}
+
+/** A tile's sync with an overlay's patches drawn over the store's pixels. */
+function overlaidTileSync(
+  store: TiledPixelStore,
+  tx: number,
+  ty: number,
+  area: Rect | undefined,
+  overlay: readonly OverlayPatch[],
+): SyncTile {
+  const bounds = store.tileBounds(tx, ty);
+  const region = area === undefined ? bounds : intersectRects(area, bounds);
+  const out = store.readRegion(region);
+  drawOverlay(out, region, overlay);
+  const part = rect(
+    region.x - tx * TILE_SIZE,
+    region.y - ty * TILE_SIZE,
+    region.width,
+    region.height,
+  );
+  const pixels = new Uint8Array(out.data.buffer, out.data.byteOffset, out.data.byteLength);
+  if (part.width === TILE_SIZE && part.height === TILE_SIZE) return { tx, ty, pixels };
+  return { tx, ty, pixels, rect: part };
+}
+
+/** The union of two rectangles of one tile. */
+function joinArea(a: Rect, b: Rect): Rect {
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  return rect(
+    left,
+    top,
+    Math.max(a.x + a.width, b.x + b.width) - left,
+    Math.max(a.y + a.height, b.y + b.height) - top,
+  );
 }
 
 /** What applying a sync did to the replica's document. */

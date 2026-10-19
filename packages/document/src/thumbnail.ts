@@ -1,6 +1,7 @@
 import type { Document } from "./document";
 import { type Rect, rect } from "./geometry";
 import type { Layer } from "./layer";
+import { drawOverlay, type LayerOverlay, overlayByTile } from "./layer-overlay";
 import { type CompositeSource, flattenRegion } from "./layer-pixels";
 import { Surface } from "./surface";
 import { TILE_SIZE, type TiledPixelStore } from "./tiled-store";
@@ -382,12 +383,43 @@ export class ThumbnailRenderer {
       sums = new TiledThumbnail(store.width, store.height, this.maxSize);
       this.#layers.set(store, sums);
     }
+    // A pending result shown over the layer counts as its pixels (TL-FRAME-01).
+    const overlay = this.#overlayOf(layer.overlay, store.tilesX);
     await sums.refresh(
-      (tx, ty) => [store.tileVersion(tx, ty)],
-      (area) => store.getTile(area.x / TILE_SIZE, area.y / TILE_SIZE),
+      (tx, ty) => [store.tileVersion(tx, ty), overlay.version(tx, ty)],
+      (area) => {
+        const tx = area.x / TILE_SIZE;
+        const ty = area.y / TILE_SIZE;
+        const patches = overlay.patches(tx, ty);
+        if (patches === undefined) return store.getTile(tx, ty);
+        const out = store.readRegion(area);
+        drawOverlay(out, area, patches);
+        return out;
+      },
       pause,
     );
     return sums.finish();
+  }
+
+  readonly #overlaySerials = new WeakMap<LayerOverlay, number>();
+  #nextOverlay = 0;
+
+  /** An overlay's patches by tile, and a version for each tile it covers (0 for the others). */
+  #overlayOf(overlay: LayerOverlay | undefined, tilesX: number) {
+    let serial = 0;
+    if (overlay !== undefined) {
+      serial = this.#overlaySerials.get(overlay) ?? 0;
+      if (serial === 0) {
+        this.#nextOverlay += 1;
+        serial = this.#nextOverlay;
+        this.#overlaySerials.set(overlay, serial);
+      }
+    }
+    const tiles = overlayByTile(overlay, tilesX);
+    return {
+      version: (tx: number, ty: number) => (tiles.has(ty * tilesX + tx) ? serial : 0),
+      patches: (tx: number, ty: number) => tiles.get(ty * tilesX + tx),
+    };
   }
 
   /** `documentThumbnail(doc, maxSize)`. It returns the same surface while the image is unchanged. */
@@ -399,19 +431,38 @@ export class ThumbnailRenderer {
         .filter((layer) => layer.visible)
         .map(({ pixels, blendMode, opacity }) => ({ pixels, blendMode, opacity })),
     };
+    const overlays = doc.layers
+      .filter((layer) => layer.visible)
+      .map((layer) => ({
+        overlay: layer.overlay,
+        tiles: this.#overlayOf(layer.overlay, layer.pixels.tilesX),
+      }));
     let entry = this.#documents.get(doc);
     if (entry === undefined || !sameStack(entry.stack, stack)) {
       entry = { stack, sums: new TiledThumbnail(doc.width, doc.height, this.maxSize) };
       this.#documents.set(doc, entry);
     }
     const { layers } = entry.stack;
+    const shown = layers.map((layer, index) => ({ ...layer, overlay: overlays[index]?.overlay }));
     await entry.sums.refresh(
-      (tx, ty) => layers.map((layer) => layer.pixels.tileVersion(tx, ty)),
+      (tx, ty) =>
+        layers.flatMap((layer, index) => [
+          layer.pixels.tileVersion(tx, ty),
+          overlays[index]?.tiles.version(tx, ty) ?? 0,
+        ]),
       (area) => {
         const tx = area.x / TILE_SIZE;
         const ty = area.y / TILE_SIZE;
-        if (layers.every((layer) => layer.pixels.getTile(tx, ty) === undefined)) return undefined;
-        return flattenRegion(layers, area);
+        if (
+          layers.every(
+            (layer, index) =>
+              layer.pixels.getTile(tx, ty) === undefined &&
+              overlays[index]?.tiles.patches(tx, ty) === undefined,
+          )
+        ) {
+          return undefined;
+        }
+        return flattenRegion(shown, area);
       },
       pause,
       layers.length,
