@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import initWasm from "@openpaint/cpu";
-import { Document, rect, rectPolygon, Selection, Surface } from "@openpaint/document";
+import { Document, readOverlaid, rect, rectPolygon, Selection, Surface } from "@openpaint/document";
 import { clipToCoverage } from "@openpaint/effects";
 import { gradientCpu } from "@openpaint/engine";
 import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
@@ -143,7 +143,7 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
   function pixel(x: number, y: number) {
     const layer = doc.activeLayer;
     if (layer === undefined) throw new Error("no active layer");
-    return layer.pixels.getPixel(x, y);
+    return readOverlaid(layer.pixels, layer.overlay, rect(x, y, 1, 1)).getPixel(0, 0);
   }
 
   /** Draws a gradient from (x0, y0) to (x1, y1) with the given button. */
@@ -236,7 +236,9 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
     runtime.pointer(event("move", 10, 30));
     runtime.pointer(event("move", 29, 25));
     runtime.pointer(event("up", 29, 25));
-    expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual([...expected.data]);
+    expect([...readOverlaid(layer.pixels, layer.overlay, layer.pixels.bounds).data]).toEqual([
+      ...expected.data,
+    ]);
 
     settings.set("tools.selection.renderingQuality", "Aliased");
     const aliased = clipToCoverage(
@@ -244,10 +246,14 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
       filled,
       doc.selection.mask(before.bounds).map((value) => (value >= 128 ? 255 : 0)),
     );
-    expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual([...aliased.data]);
+    expect([...readOverlaid(layer.pixels, layer.overlay, layer.pixels.bounds).data]).toEqual([
+      ...aliased.data,
+    ]);
     await doc.history.undo();
     await doc.history.undo();
-    expect([...layer.pixels.readRegion(layer.pixels.bounds).data]).toEqual([...before.data]);
+    expect([...readOverlaid(layer.pixels, layer.overlay, layer.pixels.bounds).data]).toEqual([
+      ...before.data,
+    ]);
   });
 
   it("the right button reverses the colors", () => {
@@ -441,6 +447,28 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
     expect(pixel(31, 16)).toEqual(BLUE);
   });
 
+  it("keeps the layer as it is while pending, and Finish, undo and redo give byte-identical layers", async () => {
+    doc.replaceSelection(new Selection([[3.5, 4.25, 27.5, 6, 20, 29.75]]), "select");
+    settings.set("tools.gradient.type", "Radial");
+    const layer = doc.activeLayer;
+    if (layer === undefined) throw new Error("no active layer");
+    const raw = () => [...layer.pixels.readRegion(layer.pixels.bounds).data];
+    const before = raw();
+    drag(2, 16, 30, 16);
+    runtime.pointer(event("down", 30, 16));
+    runtime.pointer(event("move", 25, 25));
+    runtime.pointer(event("up", 25, 25));
+    expect(raw()).toEqual(before);
+    const shown = [...readOverlaid(layer.pixels, layer.overlay, layer.pixels.bounds).data];
+    runtime.commit?.();
+    const finished = raw();
+    expect(finished).toEqual(shown);
+    await doc.history.undo();
+    expect(raw()).toEqual(before);
+    await doc.history.redo();
+    expect(raw()).toEqual(finished);
+  });
+
   it("a cancelled draw restores the layer and records nothing", () => {
     runtime.pointer(event("down", 2, 16));
     runtime.pointer(event("move", 30, 16));
@@ -556,8 +584,12 @@ describe("Gradient tool with tiles rendered in workers (L7)", () => {
     await settling;
     expect(runtime.settling?.()).toBeUndefined();
     expect(doc.history.undoName).toBe("history.gradient");
-    expect(layer.pixels.getPixel(0, 20)).toEqual(GREEN);
-    expect(layer.pixels.getPixel(599, 20)).toEqual(YELLOW);
+    expect(readOverlaid(layer.pixels, layer.overlay, rect(0, 20, 1, 1)).getPixel(0, 0)).toEqual(
+      GREEN,
+    );
+    expect(readOverlaid(layer.pixels, layer.overlay, rect(599, 20, 1, 1)).getPixel(0, 0)).toEqual(
+      YELLOW,
+    );
     // Finish needs no new render: the layer already shows the recorded gradient.
     runtime.commit?.();
     expect(doc.history.undoName).toBe("history.finishGradient");

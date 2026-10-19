@@ -37,7 +37,6 @@ import { reportToolFailure } from "./tool-failure";
 import {
   layerIndex,
   PendingOptions,
-  recordStep,
   type StepContext,
   type StepKind,
   type SteppedRuntime,
@@ -146,7 +145,7 @@ function repeatOf(value: unknown): GradientRepeat {
  * secondary's, and reversing the colors reverses the ramp too.
  */
 function gradientColors(
-  session: GradientSession,
+  session: Pick<GradientSnapshot, "primary" | "secondary" | "reversed">,
   alphaOnly: boolean,
 ): { readonly startColor: ColorRgba8; readonly endColor: ColorRgba8 } {
   const [startColor, endColor] = session.reversed
@@ -183,12 +182,16 @@ interface GradientSession {
   /** Renders the gradient in tiles, over the layer or the selection's bounds (TL-FRAME-04). */
   render: GradientRender | undefined;
   /**
-   * The layer as the last recorded step left it, copied a tile at a time just before a preview
-   * writes there; undefined before the first step, when the base stands in for it.
+   * The tiles of the last recorded step, by their area's corner. The layer is not written while
+   * the gradient is pending: its tiles are shown over it (`Document.setLayerOverlay`).
    */
-  recorded: LayerSnapshot | undefined;
-  /** Whether render tiles were written since the layer last showed the recorded state. */
-  shown: boolean;
+  recorded: Map<string, GradientTile>;
+  /** The tiles shown over the layer now. */
+  shown: Map<string, GradientTile>;
+  /** Whether tiles were shown since the overlay last showed the recorded step. */
+  dirty: boolean;
+  /** Set while the tiles that land show a step taken up from history, which they record. */
+  adopting: boolean;
   /** What the last recorded step rendered (`renderKey`), or undefined before the first. */
   recordedKey: string | undefined;
   /** Set while a record waits for its render: tiles are then written past the document's hold. */
@@ -392,8 +395,10 @@ class GradientRuntime implements SteppedRuntime {
       start: point,
       end: point,
       render: undefined,
-      recorded: undefined,
-      shown: false,
+      recorded: new Map(),
+      shown: new Map(),
+      dirty: false,
+      adopting: false,
       recordedKey: undefined,
       held: false,
       store: layer.pixels,
@@ -539,7 +544,7 @@ class GradientRuntime implements SteppedRuntime {
       after: kind === "finish" ? undefined : now,
     };
     const unchanged =
-      !session.shown &&
+      !session.dirty &&
       session.render !== undefined &&
       session.recordedKey !== undefined &&
       session.recordedKey === this.#renderKey(session);
@@ -577,13 +582,29 @@ class GradientRuntime implements SteppedRuntime {
   #write(session: GradientSession, name: MessageId, render: GradientRender, step: ToolStep): void {
     const { document, layer } = session;
     const { area } = render;
-    const before = session.recorded ?? session.base;
-    recordStep(document, step, () =>
-      document.recordLayerPixels(this.#host.translate(name), layer, area, before.tileAt),
-    );
-    session.recorded = new LayerSnapshot(layer.pixels);
+    const label = this.#host.translate(name);
+    if (step.kind === "finish") {
+      const tiles = [...session.shown.values()];
+      const write = (pixels: Layer["pixels"]) => {
+        for (const tile of tiles) pixels.writeRegion(tile.output, tile.area.x, tile.area.y);
+      };
+      const snapshot = step.before as GradientSnapshot;
+      const selection = document.selection;
+      document.history.withStep(step, () =>
+        document.editLayerPixelsRendered(label, layer, [area], write, async () => {
+          const again = await renderGradientAgain(layer, selection, snapshot);
+          return (pixels) => {
+            for (const tile of again) pixels.writeRegion(tile.output, tile.area.x, tile.area.y);
+          };
+        }),
+      );
+      document.setLayerOverlay(layer, undefined);
+    } else {
+      document.history.recordStep(label, step);
+    }
+    session.recorded = new Map(session.shown);
     session.recordedKey = this.#renderKey(session);
-    session.shown = false;
+    session.dirty = false;
     session.state = (step.after ?? step.before) as GradientSnapshot;
     this.#options.edited();
     if (session !== this.#session && session !== this.#draw) this.#dispose(session);
@@ -619,18 +640,22 @@ class GradientRuntime implements SteppedRuntime {
     }
   }
 
-  /** Drops the render in flight and shows the recorded state again, if tiles were written since. */
+  /** Drops the render in flight and shows the recorded state again, if tiles were shown since. */
   #restoreRecorded(session: GradientSession): void {
     const render = session.render;
     if (render === undefined) return;
     render.renderer.cancel();
     render.key = undefined;
-    if (!session.shown) return;
-    const state = session.recorded ?? session.base;
-    session.document.restoreLayerPixels(session.layer, (pixels) =>
-      state.restore(pixels, render.area),
-    );
-    session.shown = false;
+    if (!session.dirty) return;
+    session.shown = new Map(session.recorded);
+    this.#showTiles(session);
+    session.dirty = false;
+  }
+
+  /** Shows the session's tiles over its layer, or nothing without any. */
+  #showTiles(session: GradientSession): void {
+    const patches = [...session.shown.values()];
+    session.document.setLayerOverlay(session.layer, patches.length === 0 ? undefined : { patches });
   }
 
   /** Frees the session's workers' copies once nothing will render it again. */
@@ -644,7 +669,7 @@ class GradientRuntime implements SteppedRuntime {
    * under way or done, and returns it. With a selection only its bounds can change, so only they
    * are rendered, clipped to it (L2); the clip is kept while the selection and its quality stay.
    */
-  #renderFor(session: GradientSession): GradientRender | undefined {
+  #renderFor(session: GradientSession, adopt = false): GradientRender | undefined {
     const settings = this.#host.settings();
     const options = this.#optionsOf(session);
     if (settings === null || options === undefined) return session.render;
@@ -678,6 +703,7 @@ class GradientRuntime implements SteppedRuntime {
     }
     const key = JSON.stringify(options);
     if (render.key !== key || !render.renderer.isLive(render.generation)) {
+      session.adopting = adopt;
       render.key = key;
       render.generation = render.renderer.render(options, this.#host.visibleArea?.());
     }
@@ -688,19 +714,7 @@ class GradientRuntime implements SteppedRuntime {
   #optionsOf(session: GradientSession): GradientOptions | undefined {
     const settings = this.#host.settings();
     if (settings === null) return undefined;
-    const read = (key: string) => settings.get(`tools.${key}`);
-    const alphaOnly = read("gradient.alphaOnly") === true;
-    return {
-      shape: shapeOf(read("gradient.type")),
-      repeat: repeatOf(read("gradient.repeatType")),
-      start: session.start,
-      end: session.end,
-      ...gradientColors(session, alphaOnly),
-      alphaOnly,
-      antialias: read("antialiasing") !== false,
-      blend: blendValue(read("blendMode")),
-      seed: DITHER_SEED,
-    };
+    return gradientOptionsOf(session, (key) => settings.get(`tools.${key}`));
   }
 
   /** What a render of the session would show: its options and its selection clip. */
@@ -712,18 +726,15 @@ class GradientRuntime implements SteppedRuntime {
     return `${JSON.stringify(options)}|${String(quality)}|${session.document.selection.isEmpty ? "" : "clip"}`;
   }
 
-  /** Writes landed tiles into the layer. A record's own tiles pass the hold it keeps. */
+  /** Shows landed tiles over the layer. A step taken up from history records them as it. */
   #writeTiles(session: GradientSession, tiles: readonly GradientTile[]): void {
-    // The recorded state is copied where it is about to be overwritten, for a revert or the next
-    // step's before-state.
-    const state = session.recorded ?? session.base;
-    for (const tile of tiles) state.keep(tile.area);
-    const write = (pixels: Layer["pixels"]) => {
-      for (const tile of tiles) pixels.writeRegion(tile.output, tile.area.x, tile.area.y);
-    };
-    if (session.held) session.document.restoreLayerPixels(session.layer, write);
-    else session.document.previewLayerPixels(session.layer, write);
-    session.shown = true;
+    for (const tile of tiles) {
+      const key = `${tile.area.x},${tile.area.y}`;
+      session.shown.set(key, tile);
+      if (session.adopting) session.recorded.set(key, tile);
+    }
+    if (!session.adopting) session.dirty = true;
+    this.#showTiles(session);
   }
 
   /**
@@ -746,7 +757,7 @@ class GradientRuntime implements SteppedRuntime {
    * it afresh. A gradient of another session renders over the layer as it was before that
    * session's first item, read from the history.
    */
-  async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
+  restoreStep(state: unknown, context: StepContext | undefined): void {
     this.#frames.cancel();
     this.#edits.cancel();
     const drag = this.#drag;
@@ -760,6 +771,8 @@ class GradientRuntime implements SteppedRuntime {
     if (snapshot === undefined || context === undefined) {
       if (context !== undefined) this.#options.leave(settings);
       else this.#options.edited();
+      const ending = this.#session;
+      if (ending !== undefined) ending.document.setLayerOverlay(ending.layer, undefined);
       this.#end();
       this.#refresh();
       return;
@@ -772,21 +785,25 @@ class GradientRuntime implements SteppedRuntime {
       session.layer !== context.layer ||
       session.layer.pixels !== session.store
     ) {
-      const { tiles } = await context.before();
-      if (session !== undefined) this.#dispose(session);
+      if (session !== undefined) {
+        this.#dispose(session);
+        session.document.setLayerOverlay(session.layer, undefined);
+      }
       const { layer } = context;
       session = {
         document: context.document,
         layer,
-        base: new LayerSnapshot(layer.pixels, tiles),
+        base: new LayerSnapshot(layer.pixels),
         primary: snapshot.primary,
         secondary: snapshot.secondary,
         reversed: snapshot.reversed,
         start: snapshot.start,
         end: snapshot.end,
         render: undefined,
-        recorded: undefined,
-        shown: false,
+        recorded: new Map(),
+        shown: new Map(),
+        dirty: false,
+        adopting: false,
         recordedKey: undefined,
         held: false,
         store: layer.pixels,
@@ -794,7 +811,7 @@ class GradientRuntime implements SteppedRuntime {
         key: context.session,
       };
     }
-    this.#dispose(session);
+    session.render?.renderer.cancel();
     session.start = snapshot.start;
     session.end = snapshot.end;
     session.primary = snapshot.primary;
@@ -803,9 +820,12 @@ class GradientRuntime implements SteppedRuntime {
     session.state = snapshot;
     this.#session = session;
     this.#options.enter(settings, snapshot.options, fromIdle);
-    session.recorded = new LayerSnapshot(session.layer.pixels);
+    // The layer is as it was under the gradient: it is drawn again from its state and shown over it.
+    session.recorded = new Map(session.shown);
+    session.dirty = false;
     session.recordedKey = this.#renderKey(session);
-    session.shown = false;
+    if (session.render !== undefined) session.render.key = undefined;
+    this.#renderFor(session, true);
     this.#refresh();
   }
 
@@ -895,6 +915,58 @@ class GradientRuntime implements SteppedRuntime {
   }
 }
 
+/** The gradient options of a gradient's handles and colors, under the options `read` gives. */
+function gradientOptionsOf(
+  session: Pick<GradientSnapshot, "start" | "end" | "primary" | "secondary" | "reversed">,
+  read: (key: string) => unknown,
+): GradientOptions {
+  const alphaOnly = read("gradient.alphaOnly") === true;
+  return {
+    shape: shapeOf(read("gradient.type")),
+    repeat: repeatOf(read("gradient.repeatType")),
+    start: session.start,
+    end: session.end,
+    ...gradientColors(session, alphaOnly),
+    alphaOnly,
+    antialias: read("antialiasing") !== false,
+    blend: blendValue(read("blendMode")),
+    seed: DITHER_SEED,
+  };
+}
+
+/**
+ * The tiles of a gradient drawn again from a step's state over `layer` as it is, clipped to
+ * `selection`, for a redo of Finish: the same tiles the gradient showed, rendered here.
+ */
+async function renderGradientAgain(
+  layer: Layer,
+  selection: Selection,
+  state: GradientSnapshot,
+): Promise<GradientTile[]> {
+  const read = (key: string) => state.options[`tools.${key}`];
+  const bounds = layer.pixels.bounds;
+  const area = selection.isEmpty ? bounds : intersectRects(selection.bounds(), bounds);
+  const pixelated = read("selection.renderingQuality") === "Aliased";
+  const coverage = selection.isEmpty ? undefined : selectionCoverage(selection, area, pixelated);
+  const tiles: GradientTile[] = [];
+  const renderer = new GradientRenderer({
+    lanes: new InlineGradientLanes(),
+    base: new LayerSnapshot(layer.pixels),
+    store: layer.pixels,
+    area,
+    coverage,
+    write: (landed) => tiles.push(...landed),
+  });
+  try {
+    const generation = renderer.render(gradientOptionsOf(state, read));
+    renderer.flush();
+    await renderer.whenComplete(generation);
+    renderer.flush();
+  } finally {
+    renderer.dispose();
+  }
+  return tiles;
+}
 /** The runtime of the Gradient tool (TL-GRAD-01). */
 export function gradientToolRuntime(host: PaintHost): ToolRuntime {
   return new GradientRuntime(host);
