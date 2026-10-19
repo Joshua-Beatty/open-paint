@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import initWasm from "@openpaint/cpu";
-import { Document, rect, rectPolygon } from "@openpaint/document";
+import { Document, type Layer, readOverlaid, rect, rectPolygon } from "@openpaint/document";
 import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,11 @@ import { lineCurveToolRuntime } from "./line-curve-tools";
 import { NUDGE_MERGE_MS } from "./nudge-burst";
 import type { PaintHost } from "./paint-tools";
 import { bindToolHistory, soloSwitcher } from "./tool-history";
+
+function shownPixel(layer: Layer | undefined, x: number, y: number) {
+  if (layer === undefined) throw new Error("no layer");
+  return readOverlaid(layer.pixels, layer.overlay, rect(x, y, 1, 1)).getPixel(0, 0);
+}
 
 beforeAll(async () => {
   const wasmPath = createRequire(import.meta.url).resolve("@openpaint/cpu/opaint_cpu_bg.wasm");
@@ -93,7 +98,7 @@ describe("Line / Curve (TL-LINE-01)", () => {
   function pixel(x: number, y: number) {
     const layer = doc.activeLayer;
     if (layer === undefined) throw new Error("no active layer");
-    return layer.pixels.getPixel(x, y);
+    return shownPixel(layer, x, y);
   }
 
   function drag(from: [number, number], to: [number, number], button = 0, modifiers = {}): void {

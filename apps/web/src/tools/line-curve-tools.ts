@@ -46,20 +46,21 @@ import {
 } from "./cursors";
 import { EditBurst, isColorChange, paintColors, sameColor } from "./edit-burst";
 import { FrameCoalescer } from "./frame-coalescer";
-import { type CoveragePart, type LayerPatches, renderCoverage, SessionPixels } from "./layer-patch";
+import {
+  type CoveragePart,
+  type LayerPatches,
+  LayerSnapshot,
+  renderCoverage,
+  type SelectionClip,
+  SessionPixels,
+} from "./layer-patch";
 import { type LineCurveHandles, lineCurveHandles } from "./line-curve-handles";
 import { NudgeBurst, nudgeOffset } from "./nudge-burst";
 import { blendValue, hatchValue } from "./paint-stroke";
 import type { PaintHost } from "./paint-tools";
 import type { SettingSnapshot } from "./pending-steps";
 import { reportToolFailure } from "./tool-failure";
-import {
-  layerIndex,
-  PendingOptions,
-  recordStep,
-  type StepContext,
-  type SteppedRuntime,
-} from "./tool-history";
+import { layerIndex, PendingOptions, type StepContext, type SteppedRuntime } from "./tool-history";
 
 /** The history name of each option change made while a line is pending (TL-FRAME-02). */
 const OPTION_HISTORY_NAMES: Readonly<Record<string, MessageId>> = {
@@ -558,9 +559,19 @@ class LineCurveRuntime implements SteppedRuntime {
       before: kind === "draw" ? undefined : kind === "finish" ? now : session.state,
       after: kind === "finish" ? undefined : now,
     };
-    const recorded = recordStep(session.document, step, () =>
-      session.pixels.record(this.#host.translate(name), this.#render(session)),
-    );
+    const { document, layer } = session;
+    const patches = this.#render(session);
+    const recorded =
+      kind === "finish"
+        ? session.pixels.finish(this.#host.translate(name), patches, step, () =>
+            renderLine(
+              now,
+              new LayerSnapshot(layer.pixels),
+              document.selection,
+              (key) => now.options[`tools.${key}`],
+            ),
+          )
+        : session.pixels.record(this.#host.translate(name), patches, step);
     if (!recorded) return false;
     session.state = now;
     this.#options.edited();
@@ -589,7 +600,7 @@ class LineCurveRuntime implements SteppedRuntime {
    * already shows the line, so nothing is drawn or recorded. A line of another session is drawn
    * over the layer as it was before that session's first item, read from the history.
    */
-  async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
+  restoreStep(state: unknown, context: StepContext | undefined): void {
     this.#frames.cancel();
     this.#nudges.cancel();
     this.#edits.cancel();
@@ -601,6 +612,7 @@ class LineCurveRuntime implements SteppedRuntime {
     if (snapshot === undefined || context === undefined) {
       if (context !== undefined) this.#options.leave(settings);
       else this.#options.edited();
+      this.#session?.pixels.end();
       this.#end();
       this.#refresh();
       return;
@@ -613,11 +625,11 @@ class LineCurveRuntime implements SteppedRuntime {
       session.layer !== context.layer ||
       !session.pixels.valid
     ) {
-      const { tiles } = await context.before();
+      this.#session?.pixels.end();
       session = {
         document: context.document,
         layer: context.layer,
-        pixels: new SessionPixels(context.document, context.layer, tiles),
+        pixels: new SessionPixels(context.document, context.layer),
         button: snapshot.button,
         color: snapshot.color,
         background: snapshot.background,
@@ -664,43 +676,10 @@ class LineCurveRuntime implements SteppedRuntime {
   #render(session: LineSession): LayerPatches {
     const settings = this.#host.settings();
     if (settings === null) return [];
-    const read = (key: string) => settings.get(`tools.${key}`);
-    const aliased = read("antialiasing") === false;
-    const style: StrokeStyle = {
-      width: numberOf(read("brush.size"), 2),
-      dash: dashOf(read("pen.dashStyle")),
-      startCap: capOf(read("pen.startCap")),
-      endCap: capOf(read("pen.endCap")),
-    };
-    const shapes = strokeShapes(curveSamples(controlPoints(session.line), session.curve), style);
-    const bounds = session.layer.pixels.bounds;
-    const parts: CoveragePart[] = [];
-    for (const shape of shapes) {
-      // A diagonal stroke is rasterized only over the cells it passes through (L2).
-      const area = intersectRects(shapeRect(shape), bounds);
-      parts.push(...coverageParts(shape, area, aliased ? "aliased" : "antialiased"));
-    }
-    return renderCoverage(
-      session.pixels.base,
-      [
-        {
-          parts,
-          options: {
-            antialias: false,
-            blend: blendValue(read("blendMode")),
-            hatch: hatchValue(read("brush.fillType"), read("brush.hatchStyle")),
-            color: session.color,
-            background: session.background,
-          },
-        },
-      ],
-      {
-        selection: session.document.selection,
-        pixelated: read("selection.renderingQuality") === "Aliased",
-      },
-    ).patches;
+    return renderLine(session, session.pixels.base, session.document.selection, (key) =>
+      settings.get(`tools.${key}`),
+    );
   }
-
   /** The pending session. */
   #live(): LineSession | undefined {
     return this.#session;
@@ -806,6 +785,50 @@ class LineCurveRuntime implements SteppedRuntime {
   }
 }
 
+/**
+ * The line over `base` under the options `read` gives and the selection clip (TL-FRAME-04). Each
+ * shape is rasterized over its own rectangle, and the coverages combine by maximum, since the
+ * shapes overlap at their joints. It depends only on its arguments, so a redo of Finish draws the
+ * same pixels again from the step's state.
+ */
+function renderLine(
+  session: Pick<LineSnapshot, "line" | "curve" | "color" | "background">,
+  base: LayerSnapshot,
+  selection: SelectionClip["selection"],
+  read: (key: string) => unknown,
+): LayerPatches {
+  const aliased = read("antialiasing") === false;
+  const style: StrokeStyle = {
+    width: numberOf(read("brush.size"), 2),
+    dash: dashOf(read("pen.dashStyle")),
+    startCap: capOf(read("pen.startCap")),
+    endCap: capOf(read("pen.endCap")),
+  };
+  const shapes = strokeShapes(curveSamples(controlPoints(session.line), session.curve), style);
+  const bounds = base.bounds;
+  const parts: CoveragePart[] = [];
+  for (const shape of shapes) {
+    // A diagonal stroke is rasterized only over the cells it passes through (L2).
+    const area = intersectRects(shapeRect(shape), bounds);
+    parts.push(...coverageParts(shape, area, aliased ? "aliased" : "antialiased"));
+  }
+  return renderCoverage(
+    base,
+    [
+      {
+        parts,
+        options: {
+          antialias: false,
+          blend: blendValue(read("blendMode")),
+          hatch: hatchValue(read("brush.fillType"), read("brush.hatchStyle")),
+          color: session.color,
+          background: session.background,
+        },
+      },
+    ],
+    { selection, pixelated: read("selection.renderingQuality") === "Aliased" },
+  ).patches;
+}
 /** The line a drawing gesture makes: Alt draws from the anchor's center, and Shift constrains the angle. */
 function drawnLine(anchor: LinePoint, point: LinePoint, event: ToolPointerEvent): LineCurve {
   const tip = event.shiftKey ? constrainAngle(anchor, point) : point;

@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import initWasm from "@openpaint/cpu";
-import { Document, Selection } from "@openpaint/document";
+import { Document, type Layer, readOverlaid, rect, Selection } from "@openpaint/document";
 import type { ToolPointerEvent, ToolRuntime } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,17 @@ import { shapeHandles } from "./shape-handles";
 import { shapeToolRuntime } from "./shape-tools";
 import { bindToolHistory, soloSwitcher } from "./tool-history";
 import { transformFrame } from "./transform-frame";
+
+/** A layer's pixels as the canvas shows them: with a pending result's overlay over them. */
+function shownLayer(layer: Layer | undefined) {
+  if (layer === undefined) throw new Error("no layer");
+  return readOverlaid(layer.pixels, layer.overlay, layer.pixels.bounds);
+}
+
+function shownPixel(layer: Layer | undefined, x: number, y: number) {
+  if (layer === undefined) throw new Error("no layer");
+  return readOverlaid(layer.pixels, layer.overlay, rect(x, y, 1, 1)).getPixel(0, 0);
+}
 
 beforeAll(async () => {
   const wasmPath = createRequire(import.meta.url).resolve("@openpaint/cpu/opaint_cpu_bg.wasm");
@@ -96,7 +107,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
   function pixel(x: number, y: number) {
     const layer = doc.activeLayer;
     if (layer === undefined) throw new Error("no active layer");
-    return layer.pixels.getPixel(x, y);
+    return shownPixel(layer, x, y);
   }
 
   function drag(from: [number, number], to: [number, number], button = 0, modifiers = {}): void {
@@ -215,7 +226,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
     doc.replaceSelection(new Selection([[2.5, 3.5, 50, 1, 57, 55.5, 9, 40]]), "select");
     const layer = doc.activeLayer;
     if (layer === undefined) throw new Error("no active layer");
-    const all = () => [...layer.pixels.readRegion(layer.pixels.bounds).data];
+    const all = () => [...shownLayer(layer).data];
     const before = all();
     drag([9, 7], [41, 37]);
     const direct = all();
@@ -249,13 +260,13 @@ describe("Shapes (TL-SHAPE-01)", () => {
     doc.setActiveLayer(top);
     expect(runtime.hasPending?.()).toBe(false);
     expect(doc.history.undoName).toContain("history.finishShape");
-    expect(bottom.pixels.getPixel(5, 10)).toEqual(GREEN);
-    expect(top.pixels.getPixel(5, 10).a).toBe(0);
+    expect(shownPixel(bottom, 5, 10)).toEqual(GREEN);
+    expect(shownPixel(top, 5, 10).a).toBe(0);
 
     // A press on the old shape's corner draws a new shape on the new layer instead of adjusting it.
     drag([25, 15], [40, 30]);
-    expect(top.pixels.getPixel(25, 20)).toEqual(GREEN);
-    expect(bottom.pixels.getPixel(40, 20)).toEqual(PAPER);
+    expect(shownPixel(top, 25, 20)).toEqual(GREEN);
+    expect(shownPixel(bottom, 40, 20)).toEqual(PAPER);
     stop();
   });
 
@@ -310,7 +321,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
     function layerPixels(): number[] {
       const layer = doc.activeLayer;
       if (layer === undefined) throw new Error("no active layer");
-      return [...layer.pixels.readRegion(layer.pixels.bounds).data];
+      return [...shownLayer(layer).data];
     }
 
     it("moves the shape by a whole-pixel drag on its body, as one Adjust step", () => {
@@ -627,9 +638,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
       drawAndFinish();
       expect(runtime.hasPending?.()).toBe(false);
       expect(transformFrame.state).toBeUndefined();
-      const finished = [
-        ...(doc.activeLayer?.pixels.readRegion(doc.activeLayer.pixels.bounds).data ?? []),
-      ];
+      const finished = [...(shownLayer(doc.activeLayer).data ?? [])];
       const entries = doc.history.entries.length;
       settings.set("tools.brush.size", 9);
       settings.set("tools.shapes.drawType", "Interior");
@@ -649,9 +658,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
       expect(transformFrame.state).toBeUndefined();
       expect(settings.get("tools.brush.size")).toBe(9);
       expect(settings.get("tools.shapes.drawType")).toBe("Interior");
-      expect([
-        ...(doc.activeLayer?.pixels.readRegion(doc.activeLayer.pixels.bounds).data ?? []),
-      ]).toEqual(finished);
+      expect([...(shownLayer(doc.activeLayer).data ?? [])]).toEqual(finished);
     });
 
     it("keeps the result's options once it is edited after the undo", async () => {
@@ -731,7 +738,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
       await doc.history.undo();
       expect(doc.activeLayer).toBe(bottom);
       expect(runtime.hasPending?.()).toBe(true);
-      expect(bottom.pixels.getPixel(5, 10)).toEqual(RED);
+      expect(shownPixel(bottom, 5, 10)).toEqual(RED);
       await doc.history.redo();
       expect(runtime.hasPending?.()).toBe(false);
       expect(doc.activeLayer).toBe(bottom);
@@ -765,6 +772,36 @@ describe("Shapes (TL-SHAPE-01)", () => {
       expect(pixel(2, 5)).toEqual(PAPER);
       expect(pixel(2, 45)).toEqual(GREEN);
     });
+  });
+
+  it("keeps the layer as it is while pending, and Finish, undo and redo give byte-identical layers", async () => {
+    setup({
+      "tools.shapes.drawType": "Both",
+      "tools.brush.fillType": "Hatch",
+      "tools.brush.size": 3,
+      "tools.antialiasing": true,
+      "tools.shapes.shape": { name: "ellipse" },
+    });
+    doc.replaceSelection(new Selection([[2.5, 3.5, 50, 1, 57, 55.5, 9, 40]]), "select");
+    const layer = doc.activeLayer;
+    if (layer === undefined) throw new Error("no active layer");
+    const raw = () => [...layer.pixels.readRegion(layer.pixels.bounds).data];
+    const before = raw();
+    drag([9, 7], [41, 37]);
+    // A rotation from outside the frame.
+    drag([45, 22], [40, 45]);
+    settings.set("tools.brush.size", 5);
+    settleEditBursts();
+    expect(raw()).toEqual(before);
+    const shown = [...shownLayer(layer).data];
+    runtime.commit?.();
+    const finished = raw();
+    expect(finished).toEqual(shown);
+    await doc.history.undo();
+    expect(raw()).toEqual(before);
+    expect([...shownLayer(layer).data]).toEqual(shown);
+    await doc.history.redo();
+    expect(raw()).toEqual(finished);
   });
 
   it("restores the layer when a drawing is cancelled, and records nothing", () => {

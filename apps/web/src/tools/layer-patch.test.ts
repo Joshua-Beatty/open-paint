@@ -222,47 +222,59 @@ describe("SessionPixels (L2)", () => {
     return { output, area: rect(x, y, 4, 4) };
   };
 
-  it("restores only what the last step drew, so the dirty tiles follow the shape", () => {
+  const step = (session: object) => ({
+    tool: "shapes",
+    layer: 0,
+    kind: "edit" as const,
+    session,
+    before: undefined,
+    after: undefined,
+  });
+  const shownAt = (layer: { overlay?: { patches: readonly { area: Rect }[] } }) =>
+    layer.overlay?.patches.map((patch) => patch.area) ?? [];
+
+  it("shows each step over the layer and never writes the layer while pending", () => {
     const doc = Document.createBlank({ width: 2048, height: 512 });
     const layer = doc.activeLayer;
     if (layer === undefined) throw new Error("no layer");
     const session = new SessionPixels(doc, layer);
     const base = layer.pixels.getPixel(1, 1);
-    session.show([patchAt(0, 0)]);
-    session.show([patchAt(1024, 0)]);
     layer.pixels.clearDirty();
+    session.show([patchAt(0, 0)]);
     session.show([patchAt(2000, 0)]);
-    // Only the last step's tile and the new one change: not the tiles of the first step.
-    expect(layer.pixels.dirtyTiles()).toEqual([
-      { tx: 4, ty: 0 },
-      { tx: 7, ty: 0 },
-    ]);
-    expect(layer.pixels.getPixel(1, 1)).toEqual(base);
-    expect(layer.pixels.getPixel(1025, 1)).toEqual(base);
-    expect(layer.pixels.getPixel(2001, 1)).toEqual(red);
+    expect(layer.pixels.dirtyTiles()).toEqual([]);
+    expect(shownAt(layer)).toEqual([patchAt(2000, 0).area]);
+    expect(layer.pixels.getPixel(2001, 1)).toEqual(base);
+    expect(doc.compositeArea(rect(2001, 1, 1, 1)).getPixel(0, 0)).toEqual(red);
     doc.dispose();
   });
 
-  it("records over the last recorded step and reverts to it", async () => {
+  it("records steps as state only, reverts to the last one, and Finish writes it once", async () => {
     const doc = Document.createBlank({ width: 600, height: 300 });
     const layer = doc.activeLayer;
     if (layer === undefined) throw new Error("no layer");
+    const key = {};
     const session = new SessionPixels(doc, layer);
     const base = layer.pixels.getPixel(1, 1);
     session.show([patchAt(0, 0)]);
-    expect(session.record("Draw", [patchAt(300, 0)])).toBe(true);
-    expect(layer.pixels.getPixel(1, 1)).toEqual(base);
-    expect(layer.pixels.getPixel(301, 1)).toEqual(red);
+    expect(session.record("Draw", [patchAt(300, 0)], step(key))).toBe(true);
+    expect(shownAt(layer)).toEqual([patchAt(300, 0).area]);
     session.show([patchAt(500, 0, blue)]);
-    expect(layer.pixels.getPixel(301, 1)).toEqual(base);
     session.revert();
-    expect(layer.pixels.getPixel(301, 1)).toEqual(red);
-    expect(layer.pixels.getPixel(501, 1)).toEqual(base);
-    expect(session.record("Edit", [patchAt(10, 10, blue)])).toBe(true);
-    expect(layer.pixels.getPixel(301, 1)).toEqual(base);
-    await doc.history.undo();
-    expect(layer.pixels.getPixel(301, 1)).toEqual(red);
+    expect(shownAt(layer)).toEqual([patchAt(300, 0).area]);
+    expect(session.record("Edit", [patchAt(10, 10, blue)], step(key))).toBe(true);
     expect(layer.pixels.getPixel(11, 11)).toEqual(base);
+    expect(
+      session.finish("Finish", [patchAt(10, 10, blue)], { ...step(key), kind: "finish" }, () => [
+        patchAt(10, 10, blue),
+      ]),
+    ).toBe(true);
+    expect(layer.overlay).toBeUndefined();
+    expect(layer.pixels.getPixel(11, 11)).toEqual(blue);
+    await doc.history.undo();
+    expect(layer.pixels.getPixel(11, 11)).toEqual(base);
+    await doc.history.redo();
+    expect(layer.pixels.getPixel(11, 11)).toEqual(blue);
     doc.dispose();
   });
 
@@ -271,12 +283,11 @@ describe("SessionPixels (L2)", () => {
     const layer = doc.activeLayer;
     if (layer === undefined) throw new Error("no layer");
     const before = doc.history.appliedCommands.length;
-    expect(new SessionPixels(doc, layer).record("Draw", [])).toBe(false);
+    expect(new SessionPixels(doc, layer).record("Draw", [], step({}))).toBe(false);
     expect(doc.history.appliedCommands).toHaveLength(before);
     doc.dispose();
   });
 });
-
 describe("hatchAligned", () => {
   it("moves the top-left corner onto the 8 px grid and clips to the bounds", () => {
     expect(hatchAligned(rect(13, 9, 10, 10), rect(0, 0, 100, 100))).toEqual(rect(8, 8, 15, 11));

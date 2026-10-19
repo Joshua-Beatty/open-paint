@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import initWasm from "@openpaint/cpu";
-import { Document } from "@openpaint/document";
+import { Document, type Layer, readOverlaid, rect } from "@openpaint/document";
 import type { ToolPointerEvent } from "@openpaint/extension-api";
 import type { SettingChange } from "@openpaint/storage";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +20,11 @@ import { shapeToolRuntime } from "./shape-tools";
 import { ToolController } from "./tool-controller";
 import { bindToolHistory } from "./tool-history";
 import { transformFrame } from "./transform-frame";
+
+function shownPixel(layer: Layer | undefined, x: number, y: number) {
+  if (layer === undefined) throw new Error("no layer");
+  return readOverlaid(layer.pixels, layer.overlay, rect(x, y, 1, 1)).getPixel(0, 0);
+}
 
 beforeAll(async () => {
   const wasmPath = createRequire(import.meta.url).resolve("@openpaint/cpu/opaint_cpu_bg.wasm");
@@ -73,7 +78,7 @@ describe("tool history (TL-FRAME-01, owner request: reversible from the start)",
   }
 
   function pixel(x: number, y: number) {
-    return doc.activeLayer?.pixels.getPixel(x, y);
+    return shownPixel(doc.activeLayer, x, y);
   }
 
   beforeEach(() => {
@@ -167,8 +172,8 @@ describe("tool history (TL-FRAME-01, owner request: reversible from the start)",
     expect(controller.runtime()?.hasPending?.()).toBe(true);
     // An edit lands on the result's layer, not on the one that was active.
     drag([12, 28], [12, 48]);
-    expect(bottom.pixels.getPixel(5, 50)).toEqual(GREEN);
-    expect(top.pixels.getPixel(5, 50).a).toBe(0);
+    expect(shownPixel(bottom, 5, 50)).toEqual(GREEN);
+    expect(shownPixel(top, 5, 50).a).toBe(0);
     stopSwitch();
   });
 

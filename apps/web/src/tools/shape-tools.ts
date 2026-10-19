@@ -37,7 +37,14 @@ import { coverageParts } from "./coverage-cells";
 import { CROSSHAIR_CURSOR, GRAB_CURSOR, GRABBING_CURSOR, nearHandle, viewScaleOf } from "./cursors";
 import { EditBurst, isColorChange, paintColors, sameColor } from "./edit-burst";
 import { FrameCoalescer } from "./frame-coalescer";
-import { type CoveragePart, type LayerPatches, renderCoverage, SessionPixels } from "./layer-patch";
+import {
+  type CoveragePart,
+  type LayerPatches,
+  LayerSnapshot,
+  renderCoverage,
+  type SelectionClip,
+  SessionPixels,
+} from "./layer-patch";
 import { NudgeBurst, nudgeOffset } from "./nudge-burst";
 import { blendValue, hatchValue } from "./paint-stroke";
 import type { PaintHost } from "./paint-tools";
@@ -54,13 +61,7 @@ import {
   type ShapePlacement,
 } from "./shape-transform";
 import { reportToolFailure } from "./tool-failure";
-import {
-  layerIndex,
-  PendingOptions,
-  recordStep,
-  type StepContext,
-  type SteppedRuntime,
-} from "./tool-history";
+import { layerIndex, PendingOptions, type StepContext, type SteppedRuntime } from "./tool-history";
 import {
   type FrameGesture,
   type FrameHit,
@@ -105,6 +106,13 @@ const OPTION_PATHS = [
 interface ShapeState extends ShapePlacement {
   readonly radius: number;
   readonly tail: LinePoint;
+}
+
+/** What a shape is drawn from, besides its options: its geometry, its kind and its colors. */
+interface ShapeGeometry extends ShapeState {
+  readonly shape: ShapeDescriptor;
+  readonly color: ColorRgba8;
+  readonly background: ColorRgba8;
 }
 
 /**
@@ -209,7 +217,7 @@ function hasHandle(session: ShapeSession, name: string): boolean {
 }
 
 /** A point of the shape's own axes on the image. */
-function toImage(session: ShapeSession, point: LinePoint): LinePoint {
+function toImage(session: ShapePlacement, point: LinePoint): LinePoint {
   return applyAffine(placementTransform(session), point.x, point.y);
 }
 
@@ -219,7 +227,7 @@ function toShape(session: ShapeSession, point: LinePoint): LinePoint {
 }
 
 /** The shape's rings in its own axes, under its corner size and tail. */
-function localRings(session: ShapeSession): LinePoint[][] {
+function localRings(session: ShapeGeometry): LinePoint[][] {
   return shapeRings(session.shape.geometry.path, boxRect(session.box), {
     radius: session.radius,
     tailX: session.tail.x,
@@ -460,11 +468,11 @@ class ShapeRuntime implements SteppedRuntime {
   }
 
   /**
-   * Takes up the shape a history item kept, or lets go of the pending one (TL-FRAME-01). The layer
-   * already shows the shape, so nothing is drawn or recorded. A shape of another session is drawn
-   * over the layer as it was before that session's first item, read from the history.
+   * Takes up the shape a history item kept, or lets go of the pending one (TL-FRAME-01). Nothing
+   * is recorded: the shape is drawn again from its state and shown over its layer, which the
+   * history has brought back to how it was under the shape.
    */
-  async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
+  restoreStep(state: unknown, context: StepContext | undefined): void {
     this.#frames.cancel();
     this.#nudges.cancel();
     this.#edits.cancel();
@@ -475,6 +483,7 @@ class ShapeRuntime implements SteppedRuntime {
     if (snapshot === undefined || context === undefined) {
       if (context !== undefined) this.#options.leave(settings);
       else this.#options.edited();
+      this.#session?.pixels.end();
       this.#end();
       this.#refresh();
       return;
@@ -487,11 +496,11 @@ class ShapeRuntime implements SteppedRuntime {
       session.layer !== context.layer ||
       !session.pixels.valid
     ) {
-      const { tiles } = await context.before();
+      this.#session?.pixels.end();
       session = {
         document: context.document,
         layer: context.layer,
-        pixels: new SessionPixels(context.document, context.layer, tiles),
+        pixels: new SessionPixels(context.document, context.layer),
         button: snapshot.button,
         color: snapshot.color,
         background: snapshot.background,
@@ -749,9 +758,19 @@ class ShapeRuntime implements SteppedRuntime {
       before,
       after,
     };
-    const recorded = recordStep(session.document, step, () =>
-      session.pixels.record(this.#named(session, name), this.#render(session)),
-    );
+    const { document, layer } = session;
+    const patches = this.#render(session);
+    const recorded =
+      kind === "finish"
+        ? session.pixels.finish(this.#named(session, name), patches, step, () =>
+            renderShape(
+              now,
+              new LayerSnapshot(layer.pixels),
+              document.selection,
+              (key) => now.options[`tools.${key}`],
+            ),
+          )
+        : session.pixels.record(this.#named(session, name), patches, step);
     if (!recorded) return false;
     session.state = now;
     this.#options.edited();
@@ -783,84 +802,11 @@ class ShapeRuntime implements SteppedRuntime {
    */
   #render(session: ShapeSession): LayerPatches {
     const settings = this.#host.settings();
-    const { box } = session;
-    const width = box.right - box.left;
-    const height = box.bottom - box.top;
-    if (settings === null || width <= 0 || height <= 0) return [];
-    const read = (key: string) => settings.get(`tools.${key}`);
-    const aliased = read("antialiasing") === false;
-    const mode = aliased ? "aliased" : "antialiased";
-    const drawType = drawTypeOf(read("shapes.drawType"));
-    // A turned shape is its path turned, rasterized again, so its edges stay exact (TL-SHAPE-01).
-    const local = localRings(session);
-    const rings =
-      session.angle === 0
-        ? local
-        : local.map((ring) => ring.map((point) => toImage(session, point)));
-    const bounds = session.layer.pixels.bounds;
-    const outline: CoveragePart[] = [];
-    const interior: CoveragePart[] = [];
-    if (drawType !== "Interior") {
-      const style: StrokeStyle = {
-        width: numberOf(read("brush.size"), 2),
-        dash: dashOf(read("pen.dashStyle")),
-        startCap: "Flat",
-        endCap: "Flat",
-      };
-      for (const ring of rings) {
-        const [first, second] = ring;
-        if (first === undefined || second === undefined) continue;
-        for (const stroke of strokeShapes([...ring, first, second], style)) {
-          // Only the cells a turned edge passes through are rasterized (L2).
-          outline.push(...coverageParts(stroke, intersectRects(ringsRect(stroke), bounds), mode));
-        }
-      }
-    }
-    if (drawType !== "Outline") {
-      const area = intersectRects(ringsRect(rings), bounds);
-      if (!isEmptyRect(area)) {
-        const coverage = rasterizeSelection(
-          rings.map((ring) => ring.flatMap((point) => [point.x, point.y])),
-          area,
-          mode,
-        );
-        interior.push({ area, coverage });
-      }
-    }
-    const blend = blendValue(read("blendMode"));
-    const hatch = hatchValue(read("brush.fillType"), read("brush.hatchStyle"));
-    const both = drawType === "Both";
-    return renderCoverage(
-      session.pixels.base,
-      [
-        {
-          parts: interior,
-          options: {
-            antialias: false,
-            blend,
-            hatch,
-            color: both ? session.background : session.color,
-            background: both ? session.color : session.background,
-          },
-        },
-        {
-          parts: outline,
-          options: {
-            antialias: false,
-            blend,
-            hatch,
-            color: session.color,
-            background: session.background,
-          },
-        },
-      ],
-      {
-        selection: session.document.selection,
-        pixelated: read("selection.renderingQuality") === "Aliased",
-      },
-    ).patches;
+    if (settings === null) return [];
+    return renderShape(session, session.pixels.base, session.document.selection, (key) =>
+      settings.get(`tools.${key}`),
+    );
   }
-
   /** The pending session. */
   #live(): ShapeSession | undefined {
     return this.#session;
@@ -1005,6 +951,93 @@ class ShapeRuntime implements SteppedRuntime {
   #fail(cause: unknown): void {
     reportToolFailure(this.#host, cause);
   }
+}
+
+/**
+ * The shape over `base` under the options `read` gives and the selection clip (TL-FRAME-04). The
+ * outline is a stroke of the ring, and the interior is the ring's fill. The modes decide which of
+ * the two is drawn, and the outline is drawn over the fill. It depends only on its arguments, so a
+ * redo of Finish draws the same pixels again from the step's state.
+ */
+function renderShape(
+  session: ShapeGeometry,
+  base: LayerSnapshot,
+  selection: SelectionClip["selection"],
+  read: (key: string) => unknown,
+): LayerPatches {
+  const { box } = session;
+  const width = box.right - box.left;
+  const height = box.bottom - box.top;
+  if (width <= 0 || height <= 0) return [];
+  const aliased = read("antialiasing") === false;
+  const mode = aliased ? "aliased" : "antialiased";
+  const drawType = drawTypeOf(read("shapes.drawType"));
+  // A turned shape is its path turned, rasterized again, so its edges stay exact (TL-SHAPE-01).
+  const local = localRings(session);
+  const rings =
+    session.angle === 0 ? local : local.map((ring) => ring.map((point) => toImage(session, point)));
+  const bounds = base.bounds;
+  const outline: CoveragePart[] = [];
+  const interior: CoveragePart[] = [];
+  if (drawType !== "Interior") {
+    const style: StrokeStyle = {
+      width: numberOf(read("brush.size"), 2),
+      dash: dashOf(read("pen.dashStyle")),
+      startCap: "Flat",
+      endCap: "Flat",
+    };
+    for (const ring of rings) {
+      const [first, second] = ring;
+      if (first === undefined || second === undefined) continue;
+      for (const stroke of strokeShapes([...ring, first, second], style)) {
+        // Only the cells a turned edge passes through are rasterized (L2).
+        outline.push(...coverageParts(stroke, intersectRects(ringsRect(stroke), bounds), mode));
+      }
+    }
+  }
+  if (drawType !== "Outline") {
+    const area = intersectRects(ringsRect(rings), bounds);
+    if (!isEmptyRect(area)) {
+      const coverage = rasterizeSelection(
+        rings.map((ring) => ring.flatMap((point) => [point.x, point.y])),
+        area,
+        mode,
+      );
+      interior.push({ area, coverage });
+    }
+  }
+  const blend = blendValue(read("blendMode"));
+  const hatch = hatchValue(read("brush.fillType"), read("brush.hatchStyle"));
+  const both = drawType === "Both";
+  return renderCoverage(
+    base,
+    [
+      {
+        parts: interior,
+        options: {
+          antialias: false,
+          blend,
+          hatch,
+          color: both ? session.background : session.color,
+          background: both ? session.color : session.background,
+        },
+      },
+      {
+        parts: outline,
+        options: {
+          antialias: false,
+          blend,
+          hatch,
+          color: session.color,
+          background: session.background,
+        },
+      },
+    ],
+    {
+      selection,
+      pixelated: read("selection.renderingQuality") === "Aliased",
+    },
+  ).patches;
 }
 
 /** The box a drawing gesture makes: Shift keeps the aspect ratio, and Alt draws from the center. */

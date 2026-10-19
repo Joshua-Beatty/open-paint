@@ -10,6 +10,7 @@ import {
   Surface,
   TILE_SIZE,
   type TiledPixelStore,
+  type ToolStep,
   unionRects,
 } from "@openpaint/document";
 import { clipToCoverage } from "@openpaint/effects";
@@ -362,30 +363,24 @@ export function writePatches(pixels: TiledPixelStore, patches: LayerPatches | un
 
 /**
  * The pixels of a tool session that draws one thing over a layer and keeps it editable, such as a
- * shape or a line (TL-FRAME-01). Each step renders over the layer as it was before the session, so
- * the steps never stack. `committed` is the output of the last recorded step. `region` holds every
- * pixel where the layer may differ from the base plus `committed`, and every pixel of `committed`:
- * a preview or a record restores just that and draws its own patches, so a step costs what it and
- * the step before it cover, never the union of every position the session has seen (L2).
+ * shape or a line (TL-FRAME-01). While it is pending the layer is not written: the result is shown
+ * over it as an overlay (`Document.setLayerOverlay`), and each step renders over the layer as it
+ * is. A step records only the tool's state (`History.recordStep`); Finish writes the result into
+ * the layer as an item that keeps only the pixels it overwrote and draws itself again on redo.
  */
 export class SessionPixels {
   readonly document: Document;
   readonly layer: Layer;
-  /** The layer before the session. Every step draws over it. */
+  /** The layer under the result. The layer is not written while the result is pending. */
   readonly base: LayerSnapshot;
   readonly #store: TiledPixelStore;
   #committed: LayerPatches = [];
-  #region = new TileRegion();
 
-  /**
-   * `baseTiles` are the tiles where the layer no longer shows the base, when the session is taken up
-   * again from its history items (`LayerSnapshot`).
-   */
-  constructor(document: Document, layer: Layer, baseTiles?: ReadonlyMap<number, Surface | null>) {
+  constructor(document: Document, layer: Layer) {
     this.document = document;
     this.layer = layer;
     this.#store = layer.pixels;
-    this.base = new LayerSnapshot(layer.pixels, baseTiles);
+    this.base = new LayerSnapshot(layer.pixels);
   }
 
   /** The output of the last recorded step, empty before the first. */
@@ -401,64 +396,73 @@ export class SessionPixels {
     return this.document.layers.includes(this.layer) && this.layer.pixels === this.#store;
   }
 
-  /**
-   * Takes `patches` as the output of the recorded step the layer shows now, after an undo or a redo
-   * landed on one of the session's steps. Nothing is written.
-   */
+  /** Takes `patches` as the recorded step, after an undo or a redo landed on it, and shows it. */
   adopt(patches: LayerPatches): void {
     this.#committed = patches;
-    this.#region = patchRegion(patches);
+    this.show(patches);
   }
 
-  /** Shows `patches` on the layer, with no history item. */
+  /** Shows `patches` over the layer, with no history item. */
   show(patches: LayerPatches): void {
-    const previous = this.#region;
-    if (previous.isEmpty && patches.length === 0) return;
-    for (const patch of patches) this.base.keep(patch.area);
-    this.document.previewLayerPixels(this.layer, (pixels) => {
-      this.base.restore(pixels, previous);
-      writePatches(pixels, patches);
-    });
-    this.#region = patchRegion(patches).union(patchRegion(this.#committed));
+    this.document.setLayerOverlay(this.layer, patches.length === 0 ? undefined : { patches });
   }
 
   /**
-   * Records `patches` as one history item named `name`. The layer is first put back to the last
-   * recorded step, so the item's before-state is right, even after previews. Returns false, and
-   * records nothing, when neither the step nor any earlier one drew a pixel.
+   * Records `patches` as the state of a step named `name`, which keeps only the tool's state
+   * (`step`). Returns false, and records nothing, when neither the step nor any earlier one drew a
+   * pixel.
    */
-  record(name: string, patches: LayerPatches): boolean {
-    const next = patchRegion(patches);
-    const area = this.#region.union(next);
-    if (area.isEmpty) return false;
-    for (const patch of patches) this.base.keep(patch.area);
-    const committed = this.#committed;
-    this.document.restoreLayerPixels(this.layer, (pixels) => {
-      this.base.restore(pixels, area);
-      writePatches(pixels, committed);
-    });
-    this.document.editLayerPixels(name, this.layer, area.rects(), (pixels) => {
-      this.base.restore(pixels, area);
-      writePatches(pixels, patches);
-    });
+  record(name: string, patches: LayerPatches, step: ToolStep): boolean {
+    if (patches.length === 0 && this.#committed.length === 0) return false;
+    this.document.history.recordStep(name, step);
     this.#committed = patches;
-    this.#region = next;
+    this.show(patches);
     return true;
   }
 
-  /** Puts the layer back to the last recorded step, or to the base before any. */
+  /**
+   * Writes `patches` into the layer as one Finish item named `name` that keeps only the pixels
+   * they overwrite (`Document.editLayerPixelsRendered`); `rerender` draws them again for a redo.
+   * The overlay goes away.
+   */
+  finish(
+    name: string,
+    patches: LayerPatches,
+    step: ToolStep,
+    rerender: () => LayerPatches,
+  ): boolean {
+    if (patches.length === 0 && this.#committed.length === 0) {
+      this.end();
+      return false;
+    }
+    const area = patchRegion(patches).rects();
+    this.document.history.withStep(step, () =>
+      this.document.editLayerPixelsRendered(
+        name,
+        this.layer,
+        area,
+        (pixels) => writePatches(pixels, patches),
+        async () => {
+          const again = rerender();
+          return (pixels) => writePatches(pixels, again);
+        },
+      ),
+    );
+    this.#committed = patches;
+    this.end();
+    return true;
+  }
+
+  /** Shows the last recorded step again, or nothing before any. */
   revert(): void {
-    const region = this.#region;
-    if (region.isEmpty) return;
-    const committed = this.#committed;
-    this.document.restoreLayerPixels(this.layer, (pixels) => {
-      this.base.restore(pixels, region);
-      writePatches(pixels, committed);
-    });
-    this.#region = patchRegion(committed);
+    this.show(this.#committed);
+  }
+
+  /** Stops showing the result. */
+  end(): void {
+    this.document.setLayerOverlay(this.layer, undefined);
   }
 }
-
 /** Writes a patch into a layer's pixels; no patch writes nothing. */
 export function writePatch(pixels: TiledPixelStore, patch: LayerPatch | undefined): void {
   if (patch !== undefined) pixels.writeRegion(patch.output, patch.area.x, patch.area.y);
