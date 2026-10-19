@@ -21,6 +21,7 @@ import { finishOnLayerSwitch } from "./finish-on-switch";
 import { NUDGE_MERGE_MS } from "./frame-tool";
 import { FloatingHandoff, movePixelsToolRuntime, moveSelectionToolRuntime } from "./move-tools";
 import type { PaintHost } from "./paint-tools";
+import { bindToolHistory, soloSwitcher } from "./tool-history";
 import { transformFrame } from "./transform-frame";
 
 beforeAll(async () => {
@@ -311,18 +312,114 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
     });
   });
 
-  it("selects and moves the whole canvas when nothing is selected, as one Move Pixels item", async () => {
+  it("selects all as its own item, then moves the whole canvas, when nothing is selected", async () => {
     doc.deselect();
     const before = doc.history.appliedCommands.length;
+    // A click selects nothing and records nothing.
+    drag({ x: 20, y: 40 }, { x: 20, y: 40 });
+    expect(doc.history.appliedCommands.length).toBe(before);
+    expect(doc.selection.isEmpty).toBe(true);
     drag({ x: 20, y: 40 }, { x: 26, y: 40 });
-    expect(doc.history.appliedCommands.length).toBe(before + 1);
-    expect(doc.history.undoName).toBe("history.movePixels");
+    expect(doc.history.entries.slice(-2).map((entry) => entry.name)).toEqual([
+      "Select All",
+      "history.movePixels",
+    ]);
+    expect(doc.history.appliedCommands.length).toBe(before + 2);
     expect(doc.selection.bounds()).toEqual(rect(6, 0, 64, 64));
     expect(pixel(10, 4)).toEqual(RED);
     expect(pixel(2, 4).a).toBe(0);
     await doc.history.undo();
-    expect(doc.selection.isEmpty).toBe(true);
+    expect(doc.selection.bounds()).toEqual(rect(0, 0, 64, 64));
     expect(pixel(4, 4)).toEqual(RED);
+    await doc.history.undo();
+    expect(doc.selection.isEmpty).toBe(true);
+  });
+
+  describe("undo back into editing (TL-FRAME-01, owner request)", () => {
+    /** The layer's pixels. */
+    const all = () => {
+      const layer = doc.activeLayer as Layer;
+      return [...layer.pixels.readRegion(layer.pixels.bounds).data];
+    };
+
+    it("takes a finished move up again in a new runtime, with its transform and anchor", async () => {
+      // The reference: both moves in one session.
+      const reference = selectedBlock();
+      const plain = movePixelsToolRuntime({ ...host(), document: () => reference }, handoff);
+      plain.activate();
+      const press = (
+        r: ToolRuntime,
+        from: { x: number; y: number },
+        to: { x: number; y: number },
+      ) => {
+        r.pointer(event("down", from.x, from.y));
+        r.pointer(event("move", to.x, to.y));
+        r.pointer(event("up", to.x, to.y));
+      };
+      press(plain, BODY_PRESS, { x: BODY_PRESS.x + 6, y: BODY_PRESS.y });
+      press(
+        plain,
+        { x: BODY_PRESS.x + 6, y: BODY_PRESS.y },
+        { x: BODY_PRESS.x + 6, y: BODY_PRESS.y + 9 },
+      );
+      plain.commit?.();
+      plain.deactivate();
+
+      bindToolHistory(doc, soloSwitcher("moveSelectedPixels", runtime));
+      drag(BODY_PRESS, { x: BODY_PRESS.x + 6, y: BODY_PRESS.y });
+      runtime.commit?.();
+      expect(doc.history.undoName).toBe("history.finishPixels");
+      runtime.deactivate();
+      runtime = movePixelsToolRuntime(host(), handoff);
+      runtime.activate();
+      bindToolHistory(doc, soloSwitcher("moveSelectedPixels", runtime));
+
+      await doc.history.undo();
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(transformFrame.state?.handles.se).toEqual({ x: 50, y: 44 });
+      drag({ x: BODY_PRESS.x + 6, y: BODY_PRESS.y }, { x: BODY_PRESS.x + 6, y: BODY_PRESS.y + 9 });
+      expect(doc.history.undoName).toBe("history.movePixels");
+      expect(doc.history.canRedo).toBe(false);
+      runtime.commit?.();
+      const refLayer = reference.activeLayer as Layer;
+      expect(all()).toEqual([...refLayer.pixels.readRegion(refLayer.pixels.bounds).data]);
+      expect(doc.selection.bounds()).toEqual(rect(10, 13, 40, 40));
+    });
+
+    it("undo of the first move ends it, and redo takes it up again", async () => {
+      bindToolHistory(doc, soloSwitcher("moveSelectedPixels", runtime));
+      const before = all();
+      drag(BODY_PRESS, { x: BODY_PRESS.x + 6, y: BODY_PRESS.y });
+      const moved = all();
+      await doc.history.undo();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(all()).toEqual(before);
+      await doc.history.redo();
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(all()).toEqual(moved);
+      drag({ x: BODY_PRESS.x + 6, y: BODY_PRESS.y }, { x: BODY_PRESS.x + 14, y: BODY_PRESS.y });
+      expect(pixel(18, 4)).toEqual(RED);
+      expect(pixel(17, 4).a).toBe(0);
+    });
+
+    it("keeps a Ctrl-drag copy when taken up again", async () => {
+      bindToolHistory(doc, soloSwitcher("moveSelectedPixels", runtime));
+      drag(BODY_PRESS, { x: BODY_PRESS.x + 20, y: BODY_PRESS.y }, 0, { ctrl: true });
+      runtime.commit?.();
+      const finished = all();
+      runtime.deactivate();
+      runtime = movePixelsToolRuntime(host(), handoff);
+      runtime.activate();
+      bindToolHistory(doc, soloSwitcher("moveSelectedPixels", runtime));
+      await doc.history.undo();
+      expect(runtime.hasPending?.()).toBe(true);
+      // A move there and back gives the same pixels: the copy left behind is in the base.
+      drag({ x: BODY_PRESS.x + 20, y: BODY_PRESS.y }, { x: BODY_PRESS.x + 30, y: BODY_PRESS.y });
+      drag({ x: BODY_PRESS.x + 30, y: BODY_PRESS.y }, { x: BODY_PRESS.x + 20, y: BODY_PRESS.y });
+      expect(pixel(4, 4)).toEqual(RED);
+      runtime.commit?.();
+      expect(all()).toEqual(finished);
+    });
   });
 
   it("records nothing for a press that does not move", () => {
@@ -627,6 +724,41 @@ describe("Move Selection (TL-MOVE-SEL-01)", () => {
     doc.deselect();
     await Promise.resolve();
     expect(transformFrame.state).toBeUndefined();
+  });
+
+  it("takes a finished selection move up again in a new runtime, with its frame", async () => {
+    const host = {
+      settings: () => null,
+      document: () => doc,
+      translate: (messageId: string) => messageId,
+      notify: () => undefined,
+      report: () => undefined,
+    } as PaintHost;
+    bindToolHistory(doc, soloSwitcher("moveSelection", runtime));
+    runtime.pointer(event("down", SE_HANDLE.x, SE_HANDLE.y));
+    runtime.pointer(event("move", SE_HANDLE.x + 16, SE_HANDLE.y + 8));
+    runtime.pointer(event("up", SE_HANDLE.x + 16, SE_HANDLE.y + 8));
+    runtime.commit?.();
+    expect(doc.history.undoName).toBe("history.finishSelection");
+    runtime.deactivate();
+    runtime = moveSelectionToolRuntime(host);
+    runtime.activate();
+    bindToolHistory(doc, soloSwitcher("moveSelection", runtime));
+    await doc.history.undo();
+    expect(runtime.hasPending?.()).toBe(true);
+    expect(transformFrame.state?.handles.se.x).toBeCloseTo(60);
+    // Another resize scales the selection the move started from, not the resized one again.
+    runtime.pointer(event("down", 60, 52));
+    runtime.pointer(event("move", 44, 44));
+    runtime.pointer(event("up", 44, 44));
+    expect(doc.history.undoName).toBe("history.resizeSelection");
+    expect(doc.selection.bounds()).toEqual(rect(4, 4, 40, 40));
+    await doc.history.undo();
+    expect(doc.selection.bounds()).toEqual(rect(4, 4, 56, 48));
+    expect(runtime.hasPending?.()).toBe(true);
+    await doc.history.undo();
+    expect(runtime.hasPending?.()).toBe(false);
+    expect(doc.selection.bounds()).toEqual(rect(4, 4, 40, 40));
   });
 
   it("resizes the outline on the first press on a handle, as one Resize Selection item", () => {

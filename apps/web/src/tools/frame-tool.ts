@@ -6,6 +6,7 @@ import {
   type Rect,
   rectsEqual,
   sameAffine,
+  type ToolStep,
   translationAffine,
 } from "@openpaint/document";
 import type { ToolPointerEvent, ToolRuntime, ToolViewState } from "@openpaint/extension-api";
@@ -16,7 +17,14 @@ import { viewScaleOf } from "./cursors";
 import { FrameCoalescer } from "./frame-coalescer";
 import { NudgeBurst, nudgeOffset } from "./nudge-burst";
 import type { PaintHost } from "./paint-tools";
+import type { SettingSnapshot } from "./pending-steps";
 import { reportToolFailure } from "./tool-failure";
+import {
+  PendingOptions,
+  type StepContext,
+  type StepKind,
+  type SteppedRuntime,
+} from "./tool-history";
 import {
   type FrameGesture,
   type FramePoint,
@@ -38,6 +46,10 @@ export { NUDGE_LARGE_STEP, NUDGE_MERGE_MS, NUDGE_STEP } from "./nudge-burst";
  * draws the frame over it and turns each gesture into a preview or a recorded step.
  */
 export interface FrameTarget {
+  /** Names the target's history items (`ToolStep.session`). */
+  readonly key: object;
+  /** The position of the layer the target's items are recorded on. */
+  layer(): number;
   /** The rectangle the frame is drawn on, in the target's own coordinates. */
   readonly source: Rect;
   readonly transform: AffineMatrix;
@@ -50,19 +62,31 @@ export interface FrameTarget {
   preview(m: AffineMatrix, anchor: FramePoint): void;
   /** Copies the content behind a Ctrl-drag, so the source stays (TL-MOVE-PIX-01). */
   stamp?(): void;
-  /** Records the pending changes as one history item named `name`. */
-  commit(name: string): boolean;
+  /**
+   * Records the pending changes as one history item named `name`. `step` makes the item's tool step
+   * from the target's state after it, when the item is recorded.
+   */
+  commit(name: string, step: TargetStep): boolean;
   /** Drops the pending changes. Nothing is recorded. */
   cancel(): void;
   /** Records one item named `name` and ends the target. */
-  finish(name: string): boolean;
+  finish(name: string, step: TargetStep): boolean;
   /** Records the current transform again under a new option (TL-FRAME-02). */
-  rerender?(name: string): void;
+  rerender?(name: string, step: TargetStep): void;
   /**
    * While a step is still computed off this thread before it is recorded, a promise that settles
    * once it is (`ToolRuntime.settling`). Calls made meanwhile run after it, in order.
    */
   settling?(): Promise<void> | undefined;
+}
+
+/** Makes the tool step of an item a target records, from the target's state after it. */
+export type TargetStep = (after: unknown) => ToolStep;
+
+/** A frame tool's pending state as its history items keep it: the target's and the options. */
+interface FrameSnapshot {
+  readonly target: unknown;
+  readonly options: SettingSnapshot;
 }
 
 /** The history names of a frame tool (TL-MOVE-PIX-01, TL-MOVE-SEL-01), as catalog keys. */
@@ -76,7 +100,22 @@ export interface FrameNames {
 
 export interface FrameToolOptions {
   readonly host: PaintHost;
+  /** The tool's registry id, which its history items name. */
+  readonly tool: string;
   readonly names: FrameNames;
+  /** The settings a step keeps and undo and redo write back. */
+  readonly optionPaths?: readonly string[];
+  /**
+   * Makes the target a history item kept, after undo or redo landed on it (TL-FRAME-01).
+   * Undefined when it cannot be made.
+   */
+  readonly restore?: (state: unknown, context: StepContext) => Promise<FrameTarget | undefined>;
+  /**
+   * Whether a press must first do something that records, before `start` can make a target (Move
+   * Selected Pixels with nothing selected selects all first). The press then starts the target
+   * only once it leaves its click dead zone, so a click records nothing.
+   */
+  readonly startsOnDrag?: () => boolean;
   /** Makes a target from the document, when the tool has none yet. Undefined when nothing can be moved. */
   readonly start: () => FrameTarget | undefined;
   /** While the tool is active, hands it targets from outside, such as a paste. */
@@ -128,9 +167,18 @@ function frameState(source: Rect, m: AffineMatrix, anchor: FramePoint): Transfor
  * while the drag runs. A press whose pointer stays within its click dead zone changes nothing.
  * Arrow keys nudge the target, and nudges that follow each other merge. Enter, Esc and a tool switch finish the target with its "Finish" step.
  */
-class FrameRuntime implements ToolRuntime {
+class FrameRuntime implements SteppedRuntime {
   readonly #options: FrameToolOptions;
   #target: FrameTarget | undefined;
+  /**
+   * Per target, its state as its latest item keeps it, once it has recorded one (its Draw), so it
+   * is in the history. Steps computed off this thread are recorded after the target has ended.
+   */
+  readonly #recorded = new WeakMap<FrameTarget, FrameSnapshot>();
+  /** The option values of the pending target on the options bar. */
+  readonly #pendingOptions: PendingOptions;
+  /** A press that starts the target once it leaves its dead zone (`startsOnDrag`). */
+  #lazy: { readonly gesture: FrameGesture; readonly zone: ClickDeadZone } | undefined;
   #drag: Drag | undefined;
   /** Arrow nudges that follow each other, recorded as one "move" step. */
   readonly #nudges: NudgeBurst;
@@ -152,12 +200,83 @@ class FrameRuntime implements ToolRuntime {
   constructor(options: FrameToolOptions) {
     this.#options = options;
     this.#frames = new FrameCoalescer(options.host.scheduleFrame);
+    this.#pendingOptions = new PendingOptions(options.optionPaths ?? [], (action) => {
+      const quiet = this.#quiet;
+      this.#quiet = true;
+      try {
+        action();
+      } finally {
+        this.#quiet = quiet;
+      }
+    });
     this.#nudges = new NudgeBurst(() => {
       const target = this.#current();
       if (target?.pending !== true) return;
-      target.commit(this.#name(this.#options.names.move));
+      target.commit(this.#name(this.#options.names.move), this.#stepFor(target, "edit"));
       this.#show();
     });
+  }
+
+  /** Set while the runtime writes settings back, so the writes are not taken as option changes. */
+  #quiet = false;
+
+  /**
+   * The tool step of an item `target` records, made when it is recorded: a Draw for its first
+   * item, an Edit later, or the Finish.
+   */
+  #stepFor(target: FrameTarget, kind: StepKind): (after: unknown) => ToolStep {
+    return (after) => {
+      const previous = this.#recorded.get(target);
+      const state: FrameSnapshot = {
+        target: after,
+        options: this.#pendingOptions.snapshot(this.#options.host.settings()),
+      };
+      const step: ToolStep = {
+        tool: this.#options.tool,
+        layer: target.layer(),
+        kind: kind === "finish" ? "finish" : previous === undefined ? "draw" : "edit",
+        session: target.key,
+        before: previous === undefined ? undefined : kind === "finish" ? state : previous,
+        after: kind === "finish" ? undefined : state,
+      };
+      this.#recorded.set(target, state);
+      this.#pendingOptions.edited();
+      return step;
+    };
+  }
+
+  pendingSession(): object | undefined {
+    // Not `#current()`: this is asked while a target records, before it has caught up.
+    const target = this.#target;
+    return target !== undefined && this.#recorded.has(target) ? target.key : undefined;
+  }
+
+  /**
+   * Takes up the target a history item kept, or lets go of the pending one (TL-FRAME-01), even after
+   * a tool switch. The document already shows the target, so nothing is recorded.
+   */
+  async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
+    this.#frames.cancel();
+    this.#nudges.cancel();
+    this.#drag = undefined;
+    this.#lazy = undefined;
+    const snapshot = state as FrameSnapshot | undefined;
+    const settings = this.#options.host.settings();
+    if (snapshot === undefined || context === undefined) {
+      if (context !== undefined) this.#pendingOptions.leave(settings);
+      else this.#pendingOptions.edited();
+      this.#target?.cancel();
+      this.#end();
+      return;
+    }
+    const fromIdle = this.pendingSession() === undefined;
+    const target = await this.#options.restore?.(snapshot.target, context);
+    this.#end();
+    if (target === undefined) return;
+    this.#target = target;
+    this.#recorded.set(target, snapshot);
+    this.#pendingOptions.enter(settings, snapshot.options, fromIdle);
+    this.#show();
   }
 
   activate(): void {
@@ -238,18 +357,33 @@ class FrameRuntime implements ToolRuntime {
     return frameCursor(hit, source, IDENTITY_AFFINE, p);
   }
 
-  /** Finishes the target (TL-FRAME-01 "Finish"). Pending nudges and a drag in progress are settled first. */
+  /**
+   * Finishes the target (TL-FRAME-01 "Finish"). Pending nudges and a drag in progress are settled
+   * first. A target that recorded nothing ends with nothing recorded.
+   */
   commit(): void {
     if (this.#drag !== undefined) this.cancel();
+    this.#lazy = undefined;
     this.#flushNudge();
     const target = this.#current();
     if (target === undefined) return;
-    target.finish(this.#name(this.#options.names.finish));
+    if (!this.#recorded.has(target) && !target.pending) {
+      target.cancel();
+      this.#end();
+      return;
+    }
+    // Changes still pending are recorded first, so Finish itself changes nothing and its undo
+    // takes the target up as the layer then shows it.
+    if (target.pending) {
+      target.commit(this.#name(this.#options.names.move), this.#stepFor(target, "edit"));
+    }
+    target.finish(this.#name(this.#options.names.finish), this.#stepFor(target, "finish"));
     this.#end();
   }
 
   /** Drops the drag in progress and restores the target it started with. Nothing is recorded. */
   cancel(): void {
+    this.#lazy = undefined;
     const drag = this.#drag;
     if (drag === undefined) return;
     this.#frames.cancel();
@@ -302,6 +436,7 @@ class FrameRuntime implements ToolRuntime {
     }
     this.#target = undefined;
     this.#drag = undefined;
+    this.#lazy = undefined;
     this.#frames.cancel();
     this.#nudges.cancel();
     this.#idle = undefined;
@@ -390,6 +525,26 @@ class FrameRuntime implements ToolRuntime {
       const hit = hitFrame(idle, IDENTITY_AFFINE, centerOf(idle), press, event.button, scale);
       if (hit?.kind === "reset") return;
     }
+    if (this.#current() === undefined && this.#options.startsOnDrag?.() === true) {
+      // The target starts once the press leaves its dead zone, from the shape it would start on.
+      const source = this.#options.idleSource?.();
+      if (source === undefined || isEmptyRect(source)) return;
+      const anchor = centerOf(source);
+      const hit = hitFrame(source, IDENTITY_AFFINE, anchor, press, event.button, scale);
+      const gesture =
+        hit === undefined ? undefined : gestureFor(hit, { m: IDENTITY_AFFINE, anchor, press });
+      if (gesture === undefined || gesture.kind !== "move") return;
+      this.#lazy = { gesture, zone: new ClickDeadZone(event) };
+      this.#drag = {
+        gesture,
+        name: this.#nameOf(gesture),
+        ctrl: event.ctrlKey,
+        zone: this.#lazy.zone,
+        stamped: false,
+        moved: false,
+      };
+      return;
+    }
     const target = this.#current() ?? this.#start();
     if (target === undefined) return;
     this.#show();
@@ -406,7 +561,7 @@ class FrameRuntime implements ToolRuntime {
       const center = centerOf(target.source);
       if (target.anchor.x === center.x && target.anchor.y === center.y) return;
       target.preview(target.transform, center);
-      target.commit(this.#name(this.#options.names.anchor));
+      target.commit(this.#name(this.#options.names.anchor), this.#stepFor(target, "edit"));
       this.#show();
       return;
     }
@@ -442,6 +597,14 @@ class FrameRuntime implements ToolRuntime {
   #move(event: ToolPointerEvent): void {
     if (this.#drag === undefined || event.predicted === true) return;
     if (!this.#drag.zone.track(event)) return;
+    if (this.#lazy !== undefined) {
+      this.#lazy = undefined;
+      if (this.#start() === undefined) {
+        this.#drag = undefined;
+        return;
+      }
+      this.#show();
+    }
     this.#frames.request(() => {
       try {
         this.#apply(pointOf(event), event);
@@ -456,11 +619,17 @@ class FrameRuntime implements ToolRuntime {
     const drag = this.#drag;
     if (drag === undefined) return;
     this.#frames.cancel();
+    if (this.#lazy !== undefined) {
+      // The press stayed a click: nothing started.
+      this.#lazy = undefined;
+      this.#drag = undefined;
+      return;
+    }
     if (drag.zone.track(event)) this.#apply(pointOf(event), event);
     this.#drag = undefined;
     const target = this.#current();
     if (target === undefined) return;
-    if (drag.moved) target.commit(this.#name(drag.name));
+    if (drag.moved) target.commit(this.#name(drag.name), this.#stepFor(target, "edit"));
     else target.cancel();
     this.#show();
   }
@@ -496,11 +665,11 @@ class FrameRuntime implements ToolRuntime {
   }
 
   #optionChanged(change: SettingChange): void {
-    if (change.source !== "local") return;
+    if (change.source !== "local" || this.#quiet) return;
     const key = this.#options.optionNames?.[change.path];
     const target = this.#current();
     if (key === undefined || target?.rerender === undefined || this.#drag !== undefined) return;
-    target.rerender(this.#name(key));
+    target.rerender(this.#name(key), this.#stepFor(target, "edit"));
     this.#show();
   }
 

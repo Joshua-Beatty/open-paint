@@ -7,6 +7,7 @@ import {
   type FloatingComposeResult,
   type FloatingComposer,
   FloatingSource,
+  type FloatingStep,
 } from "./floating-compose";
 import {
   intersectRects,
@@ -17,6 +18,7 @@ import {
   rectContainsRect,
   unionRects,
 } from "./geometry";
+import type { ToolStep } from "./history/history";
 import type { Layer } from "./layer";
 import {
   renderTransformedWith,
@@ -52,7 +54,33 @@ export interface FloatingPlan {
   readonly selection: Selection;
   /** The content's rotation anchor, in its own coordinates. Defaults to the content's center. */
   readonly anchor?: Point;
+  /**
+   * The content's committed placement, when the session is taken up again from history. Defaults
+   * to the content at `origin`. `base` and `committed` must then match it.
+   */
+  readonly transform?: AffineMatrix;
+  /** The copies already drawn into `base` (Ctrl-drag stamps), oldest first, kept for `state`. */
+  readonly stamps?: readonly FloatingStep[];
+  /** The resampling options the committed placement was made with. */
+  readonly options?: TransformOptions;
 }
+
+/**
+ * A floating session's committed state, as a history item keeps it (TL-FRAME-01): the content's
+ * placement and anchor, the area the session covers, the copies drawn into its base and the
+ * resampling options. With the content and the layer before the session, it gives the session
+ * back exactly.
+ */
+export interface FloatingState {
+  readonly transform: AffineMatrix;
+  readonly anchor: Point;
+  readonly area: Rect;
+  readonly stamps: readonly FloatingStep[];
+  readonly options: TransformOptions;
+}
+
+/** Makes the tool step a recorded item belongs to, from the state the item ends with. */
+export type FloatingStepFor = (after: FloatingState) => ToolStep;
 
 /**
  * Draws a session's previews on the canvas instead of in the layer (`LayerFloatPreview`), such as
@@ -132,6 +160,10 @@ export class FloatingPixels {
   #stamps: FloatPlacement[] = [];
   /** Computes resampled steps elsewhere (`setComposer`). */
   #composer: FloatingComposer | undefined;
+  /** The copies drawn into the committed base, oldest first. */
+  #bakedStamps: readonly FloatingStep[];
+  /** The copies drawn since the last commit, in either display mode, oldest first. */
+  #newStamps: FloatingStep[] = [];
   /** The step being computed by the composer. Later calls wait in `#waiting`. */
   #inflight: Promise<void> | undefined;
   readonly #waiting: (() => void)[] = [];
@@ -154,11 +186,14 @@ export class FloatingPixels {
     this.#outline = plan.outline;
     this.#quality = plan.selection.quality;
     this.#source = new FloatingSource(plan.pixels, plan.coverage, plan.outline, this.#quality);
+    this.start = { content: this.#source, origin: plan.origin, area: plan.area, base: plan.base };
     this.#area = plan.area;
     this.#base = plan.base;
     this.#committed = plan.committed;
-    this.#transform = translationAffine(plan.origin.x, plan.origin.y);
+    this.#transform = plan.transform ?? translationAffine(plan.origin.x, plan.origin.y);
     this.#committedTransform = this.#transform;
+    this.#bakedStamps = plan.stamps ?? [];
+    if (plan.options !== undefined) this.#options = plan.options;
     const anchor = plan.anchor ?? { x: plan.pixels.width / 2, y: plan.pixels.height / 2 };
     this.#anchor = anchor;
     this.#committedAnchor = anchor;
@@ -167,6 +202,18 @@ export class FloatingPixels {
     this.#token = this.#historyToken();
     this.#onLayer = this.#contentBounds();
   }
+
+  /**
+   * What the session started from: the content, its first placement's origin, the area it first
+   * covered and the base there (for a paste, the layer under it before the paste). Nothing here
+   * changes later.
+   */
+  readonly start: {
+    readonly content: FloatingSource;
+    readonly origin: Point;
+    readonly area: Rect;
+    readonly base: Surface;
+  };
 
   /** The layer the content is drawn on. */
   get layer(): Layer {
@@ -196,6 +243,17 @@ export class FloatingPixels {
   /** True while changes are not yet committed (Dirty, TL-FRAME-01). */
   get pending(): boolean {
     return this.#pending;
+  }
+
+  /** The committed state, as a history item keeps it. */
+  get state(): FloatingState {
+    return {
+      transform: this.#committedTransform,
+      anchor: this.#committedAnchor,
+      area: this.#area,
+      stamps: this.#bakedStamps,
+      options: this.#options,
+    };
   }
 
   /**
@@ -273,6 +331,7 @@ export class FloatingPixels {
     if (!this.live) return false;
     this.#growToContent();
     this.#pending = true;
+    this.#newStamps.push({ transform: this.#transform, options: this.#options });
     if (this.#floating === true) {
       this.#stamps.push(this.#placement(this.#transform));
       this.#showFloat();
@@ -288,10 +347,10 @@ export class FloatingPixels {
    * Records the pending changes as one history item named `name`. Returns false when nothing is
    * pending or the session is no longer live.
    */
-  commit(name: string): boolean {
-    if (this.#defer(() => this.commit(name))) return this.live;
+  commit(name: string, step?: FloatingStepFor): boolean {
+    if (this.#defer(() => this.commit(name, step))) return this.live;
     if (!this.live || !this.#pending) return false;
-    this.#record(name);
+    this.#record(name, false, step);
     return true;
   }
 
@@ -299,10 +358,10 @@ export class FloatingPixels {
    * Records one history item named `name`, even when nothing changed, and ends the session. This is
    * the "Finish" of the tool (TL-FRAME-01).
    */
-  finish(name: string): boolean {
-    if (this.#defer(() => this.finish(name))) return this.live;
+  finish(name: string, step?: FloatingStepFor): boolean {
+    if (this.#defer(() => this.finish(name, step))) return this.live;
     if (!this.live) return false;
-    this.#record(name, true);
+    this.#record(name, true, step);
     return true;
   }
 
@@ -314,6 +373,7 @@ export class FloatingPixels {
     this.#base = this.#savedBase ?? this.#base;
     this.#savedBase = undefined;
     this.#stamps = [];
+    this.#newStamps = [];
     this.#transform = this.#committedTransform;
     this.#anchor = this.#committedAnchor;
     this.#pending = false;
@@ -611,7 +671,7 @@ export class FloatingPixels {
    * `end` is set. A result that the layer does not show yet and that needs resampling is computed
    * by the composer when there is one: the history is held until it lands.
    */
-  #record(name: string, end = false): void {
+  #record(name: string, end = false, step?: FloatingStepFor): void {
     this.#stopResampling();
     this.#growToContent();
     const m = this.#transform;
@@ -628,7 +688,7 @@ export class FloatingPixels {
       const result = unchanged
         ? { drawn: this.#committed.clone(), base: this.#base }
         : this.#composeNow(m, this.#options);
-      this.#apply(name, end, m, result, shown);
+      this.#apply(name, end, m, result, shown, step);
       return;
     }
     const job = this.#job(m, this.#options);
@@ -637,12 +697,12 @@ export class FloatingPixels {
       composer(job).then(
         (result) => {
           release();
-          this.#apply(name, end, m, result, shown);
+          this.#apply(name, end, m, result, shown, step);
         },
         () => {
           // The worker could not compute it: the reference runs here instead.
           release();
-          this.#apply(name, end, m, this.#composeNow(m, job.placement.options), shown);
+          this.#apply(name, end, m, this.#composeNow(m, job.placement.options), shown, step);
         },
       ),
     );
@@ -673,10 +733,13 @@ export class FloatingPixels {
     m: AffineMatrix,
     result: FloatingComposeResult,
     shown: boolean,
+    step?: FloatingStepFor,
   ): void {
     const area = this.#area;
     const committed = this.#committed;
     const { drawn } = result;
+    const stamps =
+      this.#newStamps.length === 0 ? this.#bakedStamps : [...this.#bakedStamps, ...this.#newStamps];
     if (this.#stamps.length > 0) {
       this.#base = result.base;
       this.#stamps = [];
@@ -692,7 +755,15 @@ export class FloatingPixels {
     const selection = this.#selectionAt(m);
     // The item's "before" selection is the committed one, not the preview left on screen.
     this.#document.restoreSelection(this.#committedSelection);
-    this.#document.recordLayerPixels(name, this.#layer, area, committed, selection);
+    const record = () =>
+      this.#document.recordLayerPixels(name, this.#layer, area, committed, selection);
+    if (step === undefined) record();
+    else {
+      const after = { transform: m, anchor: this.#anchor, area, stamps, options: this.#options };
+      this.#document.history.withStep(step(after), record);
+    }
+    this.#bakedStamps = stamps;
+    this.#newStamps = [];
     this.#committed = drawn;
     this.#onLayer = this.#contentBounds(m);
     this.#committedTransform = m;

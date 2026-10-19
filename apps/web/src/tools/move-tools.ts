@@ -1,21 +1,30 @@
 import {
   type AffineMatrix,
   type Document,
-  type FloatingPixels,
+  FloatingPixels,
+  FloatingSource,
+  type FloatingState,
   IDENTITY_AFFINE,
   intersectRects,
+  type Point,
   type Rect,
   rect,
+  rectPolygon,
+  remainingAfterLift,
   type Selection,
+  type Surface,
   type TransformOptions,
   type TransformSampling,
+  translatePolygons,
 } from "@openpaint/document";
 import type { ToolDescriptor, ToolRuntime } from "@openpaint/extension-api";
 import type { MessageId } from "@openpaint/i18n";
 import { measured } from "../perf/user-timing";
 import { selectionBounds } from "./cursors";
-import { type FrameNames, type FrameTarget, frameToolRuntime } from "./frame-tool";
+import { type FrameNames, type FrameTarget, frameToolRuntime, type TargetStep } from "./frame-tool";
+import { LayerSnapshot } from "./layer-patch";
 import type { PaintHost } from "./paint-tools";
+import { layerIndex, type StepContext } from "./tool-history";
 import type { FramePoint } from "./transform-frame";
 
 /** The TL-OPT-RESAMP values of the Move Selected Pixels "Sampling" option, as settings store them. */
@@ -58,6 +67,94 @@ const PIXEL_OPTION_NAMES: Readonly<Record<string, MessageId>> = {
 };
 
 /**
+ * Where the moved pixels come from (TL-MOVE-PIX-01): a lift of the layer's selected pixels, which
+ * the history gives back from the layer and selection before the move, or a pasted bitmap, which
+ * is kept (once, shared by every step) with the layer under it before the paste.
+ */
+type PixelSource =
+  | { readonly kind: "lift"; readonly area: Rect }
+  | {
+      readonly kind: "paste";
+      readonly content: FloatingSource;
+      readonly origin: Point;
+      readonly area: Rect;
+      readonly base: Surface;
+    };
+
+/** A pending pixel move as its history items keep it (TL-FRAME-01). */
+interface PixelState {
+  readonly source: PixelSource;
+  readonly float: FloatingState;
+}
+
+/** A pending selection move as its history items keep it (TL-FRAME-01). */
+interface SelectionState {
+  /** The selection the move started from. */
+  readonly base: Selection;
+  readonly m: AffineMatrix;
+  readonly anchor: FramePoint;
+}
+
+/**
+ * Makes the floating session of a pixel move again from its state, after undo or redo landed on
+ * one of its steps: the content lifted again from the layer and selection before the move (read
+ * from the history) or the pasted bitmap, the base with the copies left behind drawn in again,
+ * and the layer as it shows the step now.
+ */
+export async function restoreFloating(
+  state: PixelState,
+  context: StepContext,
+): Promise<FloatingPixels> {
+  const { document, layer } = context;
+  const before = await context.before();
+  const layerBefore = new LayerSnapshot(layer.pixels, before.tiles);
+  const { source, float } = state;
+  let content: FloatingSource;
+  let origin: Point;
+  let startBase: Surface;
+  if (source.kind === "lift") {
+    const lift = source.area;
+    const selection = before.selection;
+    const lifted = layerBefore.read(lift);
+    const coverage =
+      selection.isEmpty || selection.coversRect(lift) ? undefined : selection.mask(lift);
+    const outline = selection.isEmpty
+      ? [rectPolygon(rect(0, 0, lift.width, lift.height))]
+      : translatePolygons(selection.effectivePolygons(), -lift.x, -lift.y);
+    content = new FloatingSource(lifted, coverage, outline, selection.quality);
+    origin = { x: lift.x, y: lift.y };
+    startBase = remainingAfterLift(lifted, coverage);
+  } else {
+    content = source.content;
+    origin = source.origin;
+    startBase = source.base;
+  }
+  const { area } = float;
+  const start = source.area;
+  let base = layerBefore.read(area);
+  base.copyFrom(startBase, startBase.bounds, start.x - area.x, start.y - area.y);
+  for (const stamp of float.stamps) {
+    base = content.compose(base, area, area, stamp.transform, stamp.options);
+  }
+  return new FloatingPixels({
+    document,
+    layer,
+    pixels: content.pixels,
+    coverage: content.coverage,
+    origin,
+    outline: content.outline,
+    area,
+    base,
+    committed: layer.pixels.readRegion(area),
+    selection: document.selection,
+    anchor: float.anchor,
+    transform: float.transform,
+    stamps: float.stamps,
+    options: float.options,
+  });
+}
+
+/**
  * Hands a floating session from the paste command to the Move Selected Pixels tool. A session
  * offered while no tool listens waits until one connects.
  */
@@ -81,9 +178,22 @@ export class FloatingHandoff {
   }
 }
 
-/** A floating session as a frame target. The options are read on every preview. */
-function pixelTarget(session: FloatingPixels, options: () => TransformOptions): FrameTarget {
+/**
+ * A floating session as a frame target. The options are read on every preview. `source` is where
+ * its pixels came from, which its history items keep.
+ */
+function pixelTarget(
+  document: Document,
+  session: FloatingPixels,
+  options: () => TransformOptions,
+  source: PixelSource,
+  key: object = {},
+): FrameTarget {
+  const step = (record: TargetStep) => (float: FloatingState) =>
+    record({ source, float } satisfies PixelState);
   return {
+    key,
+    layer: () => layerIndex(document, session.layer),
     get source() {
       return rect(0, 0, session.size.width, session.size.height);
     },
@@ -108,13 +218,13 @@ function pixelTarget(session: FloatingPixels, options: () => TransformOptions): 
     stamp: () => {
       session.stamp();
     },
-    commit: (name) => measured("move commit", () => session.commit(name)),
+    commit: (name, record) => measured("move commit", () => session.commit(name, step(record))),
     cancel: () => {
       session.cancel();
     },
-    finish: (name) => session.finish(name),
-    rerender: (name) => {
-      if (session.preview(session.transform, options())) session.commit(name);
+    finish: (name, record) => session.finish(name, step(record)),
+    rerender: (name, record) => {
+      if (session.preview(session.transform, options())) session.commit(name, step(record));
     },
     settling: () => session.settling(),
   };
@@ -125,20 +235,35 @@ function pixelTarget(session: FloatingPixels, options: () => TransformOptions): 
  * bounds, and each change moves the outline by the transform. Undo or another edit ends the target,
  * since the document's selection is then a different object.
  */
-function selectionTarget(document: Document): FrameTarget | undefined {
-  const base = document.selection;
+function selectionTarget(
+  document: Document,
+  restored?: SelectionState,
+  key: object = {},
+): FrameTarget | undefined {
+  const base = restored?.base ?? document.selection;
   if (base.isEmpty) return undefined;
   const source = base.bounds();
-  let committed: { readonly m: AffineMatrix; readonly anchor: FramePoint } = {
+  let committed: { readonly m: AffineMatrix; readonly anchor: FramePoint } = restored ?? {
     m: IDENTITY_AFFINE,
     anchor: { x: source.x + source.width / 2, y: source.y + source.height / 2 },
   };
-  let committedSelection: Selection = base;
+  let committedSelection: Selection = document.selection;
   let current = committed;
-  let result: Selection = base;
+  let result: Selection = committedSelection;
   let pending = false;
   const live = () => document.selection === result;
+  const state = (): SelectionState => ({ base, m: current.m, anchor: current.anchor });
+  const replace = (name: string, record: TargetStep) => {
+    // The item's "before" selection is the committed one, not the preview left on screen.
+    document.restoreSelection(committedSelection);
+    document.history.withStep(record(state()), () => document.replaceSelection(result, name));
+  };
   return {
+    key,
+    layer: () => {
+      const layer = document.activeLayer;
+      return layer === undefined ? 0 : layerIndex(document, layer);
+    },
     source,
     get transform() {
       return current.m;
@@ -159,9 +284,9 @@ function selectionTarget(document: Document): FrameTarget | undefined {
       result = base.transform(m).commit();
       document.previewSelection(result);
     },
-    commit(name) {
+    commit(name, record) {
       if (!live() || !pending) return false;
-      document.replaceSelection(result, name);
+      replace(name, record);
       committed = current;
       committedSelection = result;
       pending = false;
@@ -174,9 +299,9 @@ function selectionTarget(document: Document): FrameTarget | undefined {
       pending = false;
       document.restoreSelection(committedSelection);
     },
-    finish(name) {
+    finish(name, record) {
       if (!live()) return false;
-      document.replaceSelection(result, name);
+      replace(name, record);
       committed = current;
       committedSelection = result;
       pending = false;
@@ -186,8 +311,8 @@ function selectionTarget(document: Document): FrameTarget | undefined {
 }
 
 /**
- * The runtime of Move Selected Pixels (TL-MOVE-PIX-01). With nothing selected, a drag selects the
- * whole canvas and moves it, recorded with the move as one "Move Pixels" item.
+ * The runtime of Move Selected Pixels (TL-MOVE-PIX-01). With nothing selected, a drag first
+ * records "Select All" as its own item, then lifts and moves the whole canvas.
  */
 export function movePixelsToolRuntime(host: PaintHost, handoff: FloatingHandoff): ToolRuntime {
   const options = (): TransformOptions => {
@@ -204,17 +329,34 @@ export function movePixelsToolRuntime(host: PaintHost, handoff: FloatingHandoff)
   };
   return frameToolRuntime({
     host,
+    tool: "moveSelectedPixels",
     names: PIXEL_NAMES,
+    optionPaths: Object.keys(PIXEL_OPTION_NAMES),
     start: () => {
-      const session = measured("move lift", () => host.document()?.liftSelectedPixels());
+      const document = host.document();
+      if (document?.activeLayer === undefined) return undefined;
+      if (document.selection.isEmpty) document.selectAll();
+      const session = measured("move lift", () => document.liftSelectedPixels());
       if (session === undefined) return undefined;
       equip(session);
-      return pixelTarget(session, options);
+      return pixelTarget(document, session, options, { kind: "lift", area: session.start.area });
+    },
+    startsOnDrag: () => host.document()?.selection.isEmpty === true,
+    restore: async (state, context) => {
+      const pixels = state as PixelState;
+      const session = await restoreFloating(pixels, context);
+      equip(session);
+      return pixelTarget(context.document, session, options, pixels.source, context.session);
     },
     connect: (adopt) =>
       handoff.connect((session) => {
         equip(session);
-        adopt(pixelTarget(session, options));
+        const document = host.document();
+        if (document === undefined) return;
+        const { content, origin, area, base } = session.start;
+        adopt(
+          pixelTarget(document, session, options, { kind: "paste", content, origin, area, base }),
+        );
       }),
     optionNames: PIXEL_OPTION_NAMES,
     idleSource: () => {
@@ -244,11 +386,14 @@ function selectedBounds(host: PaintHost): Rect | undefined {
 export function moveSelectionToolRuntime(host: PaintHost): ToolRuntime {
   return frameToolRuntime({
     host,
+    tool: "moveSelection",
     names: SELECTION_NAMES,
     start: () => {
       const document = host.document();
       return document === undefined ? undefined : selectionTarget(document);
     },
+    restore: async (state, context) =>
+      selectionTarget(context.document, state as SelectionState, context.session),
     idleSource: () => selectedBounds(host),
     idleFrame: () => selectedBounds(host),
   });
