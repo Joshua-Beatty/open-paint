@@ -73,6 +73,41 @@ async function stepParts(
   }
 }
 
+/**
+ * What a history item made by an editable tool remembers besides its document change (TL-FRAME-01):
+ * the tool, the layer it drew on and the tool's pending state on either side of the item. Undo and
+ * redo make that tool and layer active and give the tool the state of the side they land on, so a
+ * result can be edited again from any of its steps, however far back.
+ */
+export interface ToolStep {
+  /** The tool's registry id. */
+  readonly tool: string;
+  /** The position of the result's layer in the layer list, when the item was recorded. */
+  readonly layer: number;
+  /** Draw starts a result, Edit changes a pending one, Finish commits it. */
+  readonly kind: "draw" | "edit" | "finish";
+  /** The result the item belongs to. Every item of one result shares it. */
+  readonly session: object;
+  /** The tool's pending state before the item, or undefined when nothing was pending. */
+  readonly before: unknown;
+  /** The tool's pending state after the item, or undefined when nothing is pending. */
+  readonly after: unknown;
+}
+
+/** Which way a history step is applied. */
+export type StepDirection = "undo" | "redo";
+
+/**
+ * Takes part in applying history items, so tools follow the history (see `ToolStep`). `before`
+ * runs before an item is undone or redone and `after` once the stacks have moved; `recorded` runs
+ * after a new item is recorded. `step` is the item's tool step, if it has one.
+ */
+export interface HistoryStepper {
+  before?(command: HistoryCommand, step: ToolStep | undefined, direction: StepDirection): unknown;
+  after?(command: HistoryCommand, step: ToolStep | undefined, direction: StepDirection): unknown;
+  recorded?(command: HistoryCommand, step: ToolStep | undefined): void;
+}
+
 /** Where the saved position of a history sits (see `History.savedLocation`). */
 export interface SavedLocation {
   readonly depth: number;
@@ -105,6 +140,11 @@ export class History {
   #chain: Promise<unknown> = Promise.resolve();
   /** The open step groups, innermost last. Items recorded inside one wait for the group to end. */
   readonly #groups: HistoryCommand[][] = [];
+  /** The tool steps of the items that have one (`withStep`). */
+  readonly #toolSteps = new WeakMap<HistoryCommand, ToolStep>();
+  /** The tool step that items recorded now belong to. */
+  #scope: ToolStep | undefined;
+  #stepper: HistoryStepper | undefined;
 
   /** `base` adds a non-undoable first item, such as "New Image" (DOC-HIS-01). */
   constructor(base?: string) {
@@ -209,8 +249,58 @@ export class History {
       return;
     }
     for (const undone of this.#undone.splice(0)) undone.release();
+    const step = this.#scope;
+    if (step !== undefined) this.#toolSteps.set(command, step);
     this.#applied.push(command);
+    this.#stepper?.recorded?.(command, step);
     this.#notify();
+  }
+
+  /**
+   * Runs `action` so that the items it records belong to the tool step `step` (see `ToolStep`).
+   * Returns what `action` returns.
+   */
+  withStep<T>(step: ToolStep, action: () => T): T {
+    const outer = this.#scope;
+    this.#scope = step;
+    try {
+      return action();
+    } finally {
+      this.#scope = outer;
+    }
+  }
+
+  /** Whether a tool is recording one of its steps right now (`withStep`). */
+  get inStep(): boolean {
+    return this.#scope !== undefined;
+  }
+
+  /** The tool step of an item, if a tool recorded it as one. */
+  stepOf(command: HistoryCommand | undefined): ToolStep | undefined {
+    return command === undefined ? undefined : this.#toolSteps.get(command);
+  }
+
+  /**
+   * Records an item that changes nothing in the document, only a tool's pending state (`ToolStep`),
+   * such as an edit of a result that is drawn over its layer until it is finished.
+   */
+  recordStep(name: string, step: ToolStep): HistoryCommand {
+    const command: HistoryCommand = {
+      name,
+      undo: async () => {},
+      redo: async () => {},
+      release: () => {},
+    };
+    this.withStep(step, () => this.record(command));
+    return command;
+  }
+
+  /** Lets `stepper` take part in undo, redo and recording. Returns the function that removes it. */
+  setStepper(stepper: HistoryStepper): () => void {
+    this.#stepper = stepper;
+    return () => {
+      if (this.#stepper === stepper) this.#stepper = undefined;
+    };
   }
 
   /** Adds a non-undoable placeholder item, such as a "Null" item (DOC-HIS-01). */
@@ -244,6 +334,8 @@ export class History {
       const command = this.#applied.at(-1);
       if (!this.canUndo || !command) return false;
       return this.#run(
+        command,
+        "undo",
         () => command.undo(),
         () => {
           this.#applied.pop();
@@ -262,6 +354,8 @@ export class History {
       const command = this.#undone.at(-1);
       if (!this.canRedo || !command) return false;
       return this.#run(
+        command,
+        "redo",
         () => command.redo(),
         () => {
           this.#undone.pop();
@@ -309,11 +403,23 @@ export class History {
     return result;
   }
 
-  /** Runs `act`, and moves the stacks only if it succeeds, so a failed step leaves history as it was. */
-  async #run(act: () => Promise<void>, move: () => void): Promise<boolean> {
+  /**
+   * Runs `act`, and moves the stacks only if it succeeds, so a failed step leaves history as it was.
+   * The stepper takes part before `act` and after the move.
+   */
+  async #run(
+    command: HistoryCommand,
+    direction: StepDirection,
+    act: () => Promise<void>,
+    move: () => void,
+  ): Promise<boolean> {
+    const stepper = this.#stepper;
+    const step = this.#toolSteps.get(command);
     try {
+      await stepper?.before?.(command, step, direction);
       await act();
       move();
+      await stepper?.after?.(command, step, direction);
       return true;
     } finally {
       this.#notify();

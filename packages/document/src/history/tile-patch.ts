@@ -128,6 +128,38 @@ function tilesIn(store: TiledPixelStore, area: Rect | readonly Rect[]): TileCoor
     .map((key) => ({ tx: key % store.tilesX, ty: Math.floor(key / store.tilesX) }));
 }
 
+/** One tile of a tile patch: its whole pixels, or null for a transparent (unallocated) tile. */
+export interface PatchTile {
+  readonly tx: number;
+  readonly ty: number;
+  readonly surface: Surface | null;
+}
+
+/** The tiles of a tile patch from `captureTiles`, in the patch's order. */
+export function readTiles(patch: Uint8Array): PatchTile[] {
+  const view = new DataView(patch.buffer, patch.byteOffset, patch.byteLength);
+  if (patch.length < 4) throw new RangeError("Tile patch is truncated.");
+  const count = view.getUint32(0, true);
+  const tiles: PatchTile[] = [];
+  let at = 4;
+  for (let i = 0; i < count; i++) {
+    if (at + TILE_HEADER_BYTES > patch.length) throw new RangeError("Tile patch is truncated.");
+    const tx = view.getUint32(at, true);
+    const ty = view.getUint32(at + 4, true);
+    const present = view.getUint8(at + 8) === 1;
+    at += TILE_HEADER_BYTES;
+    let surface: Surface | null = null;
+    if (present) {
+      if (at + TILE_BYTES > patch.length) throw new RangeError("Tile patch is truncated.");
+      surface = new Surface(TILE_SIZE, TILE_SIZE);
+      surface.data.set(patch.subarray(at, at + TILE_BYTES));
+      at += TILE_BYTES;
+    }
+    tiles.push({ tx, ty, surface });
+  }
+  return tiles;
+}
+
 /**
  * Writes a tile patch from `captureTiles` back into `store`. Recorded tiles are replaced whole, and
  * transparent ones are cleared, so the result is exact for every tile the patch covers.

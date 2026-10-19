@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { History, type HistoryCommand } from "./history";
+import { History, type HistoryCommand, type ToolStep } from "./history";
 
 interface Log {
   readonly events: string[];
@@ -227,5 +227,82 @@ describe("saved position and the dirty flag (DOC-DOC-06)", () => {
     expect(history.isSaved).toBe(false);
     await history.undo();
     expect(history.isSaved).toBe(true);
+  });
+});
+
+describe("tool steps (TL-FRAME-01)", () => {
+  const step = (tool: string, session: object, before: unknown, after: unknown): ToolStep => ({
+    tool,
+    layer: 0,
+    kind: "edit",
+    session,
+    before,
+    after,
+  });
+
+  it("keeps the tool step an item was recorded with, and none for other items", () => {
+    const history = new History();
+    const log: Log = { events: [] };
+    const s = step("shapes", {}, 1, 2);
+    const result = history.withStep(s, () => {
+      expect(history.inStep).toBe(true);
+      history.record(command("A", log));
+      return 7;
+    });
+    expect(result).toBe(7);
+    expect(history.inStep).toBe(false);
+    history.record(command("B", log));
+    const [a, b] = history.appliedCommands;
+    expect(history.stepOf(a)).toBe(s);
+    expect(history.stepOf(b)).toBeUndefined();
+  });
+
+  it("calls the stepper before an item is applied and after the stacks moved, both ways", async () => {
+    const history = new History();
+    const log: Log = { events: [] };
+    const s = step("shapes", {}, "before", "after");
+    history.withStep(s, () => history.record(command("A", log)));
+    const seen: string[] = [];
+    history.setStepper({
+      before: (c, found, direction) => {
+        seen.push(`before ${direction} ${c.name} ${String(found?.tool)} ${history.undoName}`);
+      },
+      after: async (c, found, direction) => {
+        await Promise.resolve();
+        seen.push(`after ${direction} ${c.name} ${String(found?.tool)} ${history.undoName}`);
+      },
+    });
+    await history.undo();
+    await history.redo();
+    expect(seen).toEqual([
+      "before undo A shapes A",
+      "after undo A shapes undefined",
+      "before redo A shapes undefined",
+      "after redo A shapes A",
+    ]);
+    expect(log.events).toEqual(["undo A", "redo A"]);
+  });
+
+  it("tells the stepper about new items, and stops once removed", () => {
+    const history = new History();
+    const recorded: string[] = [];
+    const remove = history.setStepper({
+      recorded: (c, s) => recorded.push(`${c.name} ${s?.tool}`),
+    });
+    history.withStep(step("gradient", {}, undefined, 1), () =>
+      history.record(command("A", { events: [] })),
+    );
+    remove();
+    history.record(command("B", { events: [] }));
+    expect(recorded).toEqual(["A gradient"]);
+  });
+
+  it("records a state-only step that changes nothing when undone or redone", async () => {
+    const history = new History();
+    const s = step("shapes", {}, 1, 2);
+    const recorded = history.recordStep("Edit", s);
+    expect(history.stepOf(recorded)).toBe(s);
+    expect(await history.undo()).toBe(true);
+    expect(await history.redo()).toBe(true);
   });
 });

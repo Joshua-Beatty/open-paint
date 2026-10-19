@@ -49,6 +49,7 @@ import {
   captureTiles,
   captureTilesBefore,
   type EarlierTiles,
+  readTiles,
   restoreTiles,
 } from "./history/tile-patch";
 import {
@@ -225,6 +226,8 @@ export class Document {
   #selection = new Selection();
   readonly #listeners = new Set<(change: DocumentChange) => void>();
   readonly #items = new WeakMap<HistoryCommand, ItemData>();
+  #changeGuard: (() => void) | undefined;
+  #guarding = false;
 
   constructor(options: DocumentOptions, historyBase?: string) {
     if (!isValidImageSize(options.width, options.height)) {
@@ -467,6 +470,7 @@ export class Document {
    * nothing selected the whole canvas is copied. Returns undefined when the area is empty.
    */
   copyPixels(merged: boolean): ClipboardImage | undefined {
+    this.#guardChange();
     const area = this.#editArea();
     if (isEmptyRect(area)) return undefined;
     const selection = this.#selection;
@@ -509,7 +513,7 @@ export class Document {
   }
 
   #paste(image: ClipboardImage, at: Point, options: PasteOptions, content: FloatingContent): void {
-    this.history.assertIdle();
+    this.#beginChange();
     const current: Size = { width: this.#width, height: this.#height };
     const size = options.expandTo ?? current;
     if (size.width < current.width || size.height < current.height) {
@@ -573,7 +577,7 @@ export class Document {
    * finished. Returns the session.
    */
   pasteFloating(image: ClipboardImage, at: Point, options: PasteOptions = {}): FloatingPixels {
-    this.history.assertIdle();
+    this.#beginChange();
     const current: Size = { width: this.#width, height: this.#height };
     const size = options.expandTo ?? current;
     const area = pasteArea(image.pixels, at, rect(0, 0, size.width, size.height));
@@ -671,7 +675,7 @@ export class Document {
    * Does nothing and returns false when nothing is selected or the crop area is empty.
    */
   cropToSelection(): boolean {
-    this.history.assertIdle();
+    this.#beginChange();
     const selection = this.#selection;
     if (selection.isEmpty) return false;
     const area = intersectRects(selection.bounds(), rect(0, 0, this.#width, this.#height));
@@ -715,7 +719,7 @@ export class Document {
     resolution?: Resolution,
     control: JobControl = {},
   ): Promise<boolean> {
-    this.history.assertIdle();
+    this.#beginChange();
     const target = this.#resolveResize(size, resolution);
     if (this.#isCurrentSize(size)) return this.#setResolutionOnly(target);
     const layers = [...this.#layers];
@@ -782,7 +786,7 @@ export class Document {
 
   /** DOC-IMG-04/05: mirrors every layer across `axis`. The selection is mirrored too. */
   flipImage(axis: ImageAxis): void {
-    this.history.assertIdle();
+    this.#beginChange();
     const flipX = axis === "horizontal";
     const selection = this.#selection
       .transform(flipMatrix(axis, { width: this.#width, height: this.#height }))
@@ -794,11 +798,11 @@ export class Document {
   }
 
   /**
-   * DOC-IMG-06/07/08: rotates every layer losslessly. A 90° turn swaps the width and height. The
+   * DOC-IMG-06/07/08: rotates every layer losslessly. A 90Â° turn swaps the width and height. The
    * selection rotates with the image.
    */
   rotateImage(rotation: ImageRotation): void {
-    this.history.assertIdle();
+    this.#beginChange();
     const size = { width: this.#width, height: this.#height };
     const next = rotatedSize(size, rotation);
     const selection = this.#selection.transform(rotationMatrix(rotation, size)).commit();
@@ -816,7 +820,7 @@ export class Document {
    * new layer keeps the metadata of the bottom layer. Returns false with fewer than two layers.
    */
   flatten(): boolean {
-    this.history.assertIdle();
+    this.#beginChange();
     const [bottom] = this.#layers;
     if (this.#layers.length < 2 || !bottom) return false;
     this.#transact(t("history.flatten"), [...this.#layers], () => {
@@ -1228,7 +1232,7 @@ export class Document {
    * transparent fill. The growth and the new layer form one "Import From File" item.
    */
   importLayer(name: string, pixels: Surface, options: { readonly expandTo?: Size } = {}): Layer {
-    this.history.assertIdle();
+    this.#beginChange();
     const current: Size = { width: this.#width, height: this.#height };
     const size = options.expandTo ?? current;
     if (size.width < current.width || size.height < current.height) {
@@ -1359,7 +1363,7 @@ export class Document {
    */
   swapActiveLayerWith(index: number): boolean {
     this.#checkLayerIndex(index);
-    this.history.assertIdle();
+    this.#beginChange();
     const layer = this.#requireActive();
     const from = this.#layers.indexOf(layer);
     if (from === index) return false;
@@ -1382,7 +1386,7 @@ export class Document {
     this.#transformActive(t("history.flipVertical"), false, true);
   }
 
-  /** DOC-LYR-05h: rotates the active layer 180°, which is lossless. */
+  /** DOC-LYR-05h: rotates the active layer 180Â°, which is lossless. */
   rotateActiveLayer180(): void {
     this.#transformActive(t("history.rotate180"), true, true);
   }
@@ -1393,7 +1397,7 @@ export class Document {
    * Returns whether it changed.
    */
   setActiveLayerProperties(patch: Partial<LayerProperties>): boolean {
-    this.history.assertIdle();
+    this.#beginChange();
     const layer = this.#requireActive();
     const before = this.#snapshot([]);
     const previous = layer.properties;
@@ -1443,7 +1447,7 @@ export class Document {
     before: Surface | EarlierTiles,
     selectionAfter: Selection = this.#selection,
   ): void {
-    this.history.assertIdle();
+    this.#beginChange();
     if (!this.#layers.includes(layer)) throw new RangeError("The layer is not in this document.");
     const beforePatch = this.#spill.put(captureTilesBefore(layer.pixels, area, before));
     const afterPatch = this.#spill.put(captureTiles(layer.pixels, area));
@@ -1460,6 +1464,42 @@ export class Document {
   }
 
   /**
+   * The state of the document before the newest applied items `commands` (newest last), as far as a
+   * tool needs it to edit again a result those items drew (TL-FRAME-01): the tiles of `layer` that
+   * the items changed, as they were before the oldest of them, keyed `ty * tilesX + tx` (null for a
+   * transparent tile), and the selection before the oldest of them. Tiles no item changed are as
+   * the layer has them now. The pixels come from the items' own undo data, so nothing is kept for
+   * this in the meantime.
+   */
+  async stateBefore(
+    layer: Layer,
+    commands: readonly HistoryCommand[],
+  ): Promise<{ readonly tiles: Map<number, Surface | null>; readonly selection: Selection }> {
+    const tiles = new Map<number, Surface | null>();
+    let selection = this.#selection;
+    const visit = async (command: HistoryCommand): Promise<void> => {
+      if (command.parts !== undefined) {
+        for (const part of [...command.parts].reverse()) await visit(part);
+        return;
+      }
+      const data = this.#items.get(command);
+      if (data === undefined) return;
+      if (data.kind === "snapshot") {
+        selection = data.before.selection;
+        return;
+      }
+      selection = data.selectionBefore;
+      if (data.layer !== layer) return;
+      const tilesX = layer.pixels.tilesX;
+      for (const tile of readTiles(await this.#spill.get(data.beforePatch))) {
+        tiles.set(tile.ty * tilesX + tile.tx, tile.surface);
+      }
+    };
+    for (const command of [...commands].reverse()) await visit(command);
+    return { tiles, selection };
+  }
+
+  /**
    * Shared by `editLayerPixels`. It also sets the selection to `selectionAfter` as part of the same
    * history item. Undo and redo restore the matching selection with the pixels.
    */
@@ -1470,7 +1510,7 @@ export class Document {
     edit: (pixels: TiledPixelStore) => void,
     selectionAfter: Selection,
   ): void {
-    this.history.assertIdle();
+    this.#beginChange();
     if (!this.#layers.includes(layer)) throw new RangeError("The layer is not in this document.");
     const selectionBefore = this.#selection;
     const before = this.#spill.put(captureTiles(layer.pixels, area));
@@ -1552,6 +1592,36 @@ export class Document {
     for (const layer of this.#layers) layer.dispose();
     this.#layers = [];
     this.#active = undefined;
+  }
+
+  /**
+   * Calls `guard` before every change that is recorded in the history, unless an editable tool is
+   * recording one of its own steps (`History.withStep`), and before a copy. The app finishes a
+   * pending tool result there, so a command never lands on top of one (TL-FRAME-01). Returns the
+   * function that removes it.
+   */
+  setChangeGuard(guard: () => void): () => void {
+    this.#changeGuard = guard;
+    return () => {
+      if (this.#changeGuard === guard) this.#changeGuard = undefined;
+    };
+  }
+
+  /** Runs the change guard, then checks the history can take a change. */
+  #beginChange(): void {
+    this.#guardChange();
+    this.history.assertIdle();
+  }
+
+  #guardChange(): void {
+    const guard = this.#changeGuard;
+    if (guard === undefined || this.#guarding || this.history.inStep || this.history.busy) return;
+    this.#guarding = true;
+    try {
+      guard();
+    } finally {
+      this.#guarding = false;
+    }
   }
 
   #newPixels(width = this.#width, height = this.#height): TiledPixelStore {
@@ -1718,7 +1788,7 @@ export class Document {
     selection: Selection,
     operation: MemoryOperation,
   ): boolean {
-    this.history.assertIdle();
+    this.#beginChange();
     const target = this.#resolveResize(size, resolution);
     if (this.#isCurrentSize(size)) return this.#setResolutionOnly(target);
     this.#preflight(layersBytes(size.width, size.height, this.#layers.length), operation);
@@ -1772,7 +1842,7 @@ export class Document {
 
   /** Records a change that touches no pixels: only layer order, properties, selection or resolution. */
   #editState(name: string, mutate: () => void): void {
-    this.history.assertIdle();
+    this.#beginChange();
     const before = this.#snapshot([]);
     mutate();
     this.#record(name, before, this.#snapshot([]));
@@ -1785,7 +1855,7 @@ export class Document {
    * recorded and the spilled copies are released.
    */
   #transact<T>(name: string, touched: readonly Layer[], mutate: () => T): T {
-    this.history.assertIdle();
+    this.#beginChange();
     const before = this.#snapshot(touched);
     let result: T;
     try {
