@@ -10,6 +10,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { ColorSettings } from "../colors/use-colors";
 import { magicWandToolRuntime } from "./magic-wand-tools";
 import type { PaintHost } from "./paint-tools";
+import { bindToolHistory, soloSwitcher } from "./tool-history";
 import { wandHandles } from "./wand-handles";
 
 beforeAll(async () => {
@@ -104,12 +105,14 @@ describe("Magic Wand editing (TL-SEL-WAND-01, TL-FRAME-01, TL-FRAME-02)", () => 
     await vi.waitFor(() => expect(wandHandles.state.busy).toBeUndefined());
   }
 
+  let host: PaintHost;
+
   beforeEach(() => {
     doc = Document.createBlank({ width: 32, height: 32 });
     paint(0, 0, 16, 32, RED);
     paint(16, 0, 16, 32, BLUE);
     settings = new FakeSettings();
-    const host: PaintHost = {
+    host = {
       settings: () => settings as unknown as ColorSettings,
       document: () => doc,
       translate: (messageId) => messageId,
@@ -118,6 +121,7 @@ describe("Magic Wand editing (TL-SEL-WAND-01, TL-FRAME-01, TL-FRAME-02)", () => 
     };
     runtime = magicWandToolRuntime(host);
     runtime.activate();
+    bindToolHistory(doc, soloSwitcher("magicWand", runtime));
     notify.mockClear();
     report.mockClear();
   });
@@ -297,6 +301,32 @@ describe("Magic Wand editing (TL-SEL-WAND-01, TL-FRAME-01, TL-FRAME-02)", () => 
     expect(runtime.hasPending?.()).toBe(true);
     expect(doc.selection.area()).toBe(512);
     expect(wandHandles.state.seed).toEqual({ x: 1, y: 1 });
+  });
+
+  it("a new runtime (after a tool switch) takes up a finished result, combining with the selection before it", async () => {
+    doc.combineSelection([rectPolygon(rect(28, 28, 4, 4))], "replace");
+    settings.set("tools.selection.combineMode", "Union");
+    click(1, 1);
+    await settle(() => expect(doc.selection.area()).toBe(512 + 16));
+    runtime.commit?.();
+    runtime.deactivate();
+    runtime = magicWandToolRuntime(host);
+    runtime.activate();
+    bindToolHistory(doc, soloSwitcher("magicWand", runtime));
+
+    expect(await doc.history.undo()).toBe(true);
+    expect(runtime.hasPending?.()).toBe(true);
+    expect(wandHandles.state.seed).toEqual({ x: 1, y: 1 });
+    // Selection Mode back to Replace: the flood replaces the selection it started with.
+    settings.set("tools.selection.combineMode", "Replace");
+    await settle(() => expect(doc.selection.area()).toBe(512));
+    expect(doc.history.undoName).toBe("history.changeSelectionMode");
+    runtime.commit?.();
+    expect(await doc.history.undo()).toBe(true);
+    expect(await doc.history.undo()).toBe(true);
+    expect(await doc.history.undo()).toBe(true);
+    expect(runtime.hasPending?.()).toBe(false);
+    expect(doc.selection.area()).toBe(16);
   });
 
   it("a selection change that is not one of the wand's steps ends the pending result", async () => {

@@ -21,14 +21,17 @@ import {
 } from "./cursors";
 import { floodMask, toleranceOf } from "./flood";
 import type { PaintHost } from "./paint-tools";
-import {
-  PendingSteps,
-  restoreSettings,
-  type SettingSnapshot,
-  snapshotSettings,
-} from "./pending-steps";
+import type { SettingSnapshot } from "./pending-steps";
 import { combineModeFor, combineModeOf, type PixelPoint } from "./select-geometry";
 import { reportToolFailure } from "./tool-failure";
+import {
+  layerIndex,
+  PendingOptions,
+  recordStep,
+  type StepContext,
+  type StepKind,
+  type SteppedRuntime,
+} from "./tool-history";
 import { wandHandles } from "./wand-handles";
 
 /** The history name of each option change made while a result is pending (TL-FRAME-02). */
@@ -142,8 +145,8 @@ interface WandStep {
   readonly result: Selection;
   /** The option values of the step, written back when undo or redo lands on it. */
   readonly options: SettingSnapshot;
-  /** Whether Finish recorded this step. A finished result is no longer pending. */
-  readonly finished: boolean;
+  /** Shift forced Global for the click. */
+  readonly forceGlobal: boolean;
 }
 
 /** The pending result of one click and its later changes (TL-FRAME-01). */
@@ -151,11 +154,12 @@ interface WandSession {
   readonly document: Document;
   /** Shift forced Global for the click. Later recomputes keep it. */
   readonly forceGlobal: boolean;
-  readonly steps: PendingSteps<WandStep>;
   /** The state the history stands at. */
   step: WandStep;
-  /** Stops the listener that follows undo and redo. */
-  readonly stopListening: () => void;
+  /** Whether the result's first step is recorded. */
+  recorded: boolean;
+  /** Names the result's history items (`ToolStep.session`). */
+  readonly key: object;
   /** The pixels the last flood sampled. */
   source: FloodSource | undefined;
 }
@@ -197,7 +201,7 @@ type WandDrag =
  * the state of the step they land on, options included, so it stays Dirty. A flood runs in the WASM
  * worker, and while it runs the spinner shows and pointer input waits.
  */
-class MagicWandRuntime implements ToolRuntime {
+class MagicWandRuntime implements SteppedRuntime {
   readonly #host: PaintHost;
   #session: WandSession | undefined;
   #drag: WandDrag | undefined;
@@ -208,13 +212,22 @@ class MagicWandRuntime implements ToolRuntime {
   #unsubscribe: (() => void) | undefined;
   /** Set while the runtime writes option values back, so their change events are ignored. */
   #restoring = false;
-  /** Set while the runtime changes the document, so its own changes are not read as undo or redo. */
-  #writing = false;
   /** The last pointer sample, which the cursor is chosen for. */
   #hover: ToolPointerEvent | undefined;
+  /** The option values of the pending result on the options bar. */
+  readonly #options: PendingOptions;
 
   constructor(host: PaintHost) {
     this.#host = host;
+    this.#options = new PendingOptions(OPTION_PATHS, (action) => {
+      const restoring = this.#restoring;
+      this.#restoring = true;
+      try {
+        action();
+      } finally {
+        this.#restoring = restoring;
+      }
+    });
   }
 
   activate(): void {
@@ -268,10 +281,56 @@ class MagicWandRuntime implements ToolRuntime {
     if (this.#busy) return;
     const session = this.#live();
     if (session === undefined) return;
-    this.#record(session, this.#host.translate("history.finishMagicWand"), {
-      ...session.step,
-      finished: true,
-    });
+    if (session.recorded) {
+      this.#record(
+        session,
+        this.#host.translate("history.finishMagicWand"),
+        session.step,
+        "finish",
+      );
+    }
+    this.#end();
+  }
+
+  pendingSession(): object | undefined {
+    const session = this.#session;
+    return session?.recorded === true ? session.key : undefined;
+  }
+
+  /**
+   * Takes up the result a history item kept, or lets go of the pending one (TL-FRAME-01), even
+   * after a tool switch. The selection already shows the result, so nothing is recorded.
+   */
+  restoreStep(state: unknown, context: StepContext | undefined): void {
+    const drag = this.#drag;
+    this.#drag = undefined;
+    if (drag?.kind === "move") drag.session.document.restoreSelection(drag.pre);
+    this.#queued = undefined;
+    const step = state as WandStep | undefined;
+    const settings = this.#host.settings();
+    if (step === undefined || context === undefined) {
+      if (context !== undefined) this.#options.leave(settings);
+      else this.#options.edited();
+      this.#end();
+      return;
+    }
+    let session = this.#session;
+    const fromIdle = session?.recorded !== true;
+    if (session === undefined || session.key !== context.session) {
+      session = {
+        document: context.document,
+        forceGlobal: step.forceGlobal,
+        step,
+        recorded: true,
+        key: context.session,
+        source: undefined,
+      };
+    }
+    session.step = step;
+    session.recorded = true;
+    this.#session = session;
+    this.#options.enter(settings, step.options, fromIdle);
+    this.#showHandles();
   }
 
   /** Stops a handle drag and restores the selection it started with. Nothing is recorded. */
@@ -326,15 +385,15 @@ class MagicWandRuntime implements ToolRuntime {
       offset: { x: 0, y: 0 },
       mode,
       result: document.selection,
-      options: snapshotSettings(settings, OPTION_PATHS),
-      finished: false,
+      options: this.#options.snapshot(settings),
+      forceGlobal: event.shiftKey,
     };
     const session: WandSession = {
       document,
       forceGlobal: event.shiftKey,
-      steps: new PendingSteps(document.history.appliedCommands.at(-1), initial),
       step: initial,
-      stopListening: document.subscribe(() => this.#sync()),
+      recorded: false,
+      key: {},
       source: undefined,
     };
     this.#session = session;
@@ -373,15 +432,20 @@ class MagicWandRuntime implements ToolRuntime {
           translatedPolygons(polygons, started.offset),
           request.mode,
         );
-        this.#record(session, this.#host.translate(name), {
-          seed: request.seed,
-          base: started.base,
-          offset: started.offset,
-          mode: request.mode,
-          result,
-          options: snapshotSettings(settings, OPTION_PATHS),
-          finished: false,
-        });
+        this.#record(
+          session,
+          this.#host.translate(name),
+          {
+            seed: request.seed,
+            base: started.base,
+            offset: started.offset,
+            mode: request.mode,
+            result,
+            options: this.#options.snapshot(settings),
+            forceGlobal: session.forceGlobal,
+          },
+          session.recorded ? "edit" : "draw",
+        );
       })
       .catch((cause: unknown) => this.#fail(cause))
       .finally(() => {
@@ -396,13 +460,28 @@ class MagicWandRuntime implements ToolRuntime {
       });
   }
 
-  /** Sets the selection to `step.result` as one history item, and records `step` as its state. */
-  #record(session: WandSession, name: string, step: WandStep): void {
-    this.#write(() => session.document.replaceSelection(step.result, name));
-    const command = session.document.history.appliedCommands.at(-1);
-    if (command === undefined) return;
-    session.steps.record(command, step);
+  /**
+   * Sets the selection to `step.result` as one history item that keeps the result's state on either
+   * side, and makes `step` the state it ends.
+   */
+  #record(session: WandSession, name: string, step: WandStep, kind: StepKind): void {
+    const { document } = session;
+    const layer = document.activeLayer;
+    recordStep(
+      document,
+      {
+        tool: "magicWand",
+        layer: layer === undefined ? 0 : layerIndex(document, layer),
+        kind,
+        session: session.key,
+        before: kind === "draw" ? undefined : session.step,
+        after: kind === "finish" ? undefined : step,
+      },
+      () => document.replaceSelection(step.result, name),
+    );
     session.step = step;
+    session.recorded = true;
+    this.#options.edited();
     this.#showHandles();
   }
 
@@ -457,12 +536,17 @@ class MagicWandRuntime implements ToolRuntime {
     session.document.restoreSelection(pre);
     if (total.x !== 0 || total.y !== 0) {
       const step = session.step;
-      this.#record(session, this.#host.translate("history.moveSelection"), {
-        ...step,
-        base: translated(step.base, total),
-        offset: { x: step.offset.x + total.x, y: step.offset.y + total.y },
-        result: translated(pre, total),
-      });
+      this.#record(
+        session,
+        this.#host.translate("history.moveSelection"),
+        {
+          ...step,
+          base: translated(step.base, total),
+          offset: { x: step.offset.x + total.x, y: step.offset.y + total.y },
+          result: translated(pre, total),
+        },
+        session.recorded ? "edit" : "draw",
+      );
     }
     this.#showHandles();
   }
@@ -479,61 +563,11 @@ class MagicWandRuntime implements ToolRuntime {
     this.#refresh(session, name, { seed: session.step.seed, mode });
   }
 
-  /** Follows the history after an undo, redo or other change. Our own writes are not followed. */
-  #sync(): void {
-    if (this.#writing) return;
-    this.#current();
-  }
-
-  /** Runs `action` as a document change of this runtime. */
-  #write(action: () => void): void {
-    this.#writing = true;
-    try {
-      action();
-    } finally {
-      this.#writing = false;
-    }
-  }
-
-  /**
-   * The session, if the document's latest history item is one of its steps. Undo and redo move
-   * it to that step's state, with the option values of the step. A session whose latest item is
-   * anything else has ended.
-   */
-  #current(): WandSession | undefined {
-    const session = this.#session;
-    if (session === undefined) return undefined;
-    const state = session.steps.locate(session.document.history.appliedCommands.at(-1));
-    if (state === undefined) {
-      this.#end();
-      return undefined;
-    }
-    if (state !== session.step) this.#adopt(session, state);
-    return session;
-  }
-
-  /** The pending session, unless it is committed (a finished result is not pending). */
+  /** The pending session. */
   #live(): WandSession | undefined {
-    const session = this.#current();
-    return session?.step.finished === true ? undefined : session;
+    return this.#session;
   }
-
-  #adopt(session: WandSession, state: WandStep): void {
-    session.step = state;
-    const settings = this.#host.settings();
-    if (settings !== null) {
-      this.#restoring = true;
-      try {
-        restoreSettings(settings, state.options);
-      } finally {
-        this.#restoring = false;
-      }
-    }
-    this.#showHandles();
-  }
-
   #end(): void {
-    this.#session?.stopListening();
     this.#session = undefined;
     this.#drag = undefined;
     wandHandles.set({});
@@ -541,7 +575,7 @@ class MagicWandRuntime implements ToolRuntime {
 
   #showHandles(): void {
     const session = this.#session;
-    if (session === undefined || session.step.finished) {
+    if (session === undefined) {
       wandHandles.set({});
       return;
     }
