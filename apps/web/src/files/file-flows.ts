@@ -84,6 +84,11 @@ export interface FileFlowOptions {
   readonly notify: (text: string) => void;
   /** Reports an unexpected error to the error log. */
   readonly report: (cause: unknown) => void;
+  /**
+   * Finishes a tool result still pending on `document` (TL-FRAME-01), so a save writes it: a
+   * pending result is shown over its layer, not in it, until Finish.
+   */
+  readonly finishPending?: (document: Document) => void;
 }
 
 /**
@@ -280,6 +285,7 @@ export class FileFlows {
     await engineStrokesSettled();
     const image = this.#options.tabs.get(id)?.value;
     if (image === undefined) return "canceled";
+    this.#options.finishPending?.(image.document);
     const file = image.file;
     const type =
       file === undefined

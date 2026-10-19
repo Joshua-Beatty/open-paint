@@ -211,6 +211,7 @@ function harness(types: readonly FileTypeDescriptor[] = [rawType()]) {
   const notes: string[] = [];
   const reports: unknown[] = [];
   const savedConfig = new Map<string, PropertyValues>();
+  const finished: Document[] = [];
   const flows = new FileFlows({
     registry,
     access,
@@ -231,8 +232,9 @@ function harness(types: readonly FileTypeDescriptor[] = [rawType()]) {
     newImageSize: () => ({ width: 8, height: 6 }),
     notify: (text) => notes.push(text),
     report: (cause) => reports.push(cause),
+    finishPending: (document) => finished.push(document),
   });
-  return { flows, access, dialogs, recent, tabs, notes, reports, savedConfig, printer };
+  return { flows, access, dialogs, recent, tabs, notes, reports, savedConfig, printer, finished };
 }
 
 /** The browser's printing: it records each job and can be made to lack print or fail to encode. */
@@ -272,6 +274,18 @@ function dirtyDocument(width = 2, height = 2): Document {
   doc.setActiveLayerProperties({ opacity: 200 });
   return doc;
 }
+
+describe("Save with a pending tool result (TL-FRAME-01)", () => {
+  it("finishes the result first, so the saved image has it", async () => {
+    const { flows, tabs, finished } = harness();
+    const document = dirtyDocument();
+    tabs.open({ document, name: "a.raw", file: undefined } as unknown as OpenImage);
+    const id = tabs.active?.id;
+    if (id === undefined) throw new Error("no tab");
+    void flows.save(id, false);
+    await vi.waitFor(() => expect(finished).toEqual([document]));
+  });
+});
 
 describe("documentFromFile (FMT-OPEN-01)", () => {
   it("makes a clean document from the one layer", () => {

@@ -758,6 +758,9 @@ export function App({
           }),
         notify: (text) => setNotice(text),
         report: (cause) => void errors.report(cause, { context: "file" }),
+        finishPending: (document) => {
+          if (document === images.active?.value.document) toolController.finishBeforeChange();
+        },
       }),
   );
   useEffect(() => {
