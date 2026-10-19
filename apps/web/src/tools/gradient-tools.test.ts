@@ -374,6 +374,45 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
     expect(pixel(0, 16)).toEqual(RED);
   });
 
+  it("undoing Finish makes the gradient pending again with its handles and options, and edits continue (owner request)", async () => {
+    drag(2, 16, 30, 16);
+    settings.set("tools.gradient.repeatType", "RepeatWrapped");
+    runtime.commit?.();
+    expect(gradientHandles.state).toEqual({});
+    const finished = pixel(31, 16);
+    settings.set("tools.gradient.repeatType", "NoRepeat");
+
+    await doc.history.undo();
+    expect(runtime.hasPending?.()).toBe(true);
+    expect(gradientHandles.state.start).toEqual({ x: 2, y: 16 });
+    expect(gradientHandles.state.end).toEqual({ x: 30, y: 16 });
+    expect(settings.get("tools.gradient.repeatType")).toBe("RepeatWrapped");
+    expect(doc.history.undoName).toBe("history.changeRepeatType");
+    expect(pixel(31, 16)).toEqual(finished);
+
+    await doc.history.redo();
+    expect(runtime.hasPending?.()).toBe(false);
+    expect(gradientHandles.state).toEqual({});
+
+    await doc.history.undo();
+    await doc.history.undo();
+    expect(runtime.hasPending?.()).toBe(true);
+    expect(settings.get("tools.gradient.repeatType")).toBe("NoRepeat");
+    expect(pixel(31, 16)).toEqual(YELLOW);
+    runtime.pointer(event("down", 30, 16));
+    runtime.pointer(event("move", 15, 16));
+    runtime.pointer(event("up", 15, 16));
+    expect(doc.history.undoName).toBe("history.editGradient");
+    expect(doc.history.canRedo).toBe(false);
+    expect(pixel(29, 16)).toEqual(YELLOW);
+    expect(pixel(0, 16)).toEqual(GREEN);
+
+    await doc.history.undo();
+    await doc.history.undo();
+    expect(runtime.hasPending?.()).toBe(false);
+    expect(pixel(0, 16)).toEqual(RED);
+  });
+
   it("a cancelled draw restores the layer and records nothing", () => {
     runtime.pointer(event("down", 2, 16));
     runtime.pointer(event("move", 30, 16));
