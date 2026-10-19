@@ -79,6 +79,11 @@ export interface EffectRuntimeOptions {
    * dropped for the newest. Undefined previews every change at once.
    */
   readonly scheduleFrame?: ScheduleFrame;
+  /**
+   * Runs before an effect starts, so a pending tool result is finished before the effect reads the
+   * layer (TL-FRAME-01).
+   */
+  readonly beforeStart?: () => void;
 }
 
 interface Target {
@@ -163,6 +168,7 @@ export class EffectRuntime {
 
   /** An Effects menu item: opens the dialog, or runs at once when the effect is not configurable. */
   start(effectId: string): void {
+    this.#options.beforeStart?.();
     const target = this.#target(effectId);
     if (target === undefined) return;
     const { binding, title } = target;
@@ -193,6 +199,7 @@ export class EffectRuntime {
   repeat(): void {
     const last = this.#options.memory.last;
     if (last === undefined) return;
+    this.#options.beforeStart?.();
     const target = this.#target(last.effectId);
     if (target === undefined) return;
     this.#run(target, last.values);

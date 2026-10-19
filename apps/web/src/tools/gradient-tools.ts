@@ -5,6 +5,7 @@ import {
   type Layer,
   type Rect,
   type Selection,
+  type ToolStep,
 } from "@openpaint/document";
 import {
   GRADIENT_REPEATS,
@@ -17,7 +18,7 @@ import type { ToolPointerEvent, ToolRuntime, ToolViewState } from "@openpaint/ex
 import type { MessageId } from "@openpaint/i18n";
 import type { SettingChange } from "@openpaint/storage";
 import { ClickDeadZone } from "@openpaint/tools";
-import type { ColorSettings } from "../colors/use-colors";
+import { type ColorSettings, PRIMARY_COLOR_PATH, SECONDARY_COLOR_PATH } from "../colors/use-colors";
 import { ColorEdits, isColorChange, paintColors, sameColor } from "./color-edits";
 import { CROSSHAIR_CURSOR, GRAB_CURSOR, GRABBING_CURSOR, MOVE_CURSOR, nearHandle } from "./cursors";
 import { FrameCoalescer } from "./frame-coalescer";
@@ -31,9 +32,16 @@ import {
 import { LayerSnapshot } from "./layer-patch";
 import { blendValue, selectionCoverage } from "./paint-stroke";
 import type { PaintHost } from "./paint-tools";
-import { HistoryFollower, PendingResults, type PendingStep } from "./pending-results";
-import { restoreSettings, type SettingSnapshot, snapshotSettings } from "./pending-steps";
+import type { SettingSnapshot } from "./pending-steps";
 import { reportToolFailure } from "./tool-failure";
+import {
+  layerIndex,
+  PendingOptions,
+  recordStep,
+  type StepContext,
+  type StepKind,
+  type SteppedRuntime,
+} from "./tool-history";
 
 /** The dither seed. One drawing keeps it, so every re-render dithers the same way (TL-ALG-GRAD). */
 const DITHER_SEED = 0x4f50_454e;
@@ -51,11 +59,18 @@ const OPTION_HISTORY_NAMES: Readonly<Record<string, MessageId>> = {
   "tools.selection.renderingQuality": "history.changeSelectionQuality",
 };
 
-/** The settings a gradient step depends on, which undo and redo write back. */
-const OPTION_PATHS = Object.keys(OPTION_HISTORY_NAMES);
+/** The settings a gradient step depends on, which undo and redo write back, colors included. */
+const OPTION_PATHS = [
+  ...Object.keys(OPTION_HISTORY_NAMES),
+  PRIMARY_COLOR_PATH,
+  SECONDARY_COLOR_PATH,
+];
 
-/** A pending gradient after one of its steps, which undo and redo give back to it (TL-FRAME-01). */
-interface GradientStep extends PendingStep {
+/**
+ * A pending gradient as one of its history items keeps it (TL-FRAME-01): its handles, colors and
+ * options.
+ */
+interface GradientSnapshot {
   readonly start: HandlePoint;
   readonly end: HandlePoint;
   readonly primary: ColorRgba8;
@@ -180,22 +195,11 @@ interface GradientSession {
   held: boolean;
   /** The layer's pixels when the gradient was drawn; a resize or a deleted layer replaces them. */
   readonly store: Layer["pixels"];
-  /** The step the history stands at, undefined until the drawing is recorded. */
-  step: GradientStep | undefined;
+  /** The gradient as its latest history item keeps it, undefined until the drawing is recorded. */
+  state: GradientSnapshot | undefined;
+  /** Names the gradient's history items (`ToolStep.session`). */
+  readonly key: object;
 }
-
-/**
- * The gradients' steps, kept with their history items: an undo or redo that lands on one makes
- * that gradient pending again, as it was after the step (owner request). Only on its own layer
- * while that layer is active, since switching layers finishes a gradient.
- */
-const GRADIENT_RESULTS = new PendingResults<GradientSession, GradientStep>(
-  "gradient",
-  (session) =>
-    session.document.layers.includes(session.layer) &&
-    session.layer.pixels === session.store &&
-    session.document.activeLayer === session.layer,
-);
 
 /** A tile renderer with the selection clip it was made for, and the options it rendered last. */
 interface GradientRender {
@@ -227,7 +231,7 @@ interface HandleDrag {
  * so a preview frame costs the main thread only the tiles that land. A record waits until every
  * tile of its render has landed; meanwhile the document is held and `settling` holds the input.
  */
-class GradientRuntime implements ToolRuntime {
+class GradientRuntime implements SteppedRuntime {
   readonly #host: PaintHost;
   readonly #lanes: GradientLanes;
   #session: GradientSession | undefined;
@@ -245,8 +249,8 @@ class GradientRuntime implements ToolRuntime {
 
   /** Color changes of the pending gradient: drawn per frame, recorded as one "Change Color" step. */
   readonly #colors: ColorEdits;
-  /** Follows the open image's history, so an undo or redo can make a gradient pending again. */
-  readonly #follow: HistoryFollower;
+  /** The option values of the pending gradient on the options bar. */
+  readonly #options: PendingOptions;
   /** Set while the runtime writes settings back itself, so the writes are not recorded as option changes. */
   #quiet = false;
 
@@ -254,9 +258,7 @@ class GradientRuntime implements ToolRuntime {
     this.#host = host;
     this.#lanes = host.gradientLanes?.() ?? new InlineGradientLanes();
     this.#frames = new FrameCoalescer(host.scheduleFrame);
-    this.#follow = new HistoryFollower(host, () => {
-      if (this.#draw === undefined && this.#drag === undefined) this.#live();
-    });
+    this.#options = new PendingOptions(OPTION_PATHS, (action) => this.#quietly(action));
     this.#colors = new ColorEdits({
       ...(host.scheduleFrame && { scheduleFrame: host.scheduleFrame }),
       preview: () => {
@@ -280,13 +282,11 @@ class GradientRuntime implements ToolRuntime {
 
   activate(): void {
     this.#unsubscribe = this.#host.settings()?.onChange((change) => this.#optionChanged(change));
-    this.#follow.start();
   }
 
   deactivate(): void {
     this.#colors.flush();
     this.#revert();
-    this.#follow.stop();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
     this.#end();
@@ -336,7 +336,7 @@ class GradientRuntime implements ToolRuntime {
     this.#colors.flush();
     const session = this.#live();
     if (session !== undefined) {
-      this.#record(session, "history.finishGradient", true);
+      this.#record(session, "history.finishGradient", "finish");
       this.#end();
     }
     this.#refresh();
@@ -397,7 +397,8 @@ class GradientRuntime implements ToolRuntime {
       recordedKey: undefined,
       held: false,
       store: layer.pixels,
-      step: undefined,
+      state: undefined,
+      key: {},
     };
     this.#refresh();
   }
@@ -488,7 +489,7 @@ class GradientRuntime implements ToolRuntime {
       return;
     }
     this.#session = draw;
-    this.#record(draw, "history.gradient");
+    this.#record(draw, "history.gradient", "draw");
     this.#refresh();
   }
 
@@ -496,14 +497,14 @@ class GradientRuntime implements ToolRuntime {
    * Records the gradient as one history item named `name`, once its render has landed. Records
    * asked for while an earlier one waits are made after it, in order.
    */
-  #record(session: GradientSession, name: MessageId, finished = false): void {
+  #record(session: GradientSession, name: MessageId, kind: StepKind = "edit"): void {
     const waiting = this.#settling;
     if (waiting === undefined) {
-      const pending = this.#recordNow(session, name, finished);
+      const pending = this.#recordNow(session, name, kind);
       if (pending !== undefined) this.#track(pending);
       return;
     }
-    this.#track(waiting.then(() => this.#recordNow(session, name, finished)));
+    this.#track(waiting.then(() => this.#recordNow(session, name, kind)));
   }
 
   /** Keeps `work` as the settling promise until it ends; a failure puts the layer back. */
@@ -527,11 +528,16 @@ class GradientRuntime implements ToolRuntime {
    * document, so no other edit lands on pixels that are not in the history yet, and returns a
    * promise that records once the render is complete.
    */
-  #recordNow(
-    session: GradientSession,
-    name: MessageId,
-    finished: boolean,
-  ): Promise<void> | undefined {
+  #recordNow(session: GradientSession, name: MessageId, kind: StepKind): Promise<void> | undefined {
+    const now = this.#snapshot(session);
+    const step: ToolStep = {
+      tool: "gradient",
+      layer: layerIndex(session.document, session.layer),
+      kind,
+      session: session.key,
+      before: kind === "draw" ? undefined : kind === "finish" ? now : session.state,
+      after: kind === "finish" ? undefined : now,
+    };
     const unchanged =
       !session.shown &&
       session.render !== undefined &&
@@ -539,14 +545,14 @@ class GradientRuntime implements ToolRuntime {
       session.recordedKey === this.#renderKey(session);
     // The layer already shows what the last step recorded, so nothing needs rendering.
     if (unchanged && session.render !== undefined) {
-      this.#write(session, name, session.render, finished);
+      this.#write(session, name, session.render, step);
       return undefined;
     }
     const render = this.#renderFor(session);
     if (render === undefined) return undefined;
     render.renderer.flush();
     if (render.renderer.isComplete(render.generation)) {
-      this.#write(session, name, render, finished);
+      this.#write(session, name, render, step);
       return undefined;
     }
     const release = session.document.history.hold();
@@ -558,7 +564,7 @@ class GradientRuntime implements ToolRuntime {
     return render.renderer.whenComplete(render.generation).then(
       () => {
         finish();
-        this.#write(session, name, render, finished);
+        this.#write(session, name, render, step);
       },
       (cause: unknown) => {
         finish();
@@ -568,33 +574,31 @@ class GradientRuntime implements ToolRuntime {
   }
 
   /** Writes the landed render as one history item; the layer already shows it. */
-  #write(
-    session: GradientSession,
-    name: MessageId,
-    render: GradientRender,
-    finished: boolean,
-  ): void {
+  #write(session: GradientSession, name: MessageId, render: GradientRender, step: ToolStep): void {
     const { document, layer } = session;
     const { area } = render;
     const before = session.recorded ?? session.base;
-    document.recordLayerPixels(this.#host.translate(name), layer, area, before.tileAt);
+    recordStep(document, step, () =>
+      document.recordLayerPixels(this.#host.translate(name), layer, area, before.tileAt),
+    );
     session.recorded = new LayerSnapshot(layer.pixels);
     session.recordedKey = this.#renderKey(session);
     session.shown = false;
-    const settings = this.#host.settings();
-    const step: GradientStep = {
+    session.state = (step.after ?? step.before) as GradientSnapshot;
+    this.#options.edited();
+    if (session !== this.#session && session !== this.#draw) this.#dispose(session);
+  }
+
+  /** The gradient as a history item keeps it, with the current option values. */
+  #snapshot(session: GradientSession): GradientSnapshot {
+    return {
       start: session.start,
       end: session.end,
       primary: session.primary,
       secondary: session.secondary,
       reversed: session.reversed,
-      options: settings === null ? {} : snapshotSettings(settings, OPTION_PATHS),
-      finished,
+      options: this.#options.snapshot(this.#host.settings()),
     };
-    session.step = step;
-    const command = document.history.appliedCommands.at(-1);
-    if (command !== undefined) GRADIENT_RESULTS.remember(command, session, step);
-    if (session !== this.#session && session !== this.#draw) this.#dispose(session);
   }
 
   /** Puts back the layer state of the last recorded step, or of the drawing's start. */
@@ -729,54 +733,91 @@ class GradientRuntime implements ToolRuntime {
    * ends the session.
    */
   #live(): GradientSession | undefined {
-    const session = this.#session;
-    // A record still waiting for its render holds the history, so the session is its latest step.
-    if (session !== undefined && this.#settling !== undefined) return session;
-    const own = session?.document;
-    const document = own ?? this.#host.document();
-    const found = document === undefined ? undefined : GRADIENT_RESULTS.at(document, session);
-    if (found === undefined || found.step.finished) {
-      if (session === undefined) return undefined;
-      this.#end();
-      return own !== this.#host.document() ? this.#live() : undefined;
-    }
-    const { owner, step } = found;
-    if (this.#settling !== undefined) return undefined;
-    if (owner !== session || step !== owner.step) this.#adopt(owner, step);
-    return owner;
+    return this.#session;
+  }
+
+  pendingSession(): object | undefined {
+    return this.#session?.key;
   }
 
   /**
-   * Makes `session` the pending gradient as `step` left it. The layer already shows the step, so
-   * nothing is written or recorded; the next change renders it afresh.
+   * Takes up the gradient a history item kept, or lets go of the pending one (TL-FRAME-01). The
+   * layer already shows the gradient, so nothing is written or recorded; the next change renders
+   * it afresh. A gradient of another session renders over the layer as it was before that
+   * session's first item, read from the history.
    */
-  #adopt(session: GradientSession, step: GradientStep): void {
+  async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
     this.#frames.cancel();
     this.#colors.cancel();
+    const drag = this.#drag;
     this.#drag = undefined;
-    const previous = this.#session;
-    if (previous !== undefined && previous !== session) this.#dispose(previous);
-    this.#dispose(session);
-    session.start = step.start;
-    session.end = step.end;
-    session.primary = step.primary;
-    session.secondary = step.secondary;
-    session.reversed = step.reversed;
-    session.step = step;
-    this.#session = session;
+    if (drag !== undefined) drag.session.render?.renderer.cancel();
+    const draw = this.#draw;
+    this.#draw = undefined;
+    if (draw !== undefined) this.#dispose(draw);
+    const snapshot = state as GradientSnapshot | undefined;
     const settings = this.#host.settings();
-    if (settings !== null) {
-      this.#quiet = true;
-      try {
-        restoreSettings(settings, step.options);
-      } finally {
-        this.#quiet = false;
-      }
+    if (snapshot === undefined || context === undefined) {
+      if (context !== undefined) this.#options.leave(settings);
+      else this.#options.edited();
+      this.#end();
+      this.#refresh();
+      return;
     }
+    let session = this.#session;
+    const fromIdle = session === undefined;
+    if (
+      session === undefined ||
+      session.key !== context.session ||
+      session.layer !== context.layer ||
+      session.layer.pixels !== session.store
+    ) {
+      const { tiles } = await context.before();
+      if (session !== undefined) this.#dispose(session);
+      const { layer } = context;
+      session = {
+        document: context.document,
+        layer,
+        base: new LayerSnapshot(layer.pixels, tiles),
+        primary: snapshot.primary,
+        secondary: snapshot.secondary,
+        reversed: snapshot.reversed,
+        start: snapshot.start,
+        end: snapshot.end,
+        render: undefined,
+        recorded: undefined,
+        shown: false,
+        recordedKey: undefined,
+        held: false,
+        store: layer.pixels,
+        state: snapshot,
+        key: context.session,
+      };
+    }
+    this.#dispose(session);
+    session.start = snapshot.start;
+    session.end = snapshot.end;
+    session.primary = snapshot.primary;
+    session.secondary = snapshot.secondary;
+    session.reversed = snapshot.reversed;
+    session.state = snapshot;
+    this.#session = session;
+    this.#options.enter(settings, snapshot.options, fromIdle);
     session.recorded = new LayerSnapshot(session.layer.pixels);
     session.recordedKey = this.#renderKey(session);
     session.shown = false;
     this.#refresh();
+  }
+
+  /** Runs `action`, which writes settings, without taking the writes as option changes. */
+  #quietly(action: () => void): void {
+    const quiet = this.#quiet;
+    this.#quiet = true;
+    try {
+      action();
+    } finally {
+      this.#quiet = quiet;
+    }
   }
 
   #end(): void {

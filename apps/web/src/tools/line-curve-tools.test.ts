@@ -12,6 +12,7 @@ import { lineCurveHandles } from "./line-curve-handles";
 import { lineCurveToolRuntime } from "./line-curve-tools";
 import { NUDGE_MERGE_MS } from "./nudge-burst";
 import type { PaintHost } from "./paint-tools";
+import { bindToolHistory, soloSwitcher } from "./tool-history";
 
 beforeAll(async () => {
   const wasmPath = createRequire(import.meta.url).resolve("@openpaint/cpu/opaint_cpu_bg.wasm");
@@ -104,10 +105,12 @@ describe("Line / Curve (TL-LINE-01)", () => {
     return doc.history.entries.map((entry) => entry.name);
   }
 
+  let host: PaintHost;
+
   beforeEach(() => {
     doc = Document.createBlank({ width: 40, height: 40 });
     settings = new FakeSettings();
-    const host: PaintHost = {
+    host = {
       settings: () => settings as unknown as ColorSettings,
       document: () => doc,
       translate: (id, values) => (values === undefined ? id : `${id}:${JSON.stringify(values)}`),
@@ -117,6 +120,7 @@ describe("Line / Curve (TL-LINE-01)", () => {
     };
     runtime = lineCurveToolRuntime(host);
     runtime.activate();
+    bindToolHistory(doc, soloSwitcher("lineCurve", runtime));
     status.mockClear();
     notify.mockClear();
     report.mockClear();
@@ -456,9 +460,12 @@ describe("Line / Curve (TL-LINE-01)", () => {
       expect(doc.history.undoName).toBe("history.changeBrushSize");
       expect(doc.history.entries.length).toBe(entries);
 
+      // Left without an edit: redo finishes it again and the user's options come back.
       await doc.history.redo();
       expect(runtime.hasPending?.()).toBe(false);
       expect(lineCurveHandles.state).toEqual({});
+      expect(settings.get("tools.brush.size")).toBe(1);
+      expect(settings.get("tools.shapes.curveType")).toBe("Straight");
     });
 
     it("keeps editing after the undo: an endpoint drag records Adjust", async () => {
@@ -487,14 +494,20 @@ describe("Line / Curve (TL-LINE-01)", () => {
       expect(pixel(10, 10)).toEqual(WHITE);
     });
 
-    it("comes back pending when the tool is active again after a switch", async () => {
+    it("is taken up by a new runtime (after a tool switch) over the layer before it", async () => {
       drawAndFinish();
       runtime.deactivate();
-      await doc.history.undo();
-      expect(lineCurveHandles.state).toEqual({});
+      runtime = lineCurveToolRuntime(host);
       runtime.activate();
+      bindToolHistory(doc, soloSwitcher("lineCurve", runtime));
+      await doc.history.undo();
       expect(runtime.hasPending?.()).toBe(true);
       expect(lineCurveHandles.state.end).toEqual({ x: 25.5, y: 10.5 });
+      drag([5.5, 10.5], [5.5, 30.5]);
+      expect(doc.history.undoName).toBe("history.adjustLineCurve");
+      // The old start's pixels are gone: the step drew over the layer before the line.
+      expect(pixel(5, 10)).toEqual(WHITE);
+      expect(pixel(5, 29)).toEqual(GREEN);
     });
   });
 });

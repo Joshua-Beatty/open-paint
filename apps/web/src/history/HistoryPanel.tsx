@@ -8,6 +8,7 @@ import type { BuiltInCommandId } from "../commands/catalog";
 import type { ShortcutController } from "../commands/shortcuts";
 import { PHOSPHOR } from "../icons/icon-set";
 import { useDocumentRevision } from "../layers/use-document-revision";
+import { settlePendingEdits } from "./history-commands";
 import { currentStep, type HistoryIconKind, historyIconFor, historyIcons } from "./history-list";
 
 /** The icon of a step, drawn in the panel's current color (UI-FTW-04). */
@@ -127,7 +128,10 @@ export function HistoryPanel({ doc, commands }: HistoryPanelProps) {
                 <Button
                   className="app-history-item"
                   isDisabled={busy}
-                  onPress={() => void history?.seek(index + 1)}
+                  onPress={() => {
+                    settlePendingEdits();
+                    void history?.seek(index + 1);
+                  }}
                 >
                   <HistoryIcon kind={historyIconFor(entry.name, icons)} />
                   <span className="app-history-name">{entry.name}</span>

@@ -20,6 +20,7 @@ import {
 } from "./gradient-tiles";
 import { constrainEnd, gradientMeasure, gradientToolRuntime } from "./gradient-tools";
 import type { PaintHost } from "./paint-tools";
+import { bindToolHistory, soloSwitcher } from "./tool-history";
 
 beforeAll(async () => {
   const wasmPath = createRequire(import.meta.url).resolve("@openpaint/cpu/opaint_cpu_bg.wasm");
@@ -153,13 +154,15 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
     runtime.pointer(event("up", x1, y1, button, modifiers));
   }
 
+  let host: PaintHost;
+
   beforeEach(() => {
     doc = Document.createBlank({ width: 32, height: 32 });
     paint(0, 0, 16, 32, RED);
     paint(16, 0, 16, 32, BLUE);
     settings = new FakeSettings();
     status = vi.fn();
-    const host: PaintHost = {
+    host = {
       settings: () => settings as unknown as ColorSettings,
       document: () => doc,
       translate: (messageId, values) =>
@@ -170,6 +173,7 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
     };
     runtime = gradientToolRuntime(host);
     runtime.activate();
+    bindToolHistory(doc, soloSwitcher("gradient", runtime));
     notify.mockClear();
     report.mockClear();
   });
@@ -411,6 +415,29 @@ describe("Gradient tool (TL-GRAD-01, TL-FRAME-01, TL-FRAME-02)", () => {
     await doc.history.undo();
     expect(runtime.hasPending?.()).toBe(false);
     expect(pixel(0, 16)).toEqual(RED);
+  });
+
+  it("a new runtime (after a tool switch) takes up a finished gradient over the layer before it", async () => {
+    drag(2, 16, 30, 16);
+    runtime.commit?.();
+    runtime.deactivate();
+    runtime = gradientToolRuntime(host);
+    runtime.activate();
+    bindToolHistory(doc, soloSwitcher("gradient", runtime));
+    await doc.history.undo();
+    expect(runtime.hasPending?.()).toBe(true);
+    expect(gradientHandles.state.end).toEqual({ x: 30, y: 16 });
+    runtime.pointer(event("down", 30, 16));
+    runtime.pointer(event("move", 15, 16));
+    runtime.pointer(event("up", 15, 16));
+    expect(doc.history.undoName).toBe("history.editGradient");
+    expect(pixel(29, 16)).toEqual(YELLOW);
+    expect(pixel(0, 16)).toEqual(GREEN);
+    await doc.history.undo();
+    await doc.history.undo();
+    expect(runtime.hasPending?.()).toBe(false);
+    expect(pixel(0, 16)).toEqual(RED);
+    expect(pixel(31, 16)).toEqual(BLUE);
   });
 
   it("a cancelled draw restores the layer and records nothing", () => {

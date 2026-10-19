@@ -14,6 +14,7 @@ import { NUDGE_MERGE_MS, settleNudges } from "./nudge-burst";
 import type { PaintHost } from "./paint-tools";
 import { shapeHandles } from "./shape-handles";
 import { shapeToolRuntime } from "./shape-tools";
+import { bindToolHistory, soloSwitcher } from "./tool-history";
 import { transformFrame } from "./transform-frame";
 
 beforeAll(async () => {
@@ -120,10 +121,12 @@ describe("Shapes (TL-SHAPE-01)", () => {
     for (const [path, value] of Object.entries(overrides)) settings.set(path, value);
   }
 
+  let host: PaintHost;
+
   beforeEach(() => {
     doc = Document.createBlank({ width: 60, height: 60 });
     settings = new FakeSettings();
-    const host: PaintHost = {
+    host = {
       settings: () => settings as unknown as ColorSettings,
       document: () => doc,
       translate: (id, values) => (values === undefined ? id : `${id}:${JSON.stringify(values)}`),
@@ -133,6 +136,7 @@ describe("Shapes (TL-SHAPE-01)", () => {
     };
     runtime = shapeToolRuntime(host);
     runtime.activate();
+    bindToolHistory(doc, soloSwitcher("shapes", runtime));
     status.mockClear();
     notify.mockClear();
     report.mockClear();
@@ -637,12 +641,30 @@ describe("Shapes (TL-SHAPE-01)", () => {
       expect(doc.history.entries.length).toBe(entries);
       expect(status.mock.lastCall?.[0]).toContain("tool.status.shapeFinish");
 
+      // Left without an edit: redo finishes it again and the user's own options come back.
       await doc.history.redo();
       expect(runtime.hasPending?.()).toBe(false);
       expect(transformFrame.state).toBeUndefined();
+      expect(settings.get("tools.brush.size")).toBe(9);
+      expect(settings.get("tools.shapes.drawType")).toBe("Interior");
       expect([
         ...(doc.activeLayer?.pixels.readRegion(doc.activeLayer.pixels.bounds).data ?? []),
       ]).toEqual(finished);
+    });
+
+    it("keeps the result's options once it is edited after the undo", async () => {
+      drawAndFinish();
+      settings.set("tools.brush.size", 9);
+      await doc.history.undo();
+      expect(settings.get("tools.brush.size")).toBe(4);
+      drag([5, 5], [3, 3]);
+      runtime.commit?.();
+      expect(settings.get("tools.brush.size")).toBe(4);
+      // A trip back past the drawing and forward again leaves the toolbar as it was.
+      while (doc.history.canUndo) await doc.history.undo();
+      expect(settings.get("tools.brush.size")).toBe(4);
+      while (doc.history.canRedo) await doc.history.redo();
+      expect(settings.get("tools.brush.size")).toBe(4);
     });
 
     it("keeps editing after the undo: a corner drag records Adjust and redraws in the step's colour", async () => {
@@ -681,17 +703,23 @@ describe("Shapes (TL-SHAPE-01)", () => {
       expect(frameBox()).toEqual({ left: 5, top: 5, right: 25, bottom: 15 });
     });
 
-    it("comes back pending when the tool is active again after a switch", async () => {
+    it("is taken up by a new runtime (after a tool switch) with the layer before it read from history", async () => {
       drawAndFinish();
       runtime.deactivate();
-      await doc.history.undo();
-      expect(transformFrame.state).toBeUndefined();
+      runtime = shapeToolRuntime(host);
       runtime.activate();
+      bindToolHistory(doc, soloSwitcher("shapes", runtime));
+      await doc.history.undo();
       expect(runtime.hasPending?.()).toBe(true);
       expect(frameBox()).toEqual({ left: 5, top: 5, right: 35, bottom: 25 });
+      drag([12, 12], [22, 22]);
+      expect(doc.history.undoName).toContain("history.adjustShape");
+      // The shape moved by (10, 10): its old left edge shows the paper again.
+      expect(pixel(5, 10)).toEqual(PAPER);
+      expect(pixel(15, 20)).toEqual(RED);
     });
 
-    it("undoes as plain pixels when its layer is no longer active", async () => {
+    it("makes its layer active again before it is taken up", async () => {
       const bottom = doc.activeLayer;
       if (bottom === undefined) throw new Error("no active layer");
       const top = doc.addLayer();
@@ -699,20 +727,41 @@ describe("Shapes (TL-SHAPE-01)", () => {
       drawAndFinish();
       doc.setActiveLayer(top);
       await doc.history.undo();
-      expect(runtime.hasPending?.()).toBe(false);
-      expect(transformFrame.state).toBeUndefined();
+      expect(doc.activeLayer).toBe(bottom);
+      expect(runtime.hasPending?.()).toBe(true);
       expect(bottom.pixels.getPixel(5, 10)).toEqual(RED);
+      await doc.history.redo();
+      expect(runtime.hasPending?.()).toBe(false);
+      expect(doc.activeLayer).toBe(bottom);
     });
 
-    it("undoes as plain pixels when its layer's pixels were replaced", async () => {
+    it("is taken up again after a later resize is undone, on the layer's restored pixels", async () => {
       drawAndFinish();
       expect(doc.resize({ width: 30, height: 30 }, { filter: "nearest", linearLight: false })).toBe(
         true,
       );
       await doc.history.undo();
       await doc.history.undo();
-      expect(runtime.hasPending?.()).toBe(false);
+      expect(runtime.hasPending?.()).toBe(true);
       expect(report).not.toHaveBeenCalled();
+      drag([12, 12], [22, 12]);
+      expect(pixel(15, 10)).toEqual(RED);
+      expect(pixel(5, 10)).toEqual(PAPER);
+    });
+
+    it("re-enters results far back in a long history, with no limit", async () => {
+      for (let i = 0; i < 8; i++) {
+        drag([2 + i, 2], [30 + i, 40]);
+        runtime.commit?.();
+      }
+      // Back through every Finish and Draw to the first shape's Finish.
+      for (let i = 0; i < 7 * 2 + 1; i++) await doc.history.undo();
+      expect(runtime.hasPending?.()).toBe(true);
+      expect(frameBox()).toEqual({ left: 2, top: 2, right: 30, bottom: 40 });
+      drag([16, 12], [16, 22]);
+      expect(frameBox()).toEqual({ left: 2, top: 12, right: 30, bottom: 50 });
+      expect(pixel(2, 5)).toEqual(PAPER);
+      expect(pixel(2, 45)).toEqual(GREEN);
     });
   });
 

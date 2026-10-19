@@ -32,6 +32,7 @@ import {
   shapeRings,
   strokeShapes,
 } from "@openpaint/tools";
+import { PRIMARY_COLOR_PATH, SECONDARY_COLOR_PATH } from "../colors/use-colors";
 import { ColorEdits, isColorChange, paintColors, sameColor } from "./color-edits";
 import { coverageParts } from "./coverage-cells";
 import { CROSSHAIR_CURSOR, GRAB_CURSOR, GRABBING_CURSOR, nearHandle, viewScaleOf } from "./cursors";
@@ -40,8 +41,7 @@ import { type CoveragePart, type LayerPatches, renderCoverage, SessionPixels } f
 import { NudgeBurst, nudgeOffset } from "./nudge-burst";
 import { blendValue, hatchValue } from "./paint-stroke";
 import type { PaintHost } from "./paint-tools";
-import { HistoryFollower, PendingResults, type PendingStep } from "./pending-results";
-import { restoreSettings, type SettingSnapshot, snapshotSettings } from "./pending-steps";
+import type { SettingSnapshot } from "./pending-steps";
 import { drawableShapeOf, drawableShapeOrDefault, SHAPE_SETTING_PATH } from "./shape-catalog";
 import { type ShapeHandles, shapeHandles } from "./shape-handles";
 import {
@@ -54,6 +54,13 @@ import {
   type ShapePlacement,
 } from "./shape-transform";
 import { reportToolFailure } from "./tool-failure";
+import {
+  layerIndex,
+  PendingOptions,
+  recordStep,
+  type StepContext,
+  type SteppedRuntime,
+} from "./tool-history";
 import {
   type FrameGesture,
   type FrameHit,
@@ -86,8 +93,13 @@ const OPTION_HISTORY_NAMES: Readonly<Record<string, MessageId>> = {
   "tools.selection.renderingQuality": "history.changeSelectionQuality",
 };
 
-/** The settings a shape step depends on, which undo and redo write back. */
-const OPTION_PATHS = [...Object.keys(OPTION_HISTORY_NAMES), SHAPE_SETTING_PATH];
+/** The settings a shape step depends on, which undo and redo write back, colors included. */
+const OPTION_PATHS = [
+  ...Object.keys(OPTION_HISTORY_NAMES),
+  SHAPE_SETTING_PATH,
+  PRIMARY_COLOR_PATH,
+  SECONDARY_COLOR_PATH,
+];
 
 /** The geometry a drag changes: the placement, the corner radius and the callout tail. */
 interface ShapeState extends ShapePlacement {
@@ -95,8 +107,12 @@ interface ShapeState extends ShapePlacement {
   readonly tail: LinePoint;
 }
 
-/** A pending shape after one of its steps, which undo and redo give back to it (TL-FRAME-01). */
-interface ShapeStep extends ShapeState, PendingStep {
+/**
+ * A pending shape as one of its history items keeps it (TL-FRAME-01): everything needed to take
+ * it up again and draw it as it was, its options included.
+ */
+interface ShapeSnapshot extends ShapeState {
+  readonly button: number;
   readonly shape: ShapeDescriptor;
   readonly color: ColorRgba8;
   readonly background: ColorRgba8;
@@ -129,19 +145,11 @@ interface ShapeSession {
   tail: LinePoint;
   /** Whether a handle has been dragged since the shape was drawn. */
   touched: boolean;
-  /** The step the history stands at, undefined until the drawing is recorded. */
-  step: ShapeStep | undefined;
+  /** The shape as its latest history item keeps it, undefined until the drawing is recorded. */
+  state: ShapeSnapshot | undefined;
+  /** Names the shape's history items (`ToolStep.session`). */
+  readonly key: object;
 }
-
-/**
- * The shapes' steps, kept with their history items: an undo or redo that lands on one makes that
- * shape pending again, as it was after the step (owner request). Only on its own layer while that
- * layer is active, since switching layers finishes a shape.
- */
-const SHAPE_RESULTS = new PendingResults<ShapeSession, ShapeStep>(
-  "shapes",
-  (session) => session.pixels.valid && session.document.activeLayer === session.layer,
-);
 
 /**
  * What a press on a pending shape picks up: the corner size or the callout tail handle, or a part
@@ -304,8 +312,9 @@ function ringsRect(rings: readonly (readonly LinePoint[])[]): Rect {
  * recompute it. Enter, Esc, the Finish button, a tool switch or a click elsewhere commit it as
  * "Finish". The draw mode decides whether the outline, the interior or both are filled.
  */
-class ShapeRuntime implements ToolRuntime {
+class ShapeRuntime implements SteppedRuntime {
   readonly #host: PaintHost;
+  /** The pending shape. */
   #session: ShapeSession | undefined;
   #draw: ShapeDraw | undefined;
   #drag: ShapeDrag | undefined;
@@ -323,15 +332,13 @@ class ShapeRuntime implements ToolRuntime {
   readonly #colors: ColorEdits;
   /** Arrow nudges of the pending shape, recorded as one "Adjust" step per burst (TL-MOVE-01). */
   readonly #nudges: NudgeBurst;
-  /** Follows the open image's history, so an undo or redo can make a shape pending again. */
-  readonly #follow: HistoryFollower;
+  /** The option values of the pending shape on the options bar. */
+  readonly #options: PendingOptions;
 
   constructor(host: PaintHost) {
     this.#host = host;
     this.#frames = new FrameCoalescer(host.scheduleFrame);
-    this.#follow = new HistoryFollower(host, () => {
-      if (this.#draw === undefined && this.#drag === undefined) this.#live();
-    });
+    this.#options = new PendingOptions(OPTION_PATHS, (action) => this.#quietly(action));
     this.#nudges = new NudgeBurst(() => {
       const session = this.#idle();
       if (session === undefined) return;
@@ -384,13 +391,11 @@ class ShapeRuntime implements ToolRuntime {
 
   activate(): void {
     this.#unsubscribe = this.#host.settings()?.onChange((change) => this.#optionChanged(change));
-    this.#follow.start();
   }
 
   deactivate(): void {
     this.#settle();
     this.cancel();
-    this.#follow.stop();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
     this.#end();
@@ -444,9 +449,72 @@ class ShapeRuntime implements ToolRuntime {
     this.#settle();
     const session = this.#live();
     if (session !== undefined) {
-      this.#record(session, "history.finishShape", true);
+      this.#record(session, "history.finishShape", "finish");
       this.#end();
     }
+    this.#refresh();
+  }
+
+  pendingSession(): object | undefined {
+    return this.#session?.key;
+  }
+
+  /**
+   * Takes up the shape a history item kept, or lets go of the pending one (TL-FRAME-01). The layer
+   * already shows the shape, so nothing is drawn or recorded. A shape of another session is drawn
+   * over the layer as it was before that session's first item, read from the history.
+   */
+  async restoreStep(state: unknown, context: StepContext | undefined): Promise<void> {
+    this.#frames.cancel();
+    this.#nudges.cancel();
+    this.#colors.cancel();
+    this.#drag = undefined;
+    this.#draw = undefined;
+    const snapshot = state as ShapeSnapshot | undefined;
+    const settings = this.#host.settings();
+    if (snapshot === undefined || context === undefined) {
+      if (context !== undefined) this.#options.leave(settings);
+      else this.#options.edited();
+      this.#end();
+      this.#refresh();
+      return;
+    }
+    let session = this.#session;
+    const fromIdle = session === undefined;
+    if (
+      session === undefined ||
+      session.key !== context.session ||
+      session.layer !== context.layer ||
+      !session.pixels.valid
+    ) {
+      const { tiles } = await context.before();
+      session = {
+        document: context.document,
+        layer: context.layer,
+        pixels: new SessionPixels(context.document, context.layer, tiles),
+        button: snapshot.button,
+        color: snapshot.color,
+        background: snapshot.background,
+        shape: snapshot.shape,
+        box: snapshot.box,
+        angle: snapshot.angle,
+        pivot: snapshot.pivot,
+        radius: snapshot.radius,
+        tail: snapshot.tail,
+        touched: snapshot.touched,
+        state: snapshot,
+        key: context.session,
+      };
+    }
+    restoreState(session, snapshot);
+    session.shape = snapshot.shape;
+    session.color = snapshot.color;
+    session.background = snapshot.background;
+    session.touched = snapshot.touched;
+    session.state = snapshot;
+    this.#session = session;
+    this.#options.enter(settings, snapshot.options, fromIdle);
+    session.pixels.adopt(this.#render(session));
     this.#refresh();
   }
 
@@ -515,7 +583,8 @@ class ShapeRuntime implements ToolRuntime {
       radius: numberOf(settings.get("tools.shapes.radius"), 10),
       tail: { ...TAIL_DEFAULT },
       touched: false,
-      step: undefined,
+      state: undefined,
+      key: {},
     };
     this.#draw = { session, anchor };
     this.#refresh();
@@ -631,8 +700,8 @@ class ShapeRuntime implements ToolRuntime {
         this.#revert(session);
       } else {
         session.touched = true;
-        this.#record(session, historyNameOf(drag));
         if (drag.grab.kind === "radius") this.#persistRadius(session.radius);
+        this.#record(session, historyNameOf(drag));
       }
       this.#drag = undefined;
       this.#refresh();
@@ -645,7 +714,7 @@ class ShapeRuntime implements ToolRuntime {
       session.box = drawnBox(draw.anchor, { x: event.x, y: event.y }, event, session.shape);
     }
     if (dragged && !isDegenerateBox(session.box)) {
-      if (this.#record(session, "history.drawShape")) this.#session = session;
+      if (this.#record(session, "history.drawShape", "draw")) this.#session = session;
     }
     if (this.#session !== session) this.#revert(session);
     this.#draw = undefined;
@@ -664,22 +733,42 @@ class ShapeRuntime implements ToolRuntime {
    * Writes the session's shape as one history item named `name`. The layer is first put back to the
    * last recorded step, so the item's before-state is right, even after previews.
    */
-  #record(session: ShapeSession, name: MessageId, finished = false): boolean {
-    if (!session.pixels.record(this.#named(session, name), this.#render(session))) return false;
-    const command = session.document.history.appliedCommands.at(-1);
-    const settings = this.#host.settings();
-    const step: ShapeStep = {
+  #record(
+    session: ShapeSession,
+    name: MessageId,
+    kind: "draw" | "edit" | "finish" = "edit",
+  ): boolean {
+    const now = this.#snapshot(session);
+    const before = kind === "draw" ? undefined : kind === "finish" ? now : session.state;
+    const after = kind === "finish" ? undefined : now;
+    const step = {
+      tool: "shapes",
+      layer: layerIndex(session.document, session.layer),
+      kind,
+      session: session.key,
+      before,
+      after,
+    };
+    const recorded = recordStep(session.document, step, () =>
+      session.pixels.record(this.#named(session, name), this.#render(session)),
+    );
+    if (!recorded) return false;
+    session.state = now;
+    this.#options.edited();
+    return true;
+  }
+
+  /** The shape as a history item keeps it, with the current option values. */
+  #snapshot(session: ShapeSession): ShapeSnapshot {
+    return {
       ...stateOf(session),
+      button: session.button,
       shape: session.shape,
       color: session.color,
       background: session.background,
       touched: session.touched,
-      options: settings === null ? {} : snapshotSettings(settings, OPTION_PATHS),
-      finished,
+      options: this.#options.snapshot(this.#host.settings()),
     };
-    session.step = step;
-    if (command !== undefined) SHAPE_RESULTS.remember(command, session, step);
-    return true;
   }
 
   /** Puts the layer back to the last recorded step over every pixel the session wrote. */
@@ -772,53 +861,20 @@ class ShapeRuntime implements ToolRuntime {
     ).patches;
   }
 
-  /**
-   * The pending session, if the document's latest history item is one of a shape's steps that
-   * Finish did not record. Undo and redo that land on such a step make that shape pending again,
-   * as it was after the step, its options included (owner request); any other latest item ends the
-   * session.
-   */
+  /** The pending session. */
   #live(): ShapeSession | undefined {
-    const own = this.#session?.document;
-    const document = own ?? this.#host.document();
-    const found = document === undefined ? undefined : SHAPE_RESULTS.at(document, this.#session);
-    if (found === undefined || found.step.finished) {
-      if (this.#session === undefined) return undefined;
-      this.#end();
-      return own !== this.#host.document() ? this.#live() : undefined;
-    }
-    const { owner, step } = found;
-    if (owner !== this.#session || step !== owner.step) this.#adopt(owner, step);
-    return owner;
+    return this.#session;
   }
 
-  /**
-   * Makes `session` the pending shape as `step` left it. The layer already shows the step, so
-   * nothing is written or recorded; the step is rendered again only to know its pixels.
-   */
-  #adopt(session: ShapeSession, step: ShapeStep): void {
-    this.#frames.cancel();
-    this.#nudges.cancel();
-    this.#colors.cancel();
-    this.#drag = undefined;
-    restoreState(session, step);
-    session.shape = step.shape;
-    session.color = step.color;
-    session.background = step.background;
-    session.touched = step.touched;
-    session.step = step;
-    this.#session = session;
-    const settings = this.#host.settings();
-    if (settings !== null) {
-      this.#quiet = true;
-      try {
-        restoreSettings(settings, step.options);
-      } finally {
-        this.#quiet = false;
-      }
+  /** Runs `action`, which writes settings, without taking the writes as option changes. */
+  #quietly(action: () => void): void {
+    const quiet = this.#quiet;
+    this.#quiet = true;
+    try {
+      action();
+    } finally {
+      this.#quiet = quiet;
     }
-    session.pixels.adopt(this.#render(session));
-    this.#refresh();
   }
 
   #end(): void {
@@ -880,12 +936,7 @@ class ShapeRuntime implements ToolRuntime {
   #persistRadius(radius: number): void {
     const settings = this.#host.settings();
     if (settings === null) return;
-    this.#quiet = true;
-    try {
-      settings.set("tools.shapes.radius", radius);
-    } finally {
-      this.#quiet = false;
-    }
+    this.#quietly(() => settings.set("tools.shapes.radius", radius));
   }
 
   /**

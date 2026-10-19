@@ -181,13 +181,13 @@ import { engineStrokeChannel } from "./tools/engine-strokes";
 import { finishOnLayerSwitch } from "./tools/finish-on-switch";
 import { FloatingHandoff, movementToolRuntime } from "./tools/move-tools";
 import { builtinToolRuntime, type PaintHost } from "./tools/paint-tools";
-import { followPendingResults } from "./tools/pending-results";
 import { TOOL_REGISTRY } from "./tools/roster";
 import { selectionToolRuntime } from "./tools/select-tools";
 import { ToolOptionsStrip } from "./tools/ToolOptionsStrip";
 import { ToolsPanel } from "./tools/ToolsPanel";
 import { registerToolOptionCommands } from "./tools/tool-commands";
 import { ACTIVE_TOOL_PATH, resolveActiveTool, ToolController } from "./tools/tool-controller";
+import { bindToolHistory } from "./tools/tool-history";
 import { listenForToolKeys } from "./tools/tool-keys";
 import { createToolPointerSink } from "./tools/tool-pointer";
 import { type ViewHost, viewToolRuntime } from "./tools/view-tools";
@@ -864,6 +864,7 @@ export function App({
           return () => cancelAnimationFrame(id);
         },
         log: (message, cause) => void errors.report(cause, { context: message }),
+        beforeStart: () => toolController.finishBeforeChange(),
         colors: () => ({
           primary: toUnitColor(readColor(PRIMARY_COLOR_PATH, DEFAULT_PRIMARY)),
           secondary: toUnitColor(readColor(SECONDARY_COLOR_PATH, DEFAULT_SECONDARY)),
@@ -881,6 +882,7 @@ export function App({
       t,
       errors,
       readColor,
+      toolController,
     ],
   );
   useEffect(() => {
@@ -932,16 +934,21 @@ export function App({
   useEffect(() => {
     if (activeDocument === undefined) return undefined;
     const stop = finishOnLayerSwitch(activeDocument, () => toolController.finishPending());
-    // An undo or redo that makes a result pending again switches to its tool.
-    const stopFollowing = followPendingResults(activeDocument, toolController);
+    // Undo and redo take tools and layers back to their results, which stay editable (TL-FRAME-01).
+    const stopFollowing = bindToolHistory(activeDocument, toolController, (cause) => {
+      void errors.report(cause, { context: "tool history" });
+    });
+    // A command finishes a pending result before it changes the image.
+    const stopGuard = activeDocument.setChangeGuard(() => toolController.finishBeforeChange());
     return () => {
       stop();
       stopFollowing();
+      stopGuard();
       if (images.state.items.some((item) => item.value.document === activeDocument)) {
         toolController.finishPending();
       }
     };
-  }, [activeDocument, images, toolController]);
+  }, [activeDocument, images, toolController, errors]);
   // The active tool follows the newly active image, such as the move tools' handles.
   useEffect(() => {
     for (const listener of [...documentSwitchListeners]) listener(activeDocument);

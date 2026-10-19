@@ -93,10 +93,15 @@ export class TileRegion {
 export class LayerSnapshot {
   readonly #store: TiledPixelStore;
   /** The copied tiles by key, `null` for a tile that was transparent. */
-  readonly #tiles = new Map<number, Surface | null>();
+  readonly #tiles: Map<number, Surface | null>;
 
-  constructor(store: TiledPixelStore) {
+  /**
+   * `tiles` are tiles the snapshot has already, keyed `ty * tilesX + tx`, such as the tiles from
+   * before a result's history items (`Document.stateBefore`): the store has changed there.
+   */
+  constructor(store: TiledPixelStore, tiles?: ReadonlyMap<number, Surface | null>) {
     this.#store = store;
+    this.#tiles = new Map(tiles);
   }
 
   get bounds(): Rect {
@@ -372,11 +377,15 @@ export class SessionPixels {
   #committed: LayerPatches = [];
   #region = new TileRegion();
 
-  constructor(document: Document, layer: Layer) {
+  /**
+   * `baseTiles` are the tiles where the layer no longer shows the base, when the session is taken up
+   * again from its history items (`LayerSnapshot`).
+   */
+  constructor(document: Document, layer: Layer, baseTiles?: ReadonlyMap<number, Surface | null>) {
     this.document = document;
     this.layer = layer;
     this.#store = layer.pixels;
-    this.base = new LayerSnapshot(layer.pixels);
+    this.base = new LayerSnapshot(layer.pixels, baseTiles);
   }
 
   /** The output of the last recorded step, empty before the first. */

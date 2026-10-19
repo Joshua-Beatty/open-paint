@@ -16,6 +16,15 @@ export function historyRunning(): Promise<void> | undefined {
   return running;
 }
 
+/**
+ * Records the nudges and color changes of a pending tool result that are still merging, so an
+ * undo or redo steps back from what the canvas shows.
+ */
+export function settlePendingEdits(): void {
+  settleNudges();
+  settleColorEdits();
+}
+
 /** Runs `step` after any Undo or Redo before it, and tracks it until it lands. */
 function track(step: () => Promise<unknown> | undefined): void {
   const previous = running ?? Promise.resolve();
@@ -46,16 +55,14 @@ export function registerHistoryCommands(
       // A stroke still being read back from the engine, or a nudge or color change of a pending
       // tool result still merging, lands first, so Undo takes it back.
       run: () => {
-        settleNudges();
-        settleColorEdits();
+        settlePendingEdits();
         track(() => document()?.history.undo());
       },
       enabled: () => document()?.history.canUndo === true,
     }),
     controller.register("edit.redo", {
       run: () => {
-        settleNudges();
-        settleColorEdits();
+        settlePendingEdits();
         track(() => document()?.history.redo());
       },
       enabled: () => document()?.history.canRedo === true,

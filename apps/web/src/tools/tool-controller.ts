@@ -2,6 +2,7 @@ import type { ToolDescriptor, ToolRegistry, ToolRuntime } from "@openpaint/exten
 import { findDefinition, type SettingsStore } from "@openpaint/storage";
 import { cycleChoice, resolveHotkey, stepValue } from "@openpaint/tools";
 import { SHAPE_SETTING_PATH } from "./shape-catalog";
+import { isStepped } from "./tool-history";
 
 /** The setting that holds the active tool (TL-ROSTER-02, 08). */
 export const ACTIVE_TOOL_PATH = "tools.activeTool";
@@ -198,6 +199,21 @@ export class ToolController {
   finishPending(): void {
     const runtime = this.#runtime;
     if (runtime?.hasPending?.()) runtime.commit?.();
+  }
+
+  /**
+   * Finishes a pending result of an editable tool whose results live in their history items, before
+   * a command changes the image, so the command never lands on top of a pending result (TL-FRAME-01).
+   * Other tools, such as Text, keep their result.
+   */
+  finishBeforeChange(): void {
+    const runtime = this.#runtime;
+    if (isStepped(runtime) && runtime.hasPending?.()) runtime.commit?.();
+  }
+
+  /** The active tool's runtime if it exists, without creating one. */
+  current(): ToolRuntime | undefined {
+    return this.#runtimeTool === this.active.id ? this.#runtime : undefined;
   }
 
   /**
