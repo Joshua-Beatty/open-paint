@@ -1,8 +1,18 @@
 import type { HistoryEntry } from "@openpaint/document";
 import type { MessageId, Translate } from "@openpaint/i18n";
 
-/** The icon drawn beside a History step (UI-FTW-04). */
-export type HistoryIconKind = "document" | "layer" | "image" | "selection" | "pixels" | "generic";
+/**
+ * The icon drawn beside a History step (UI-FTW-04): a general kind, or the icon of the tool that made
+ * the step (`tool.<id>`, as in the Tools panel), owner request.
+ */
+export type HistoryIconKind =
+  | "document"
+  | "layer"
+  | "image"
+  | "selection"
+  | "pixels"
+  | "generic"
+  | `tool.${string}`;
 
 /** The icon of each fixed history name (DOC-HIS-03). Names with arguments use the layer prefix. */
 const ICON_KEYS: readonly (readonly [MessageId, HistoryIconKind])[] = [
@@ -35,24 +45,24 @@ const ICON_KEYS: readonly (readonly [MessageId, HistoryIconKind])[] = [
   ["history.deselect", "selection"],
   ["history.invertSelection", "selection"],
   ["history.editSelection", "selection"],
-  ["history.rectangleSelect", "selection"],
-  ["history.ellipseSelect", "selection"],
-  ["history.lassoSelect", "selection"],
-  ["history.magicWand", "selection"],
-  ["history.finishMagicWand", "selection"],
-  ["history.moveOrigin", "selection"],
-  ["history.moveSelection", "selection"],
-  ["history.resizeSelection", "selection"],
-  ["history.rotateSelection", "selection"],
-  ["history.finishSelection", "selection"],
-  ["history.movePixels", "pixels"],
-  ["history.resizePixels", "pixels"],
-  ["history.rotatePixels", "pixels"],
+  ["history.rectangleSelect", "tool.rectangleSelect"],
+  ["history.ellipseSelect", "tool.ellipseSelect"],
+  ["history.lassoSelect", "tool.lassoSelect"],
+  ["history.magicWand", "tool.magicWand"],
+  ["history.finishMagicWand", "tool.magicWand"],
+  ["history.moveOrigin", "tool.magicWand"],
+  ["history.moveSelection", "tool.moveSelection"],
+  ["history.resizeSelection", "tool.moveSelection"],
+  ["history.rotateSelection", "tool.moveSelection"],
+  ["history.finishSelection", "tool.moveSelection"],
+  ["history.movePixels", "tool.moveSelectedPixels"],
+  ["history.resizePixels", "tool.moveSelectedPixels"],
+  ["history.rotatePixels", "tool.moveSelectedPixels"],
   ["history.moveRotationAnchor", "pixels"],
-  ["history.finishPixels", "pixels"],
-  ["history.changeGammaMode", "pixels"],
-  ["history.paintBucket", "pixels"],
-  ["history.finishPaintBucket", "pixels"],
+  ["history.finishPixels", "tool.moveSelectedPixels"],
+  ["history.changeGammaMode", "tool.moveSelectedPixels"],
+  ["history.paintBucket", "tool.paintBucket"],
+  ["history.finishPaintBucket", "tool.paintBucket"],
   ["history.changeFill", "pixels"],
   ["history.changeBlendMode", "pixels"],
   ["history.toggleAntialiasing", "pixels"],
@@ -71,26 +81,35 @@ const ICON_KEYS: readonly (readonly [MessageId, HistoryIconKind])[] = [
   ["history.paste", "pixels"],
   ["history.eraseSelection", "pixels"],
   ["history.fillSelection", "pixels"],
-  ["history.paintbrush", "pixels"],
-  ["history.eraser", "pixels"],
-  ["history.pencil", "pixels"],
-  ["history.recolor", "pixels"],
-  ["history.cloneStamp", "pixels"],
-  ["history.drawLineCurve", "pixels"],
-  ["history.editLineCurve", "pixels"],
-  ["history.adjustLineCurve", "pixels"],
-  ["history.finishLineCurve", "pixels"],
-  ["history.changeCurveType", "pixels"],
+  ["history.paintbrush", "tool.paintbrush"],
+  ["history.eraser", "tool.eraser"],
+  ["history.pencil", "tool.pencil"],
+  ["history.recolor", "tool.recolor"],
+  ["history.cloneStamp", "tool.cloneStamp"],
+  ["history.drawLineCurve", "tool.lineCurve"],
+  ["history.editLineCurve", "tool.lineCurve"],
+  ["history.adjustLineCurve", "tool.lineCurve"],
+  ["history.finishLineCurve", "tool.lineCurve"],
+  ["history.changeCurveType", "tool.lineCurve"],
   ["history.changeBrushSize", "pixels"],
   ["history.changeDashStyle", "pixels"],
-  ["history.changeStartCap", "pixels"],
-  ["history.changeEndCap", "pixels"],
-  ["history.drawShape", "pixels"],
-  ["history.editShape", "pixels"],
-  ["history.adjustShape", "pixels"],
-  ["history.finishShape", "pixels"],
-  ["history.changeToShape", "pixels"],
-  ["history.changeDrawMode", "pixels"],
+  ["history.changeStartCap", "tool.lineCurve"],
+  ["history.changeEndCap", "tool.lineCurve"],
+  ["history.drawShape", "tool.shapes"],
+  ["history.editShape", "tool.shapes"],
+  ["history.adjustShape", "tool.shapes"],
+  ["history.finishShape", "tool.shapes"],
+  ["history.changeToShape", "tool.shapes"],
+  ["history.changeDrawMode", "tool.shapes"],
+  ["history.gradient", "tool.gradient"],
+  ["history.editGradient", "tool.gradient"],
+  ["history.moveGradient", "tool.gradient"],
+  ["history.finishGradient", "tool.gradient"],
+  ["history.reverseColors", "tool.gradient"],
+  ["history.changeGradientType", "tool.gradient"],
+  ["history.changeRepeatType", "tool.gradient"],
+  ["history.toggleAlphaMode", "tool.gradient"],
+  ["history.text", "tool.text"],
 ];
 
 /** A name with a shape placeholder, as the text before and after the name it stands for. */

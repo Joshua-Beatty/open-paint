@@ -8,11 +8,26 @@ import type { BuiltInCommandId } from "../commands/catalog";
 import type { ShortcutController } from "../commands/shortcuts";
 import { PHOSPHOR } from "../icons/icon-set";
 import { useDocumentRevision } from "../layers/use-document-revision";
+import { toolIconData } from "../tools/tool-icons";
 import { settlePendingEdits } from "./history-commands";
 import { currentStep, type HistoryIconKind, historyIconFor, historyIcons } from "./history-list";
 
+/**
+ * The icon data of a tool's step: the tool's own icon from the Tools panel, but only the triangle of
+ * the Shapes tool's square, circle and triangle (owner request).
+ */
+export function historyToolIcon(kind: `tool.${string}`): string | undefined {
+  return kind === "tool.shapes" ? PHOSPHOR.triangle : toolIconData(kind);
+}
+
 /** The icon of a step, drawn in the panel's current color (UI-FTW-04). */
 function HistoryIcon({ kind }: { readonly kind: HistoryIconKind }) {
+  if (kind.startsWith("tool.")) {
+    const icon = historyToolIcon(kind as `tool.${string}`);
+    if (icon !== undefined) {
+      return <Icon icon={icon} className="app-history-icon is-tool" />;
+    }
+  }
   return (
     <svg className="app-history-icon" viewBox="0 0 16 16" aria-hidden="true" data-kind={kind}>
       {kind === "document" && (
