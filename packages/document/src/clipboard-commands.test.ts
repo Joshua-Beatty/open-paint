@@ -159,7 +159,7 @@ describe("Paste (DOC-CLP-01e)", () => {
     doc.editLayerPixels("paint", layer, rect(0, 0, 8, 4), (pixels) => {
       pixels.writeRegion(red, 0, 0);
     });
-    doc.combineSelection([[0, 0, 4.5, 0, 4.5, 4, 0, 4]], "replace");
+    doc.combineSelection([[0, 0, 4, 0, 5, 4, 0, 4]], "replace");
     const copied = doc.copyPixels(false);
     if (copied === undefined) throw new Error("nothing copied");
     // The copied edge is half clear. Pasted over the opaque red it came from, it blends back to red.

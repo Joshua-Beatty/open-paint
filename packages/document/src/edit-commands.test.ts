@@ -219,7 +219,7 @@ describe("Crop to Selection (DOC-IMG-01)", () => {
       expect(pixel(layer, 0, 0).a).toBe(0);
       expect(pixel(layer, 19, 15).a).toBe(0);
       // The antialiased edge keeps partial alpha.
-      const edge = [...Array(10).keys()].map((x) => pixel(layer, x, 8).a);
+      const edge = [...Array(10).keys()].map((x) => pixel(layer, x, 2).a);
       expect(edge.some((a) => a > 0 && a < 255)).toBe(true);
     }
     expect(pixel(layerAt(doc, 0), 10, 8)).toEqual(WHITE);

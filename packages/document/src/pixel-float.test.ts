@@ -413,8 +413,8 @@ describe("placing moved pixels by coverage (TL-MOVE-PIX-01)", () => {
     doc.editLayerPixels("paint", layer, rect(2, 2, 4, 4), (pixels) => {
       pixels.writeRegion(red, 2, 2);
     });
-    doc.replaceSelection(new Selection([[2, 2, 5.5, 2, 5.5, 6, 2, 6]]), "select");
-    const c = doc.selection.mask(rect(5, 2, 1, 1))[0] ?? 0;
+    doc.replaceSelection(new Selection([[2, 2, 5, 2, 6, 6, 2, 6]]), "select");
+    const c = doc.selection.mask(rect(5, 3, 1, 1))[0] ?? 0;
     expect(c).toBeGreaterThan(0);
     expect(c).toBeLessThan(255);
     const session = doc.liftSelectedPixels();

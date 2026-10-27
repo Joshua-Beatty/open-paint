@@ -33,6 +33,13 @@ describe("previewSelection (DOC-SEL-02 live preview)", () => {
   });
 });
 
+/** The ring's vertices as points. */
+function pointsOf(ring: readonly number[]): [number, number][] {
+  const points: [number, number][] = [];
+  for (let i = 0; i + 1 < ring.length; i += 2) points.push([ring[i] ?? 0, ring[i + 1] ?? 0]);
+  return points;
+}
+
 describe("ellipsePolygon (TL-SEL-ELL-01)", () => {
   it("is inscribed in its rectangle, so its area approaches pi times the radii", () => {
     const ring = ellipsePolygon(rect(0, 0, 40, 20));
@@ -40,4 +47,44 @@ describe("ellipsePolygon (TL-SEL-ELL-01)", () => {
     expect(Math.abs(area - Math.PI * 20 * 10) / (Math.PI * 200)).toBeLessThan(0.01);
     expect(new Selection([ring]).bounds()).toEqual(rect(0, 0, 40, 20));
   });
+
+  it.each([
+    [1, 1],
+    [2, 2],
+    [3, 5],
+    [7, 4],
+    [10, 10],
+    [41, 21],
+    [3, 200],
+    [500, 2],
+    [1000, 640],
+  ])(
+    "at %d x %d has its vertices on pixel corners, convex, with no repeats or straight runs",
+    (width, height) => {
+      const area = rect(3, 5, width, height);
+      const points = pointsOf(ellipsePolygon(area));
+      expect(points.length).toBeGreaterThanOrEqual(3);
+      for (const [x, y] of points) {
+        expect(Number.isInteger(x) && Number.isInteger(y)).toBe(true);
+      }
+      let sign = 0;
+      for (let i = 0; i < points.length; i++) {
+        const o = points[i] as [number, number];
+        const a = points[(i + 1) % points.length] as [number, number];
+        const b = points[(i + 2) % points.length] as [number, number];
+        expect(a[0] !== o[0] || a[1] !== o[1]).toBe(true);
+        const turn = (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+        // Every corner turns the same way: no straight runs, no dents, no self-touching.
+        expect(turn).not.toBe(0);
+        sign ||= Math.sign(turn);
+        expect(Math.sign(turn)).toBe(sign);
+      }
+      const selection = new Selection([ellipsePolygon(area)]);
+      expect(selection.bounds()).toEqual(area);
+      const exact = (Math.PI * width * height) / 4;
+      if (Math.min(width, height) >= 20) {
+        expect(Math.abs(selection.area() - exact) / exact).toBeLessThan(0.02);
+      }
+    },
+  );
 });

@@ -388,7 +388,11 @@ describe("selection tools", () => {
       [7, 7],
     ]);
     expect(doc.selection.bounds()).toEqual(rect(0, 0, 8, 8));
-    expect(Math.abs(doc.selection.area() - Math.PI * 16)).toBeLessThan(1);
+    // Its edge runs between pixel corners, so a small circle is within a few pixels of the area.
+    expect(Math.abs(doc.selection.area() - Math.PI * 16)).toBeLessThan(2);
+    for (const ring of doc.selection.polygons) {
+      expect(ring.every((value) => Number.isInteger(value))).toBe(true);
+    }
     expect(doc.history.undoName).toBe("history.ellipseSelect");
   });
 

@@ -1,10 +1,12 @@
 import { flip_object_rgba8 } from "@openpaint/cpu";
 import {
   type AffineMatrix,
+  maskRunPolygons,
   type Rect,
   rectPolygon,
-  type Selection,
+  Selection,
   type Surface,
+  translatePolygons,
 } from "@openpaint/document";
 import { type EffectDescriptor, EXTENSION_API_MAJOR } from "@openpaint/extension-api";
 import type { MessageId } from "@openpaint/i18n";
@@ -99,7 +101,29 @@ export function flipSelection(selection: Selection, region: Rect, vertical: bool
   // A solid rectangle is its own mirror.
   if (sameBox && selection.coversRect(region)) return selection;
   const inside = sameBox ? selection : selection.combine([rectPolygon(region)], "intersect");
-  return inside.transform(flipMatrix(region, vertical)).commit();
+  const flipped = inside.transform(flipMatrix(region, vertical)).commit();
+  if (selection.quality !== "aliased") return flipped;
+  // An aliased mask counts a pixel whose centre lies on an edge only on the edge's left side, and
+  // a diagonal between pixel corners can run through centres. Where mirroring the outline moves
+  // such a pixel, the mirrored mask itself becomes the selection, so it still covers what landed.
+  const mirrored = mirrorMask(inside.mask(region), region, vertical);
+  const drawn = flipped.mask(region);
+  if (drawn.every((value, i) => value === mirrored[i])) return flipped;
+  const runs = maskRunPolygons(mirrored, region.width, region.height);
+  return new Selection(translatePolygons(runs, region.x, region.y), selection.quality);
+}
+
+/** A row-major mask over `region` mirrored left to right, or with `vertical` top to bottom. */
+function mirrorMask(mask: Uint8Array, region: Rect, vertical: boolean): Uint8Array {
+  const { width, height } = region;
+  const out = new Uint8Array(mask.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const from = vertical ? (height - 1 - y) * width + x : y * width + (width - 1 - x);
+      out[y * width + x] = mask[from] ?? 0;
+    }
+  }
+  return out;
 }
 
 function flipBinding(

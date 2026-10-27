@@ -105,10 +105,11 @@ describe("combined areas (exact, Clipper2)", () => {
 });
 
 describe("selection bounds and area", () => {
-  it("rounds the bounds outward to whole pixels", () => {
+  it("snaps fractional vertices to their nearest pixel corners", () => {
     const fractional = new Selection([rectPolygon({ x: 1.5, y: 0, width: 1.75, height: 2 })]);
-    expect(fractional.bounds()).toEqual(rect(1, 0, 3, 2));
-    expect(fractional.area()).toBe(3.5);
+    expect(fractional.polygons).toEqual([[3, 2, 2, 2, 2, 0, 3, 0]]);
+    expect(fractional.bounds()).toEqual(rect(2, 0, 1, 2));
+    expect(fractional.area()).toBe(2);
   });
 
   it("is empty with no bounds and no area", () => {
@@ -194,18 +195,84 @@ describe("transforms (DOC-SEL-05)", () => {
 });
 
 describe("edge quality (DOC-SEL-03)", () => {
-  const fractional = [rectPolygon({ x: 1.5, y: 0, width: 1.75, height: 1 })];
+  // A diagonal edge between pixel corners, from (4, 0) to (0, 1).
+  const wedge = [[0, 0, 4, 0, 0, 1]];
 
   it("aliased masks sample pixel centers and antialiased masks give coverage", () => {
-    const aa = new Selection(fractional, "antialiased");
-    expect(Array.from(aa.mask(rect(0, 0, 4, 1)))).toEqual([0, 128, 255, 64]);
+    const aa = new Selection(wedge, "antialiased");
+    const coverage = Array.from(aa.mask(rect(0, 0, 4, 1)));
+    [7 / 8, 5 / 8, 3 / 8, 1 / 8].forEach((expected, i) => {
+      expect(Math.abs((coverage[i] ?? 0) - expected * 255)).toBeLessThanOrEqual(1);
+    });
     const aliased = aa.withQuality("aliased");
-    expect(aliased.area()).toBeCloseTo(1.75, 10);
-    expect(Array.from(aliased.mask(rect(0, 0, 4, 1)))).toEqual([0, 255, 255, 0]);
+    expect(aliased.area()).toBe(2);
+    expect(Array.from(aliased.mask(rect(0, 0, 4, 1)))).toEqual([255, 255, 0, 0]);
   });
 
   it("returns an all-zero mask for an empty selection", () => {
     expect(Array.from(new Selection().mask(rect(0, 0, 2, 2)))).toEqual([0, 0, 0, 0]);
+  });
+});
+
+/** Whether every vertex is a whole pixel corner and no ring repeats a vertex or runs straight. */
+function wellFormedOnCorners(polygons: readonly (readonly number[])[]): boolean {
+  for (const ring of polygons) {
+    const n = ring.length / 2;
+    if (n < 3) return false;
+    for (let i = 0; i < n; i++) {
+      const at = (k: number) => [ring[((i + k) % n) * 2] ?? 0, ring[((i + k) % n) * 2 + 1] ?? 0];
+      const [ox, oy] = at(0) as [number, number];
+      const [ax, ay] = at(1) as [number, number];
+      const [bx, by] = at(2) as [number, number];
+      if (!Number.isInteger(ox) || !Number.isInteger(oy)) return false;
+      if (ox === ax && oy === ay) return false;
+      if ((ax - ox) * (by - oy) - (ay - oy) * (bx - ox) === 0) return false;
+    }
+  }
+  return true;
+}
+
+describe("pixel-based selections (owner request)", () => {
+  it("merges straight runs, so a lasso's diagonal becomes one edge", () => {
+    const selection = new Selection([[0, 0, 1, 1, 2, 2, 3, 3, 3, 0, 2, 0, 1, 0]]);
+    expect(selection.polygons).toHaveLength(1);
+    expect(selection.polygons[0]).toHaveLength(6);
+    expect(selection.area()).toBe(4.5);
+  });
+
+  it("keeps the vertices on pixel corners where two diagonal edges cross", () => {
+    const a = new Selection([[0, 0, 7, 3, 0, 5]]);
+    const crossed = a.combine([[1, 4, 8, 0, 8, 5]], "union");
+    expect(wellFormedOnCorners(crossed.polygons)).toBe(true);
+    const xor = a.combine([[1, 4, 8, 0, 8, 5]], "xor");
+    expect(wellFormedOnCorners(xor.polygons)).toBe(true);
+  });
+
+  it("snaps a rotated selection's vertices to the nearest pixel corners", () => {
+    const square = new Selection([rectPolygon(rect(10, 10, 13, 7))]);
+    for (const degrees of [1, 7.5, 15, 33, 45, 89.9, 90, 135, 180, 271]) {
+      const t = (degrees * Math.PI) / 180;
+      const [cx, cy] = [16.5, 13.5];
+      const turn: AffineMatrix = {
+        a: Math.cos(t),
+        b: Math.sin(t),
+        c: -Math.sin(t),
+        d: Math.cos(t),
+        e: cx - cx * Math.cos(t) + cy * Math.sin(t),
+        f: cy - cx * Math.sin(t) - cy * Math.cos(t),
+      };
+      const turned = square.transform(turn);
+      expect(wellFormedOnCorners(turned.effectivePolygons())).toBe(true);
+      expect(wellFormedOnCorners(turned.commit().polygons)).toBe(true);
+      expect(Math.abs(turned.area() - 91)).toBeLessThan(13 + 7);
+    }
+  });
+
+  it("scales onto whole pixels", () => {
+    const square = new Selection([[0, 0, 3, 0, 3, 3, 0, 3, 0, 2, 1, 1]]);
+    const scaled = square.transform({ a: 5 / 3, b: 0, c: 0, d: 4 / 3, e: 2, f: 1 });
+    expect(wellFormedOnCorners(scaled.effectivePolygons())).toBe(true);
+    expect(scaled.bounds()).toEqual(rect(2, 1, 5, 4));
   });
 });
 

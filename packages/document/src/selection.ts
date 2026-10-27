@@ -7,7 +7,7 @@ import {
   clipPolygons,
   composeAffine,
   DEFAULT_SELECTION_QUALITY,
-  normalizePolygons,
+  pixelPolygons,
   polygonsArea,
   polygonsBounds,
   rectPolygon,
@@ -28,6 +28,10 @@ const COMBINE_OPERATIONS: Record<Exclude<SelectionCombineMode, "replace">, ClipO
  * An immutable selection (DOC-SEL-01): a normalized polygon set, a quality (DOC-SEL-03) and an
  * optional pending transform that applies on commit. Every operation returns a new selection, so
  * history can keep the previous one. An empty polygon set means nothing is selected.
+ *
+ * Selections are pixel based (owner request): the polygons, and the polygons a pending transform
+ * gives, have every vertex on a whole pixel corner (`pixelPolygons`). Geometry with fractional
+ * vertices, such as a selection from an older checkpoint, is snapped when it is made.
  */
 export class Selection {
   readonly quality: SelectionQuality;
@@ -39,7 +43,7 @@ export class Selection {
     quality: SelectionQuality = DEFAULT_SELECTION_QUALITY,
     pendingTransform?: AffineMatrix,
   ) {
-    this.#polygons = normalizePolygons(polygons);
+    this.#polygons = pixelPolygons(polygons);
     this.quality = quality;
     this.pendingTransform = pendingTransform;
   }
@@ -59,11 +63,11 @@ export class Selection {
     return this.#polygons;
   }
 
-  /** The polygons with the pending transform applied and normalized. */
+  /** The polygons with the pending transform applied and snapped to pixel corners. */
   effectivePolygons(): readonly SelectionPolygon[] {
     if (!this.pendingTransform) return this.#polygons;
     const m = this.pendingTransform;
-    return normalizePolygons(this.#polygons.map((polygon) => transformPolygon(polygon, m)));
+    return pixelPolygons(this.#polygons.map((polygon) => transformPolygon(polygon, m)));
   }
 
   /** The integer rectangle that bounds the selection, or an empty rectangle when empty. */
