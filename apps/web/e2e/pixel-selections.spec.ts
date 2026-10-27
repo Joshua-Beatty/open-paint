@@ -178,6 +178,70 @@ test("at 800 %, a dragged selection corner moves in whole image pixels, its hand
   expect(rings[0]?.every((value) => Number.isInteger(value))).toBe(true);
 });
 
+/** The ring's vertices, sorted so two rings compare whatever vertex they start at. */
+function sortedVertices(ring: readonly number[]): [number, number][] {
+  const points: [number, number][] = [];
+  for (let i = 0; i + 1 < ring.length; i += 2) points.push([ring[i] ?? 0, ring[i + 1] ?? 0]);
+  return points.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+}
+
+test("a rotation keeps the exact outline, and a later move shifts it by whole pixels", async ({
+  page,
+}) => {
+  await open(page);
+  await zoomTo800(page);
+  const v = await view(page);
+  const middle = v.toImage(v.center);
+  const from = { x: Math.floor(middle.x) - 5, y: Math.floor(middle.y) - 4 };
+  await page.getByRole("radio", { name: "Rectangle Select", exact: true }).click();
+  const press = v.toPage({ x: from.x + 0.5, y: from.y + 0.5 });
+  const release = v.toPage({ x: from.x + 9.5, y: from.y + 7.5 });
+  await page.mouse.move(press.x, press.y);
+  await page.mouse.down();
+  await page.mouse.move(release.x, release.y, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.locator(LAST_STEP)).toHaveText("Rectangle Select");
+
+  await page.getByRole("radio", { name: "Move Selection", exact: true }).click();
+  const pivot = v.toPage({ x: from.x + 5, y: from.y + 4 });
+  // A right-button drag turns the frame by about 20 degrees about its centre.
+  const arc = (degrees: number) => ({
+    x: pivot.x + 120 * Math.cos((degrees * Math.PI) / 180),
+    y: pivot.y + 120 * Math.sin((degrees * Math.PI) / 180),
+  });
+  await page.mouse.move(arc(0).x, arc(0).y);
+  await page.mouse.down({ button: "right" });
+  for (let d = 2; d <= 20; d += 2) await page.mouse.move(arc(d).x, arc(d).y);
+  await page.mouse.up({ button: "right" });
+  await expect(page.locator(LAST_STEP)).toHaveText("Rotate Selection");
+  const turned = (await selectionOf(page))[0] ?? [];
+  expect(turned).toHaveLength(8);
+  expect(turned.some((value) => !Number.isInteger(value))).toBe(true);
+  // A rotation keeps the shape: the 10 x 8 rectangle's area and side lengths.
+  const points = sortedVertices(turned);
+  let area = 0;
+  for (let i = 0; i < turned.length; i += 2) {
+    const j = (i + 2) % turned.length;
+    area += (turned[i] ?? 0) * (turned[j + 1] ?? 0) - (turned[j] ?? 0) * (turned[i + 1] ?? 0);
+  }
+  expect(Math.abs(area) / 2).toBeCloseTo(80, 1);
+  expect(points).toHaveLength(4);
+
+  // A body drag of 27 x 13 CSS px at 800 % moves it by whole pixels: 3 right, 2 down.
+  const grab = { x: pivot.x - 20, y: pivot.y + 12 };
+  await page.mouse.move(grab.x, grab.y);
+  await page.mouse.down();
+  await page.mouse.move(grab.x + 27, grab.y + 13, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator(LAST_STEP)).toHaveText("Move Selection");
+  const moved = sortedVertices((await selectionOf(page))[0] ?? []);
+  expect(moved).toHaveLength(4);
+  moved.forEach(([x, y], i) => {
+    expect(x - (points[i]?.[0] ?? 0)).toBeCloseTo(3, 6);
+    expect(y - (points[i]?.[1] ?? 0)).toBeCloseTo(2, 6);
+  });
+});
+
 for (const zoom of ["100", "800"] as const) {
   test(`a freehand Lasso outline has every vertex on a pixel corner (${zoom} %)`, async ({
     page,
