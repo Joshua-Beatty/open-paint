@@ -923,8 +923,9 @@ export function App({
       setSetting: (path, value) => settingsRef.current?.set(path, value),
       status: () => status,
       layout: () => statusStore.state.layout,
+      document: () => images.active?.value.document,
     });
-  }, [openDocument, status, statusStore]);
+  }, [openDocument, status, statusStore, images]);
   const hasDocument = activeImage !== undefined;
   const activeDocument = activeImage?.document;
   useDocumentRevision(activeDocument);

@@ -41,6 +41,8 @@ export interface BenchApi {
   /** Sets the brush width option of the paint tools, in pixels. */
   setBrushSize(size: number): void;
   info(): BenchInfo;
+  /** The active image's selection outline, as flat `x, y` rings in image pixels. */
+  selection(): number[][];
 }
 
 declare global {
@@ -121,6 +123,8 @@ export interface BenchHost {
   setSetting(path: string, value: number): void;
   status(): EngineStatus | undefined;
   layout(): ViewLayout | undefined;
+  /** The active image's document, if any. */
+  document?(): Document | undefined;
 }
 
 /** Exposes `__openpaintBench` on `target`. Returns the function that removes it. */
@@ -144,6 +148,8 @@ export function installBenchHook(target: Window, host: BenchHost): () => void {
       hardwareConcurrency: target.navigator?.hardwareConcurrency ?? 0,
       userAgent: target.navigator?.userAgent ?? "",
     }),
+    selection: () =>
+      (host.document?.()?.selection.effectivePolygons() ?? []).map((ring) => [...ring]),
   };
   return () => {
     delete target.__openpaintBench;
