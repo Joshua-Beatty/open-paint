@@ -3,7 +3,14 @@ import type { ToolPointerEvent, ToolRuntime, ToolViewState } from "@openpaint/ex
 import { ClickDeadZone } from "@openpaint/tools";
 import { CROSSHAIR_CURSOR } from "./cursors";
 import type { PaintHost } from "./paint-tools";
-import { combineModeFor, combineModeOf, lassoPolygons, type PixelPoint } from "./select-geometry";
+import {
+  CornerPath,
+  combineModeFor,
+  combineModeOf,
+  lassoPolygons,
+  nearestCorner,
+  type PixelPoint,
+} from "./select-geometry";
 import { reportToolFailure } from "./tool-failure";
 
 /** One drag of the Lasso, from the press to the release. */
@@ -14,19 +21,21 @@ interface LassoDrag {
   readonly mode: SelectionCombineMode;
   /** The press stays a click until the pointer leaves this zone around it (TL-SEL-01). */
   readonly zone: ClickDeadZone;
-  /** The freeform path in whole pixels. The polygon closes between its last and first points. */
-  points: PixelPoint[];
+  /** The freeform path between pixel corners. The polygon closes between its last and first points. */
+  readonly path: CornerPath;
   last: PixelPoint;
   /** Move-origin mode: the whole path moves with the pointer instead of growing (TL-SEL-01). */
   translating: boolean;
 }
 
-function pixelOf(event: ToolPointerEvent): PixelPoint {
-  return { x: Math.floor(event.x), y: Math.floor(event.y) };
+/** The pixel corner nearest the pointer: the Lasso draws between corners (owner request). */
+function cornerOf(event: ToolPointerEvent): PixelPoint {
+  return nearestCorner(event);
 }
 
 /**
- * The runtime of Lasso Select (TL-SEL-LASSO-01). A drag traces a freeform path, which is previewed
+ * The runtime of Lasso Select (TL-SEL-LASSO-01). A drag traces a freeform path of straight edges
+ * between pixel corners (`CornerPath`; owner request, instead of TL-SEL-01's floored pixels), which is previewed
  * over the selection it started with. Release combines the closed path as one history item named
  * "Lasso Select". A press whose pointer stays within a few CSS pixels of where it went down is a
  * click and shows no preview, and a click or a path without an enclosed area deselects in Replace
@@ -75,20 +84,22 @@ class LassoRuntime implements ToolRuntime {
     const drag = this.#drag;
     if (drag !== undefined) {
       drag.translating = true;
-      drag.last = pixelOf(event);
+      drag.last = cornerOf(event);
       return;
     }
     if (event.button !== 0 && event.button !== 2) return;
     const settings = this.#host.settings();
     const document = this.#host.document();
     if (settings === null || document === undefined) return;
-    const point = pixelOf(event);
+    const point = cornerOf(event);
+    const path = new CornerPath();
+    path.add({ x: event.x, y: event.y });
     this.#drag = {
       document,
       before: document.selection,
       mode: combineModeFor(event, combineModeOf(settings.get("tools.selection.combineMode"))),
       zone: new ClickDeadZone(event),
-      points: [point],
+      path,
       last: point,
       translating: false,
     };
@@ -108,7 +119,7 @@ class LassoRuntime implements ToolRuntime {
     this.#drag = undefined;
     drag.document.restoreSelection(drag.before);
     const clicked = !drag.zone.left;
-    const polygons = clicked ? [] : lassoPolygons(drag.points, canvasOf(drag.document));
+    const polygons = clicked ? [] : lassoPolygons(drag.path.points, canvasOf(drag.document));
     if (polygons.length === 0) {
       if (drag.mode === "replace") drag.document.deselect();
       return;
@@ -122,14 +133,11 @@ class LassoRuntime implements ToolRuntime {
 
   /** Adds the pointer sample to the path, or moves the whole path when translating. */
   #track(drag: LassoDrag, event: ToolPointerEvent): void {
-    const point = pixelOf(event);
+    const point = cornerOf(event);
     if (drag.translating) {
-      const dx = point.x - drag.last.x;
-      const dy = point.y - drag.last.y;
-      drag.points = drag.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+      drag.path.translate(point.x - drag.last.x, point.y - drag.last.y);
     } else {
-      const tail = drag.points.at(-1);
-      if (tail === undefined || tail.x !== point.x || tail.y !== point.y) drag.points.push(point);
+      drag.path.add({ x: event.x, y: event.y });
     }
     drag.last = point;
     drag.zone.track(event);
@@ -137,7 +145,7 @@ class LassoRuntime implements ToolRuntime {
 
   /** Previews the path's area combined with the selection the drag started with. */
   #show(drag: LassoDrag): void {
-    const polygons = lassoPolygons(drag.points, canvasOf(drag.document));
+    const polygons = lassoPolygons(drag.path.points, canvasOf(drag.document));
     drag.document.previewSelection(drag.before.combine(polygons, drag.mode));
   }
 

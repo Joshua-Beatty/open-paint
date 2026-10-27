@@ -209,6 +209,48 @@ describe("Lasso Select (TL-SEL-LASSO-01)", () => {
     expect(doc.selection.bounds()).toEqual(rect(4, 4, 8, 8));
   });
 
+  it("snaps each pointer sample to its nearest pixel corner", () => {
+    drag(runtimeFor(), [
+      [2.4, 1.6],
+      [9.6, 2.3],
+      [2.2, 9.7],
+    ]);
+    expect(doc.selection.polygons).toHaveLength(1);
+    const ring = doc.selection.polygons[0] ?? [];
+    expect([...ring].sort((a, b) => a - b)).toEqual([2, 2, 2, 2, 10, 10]);
+    expect(doc.selection.area()).toBe(32);
+  });
+
+  it("draws a slow straight drag at any slope as one edge between pixel corners", () => {
+    // Many samples along the run from (2, 2) to (9, 5), a slope of 3 in 7, with sub-pixel jitter.
+    const path: [number, number][] = [];
+    for (let i = 0; i <= 70; i++) {
+      const jitter = ((i * 7) % 5) / 25 - 0.08;
+      path.push([2 + (7 * i) / 70 + jitter, 2 + (3 * i) / 70 - jitter]);
+    }
+    for (let i = 1; i <= 30; i++) path.push([9 - (7 * i) / 30, 5 + (5 * i) / 30]);
+    drag(runtimeFor(), path);
+    const ring = doc.selection.polygons[0] ?? [];
+    expect(doc.selection.polygons).toHaveLength(1);
+    expect(ring.every((value) => Number.isInteger(value))).toBe(true);
+    // The triangle (2, 2), (9, 5), (2, 10): three corners, the slopes kept as single edges.
+    expect(ring).toHaveLength(6);
+    expect(doc.selection.area()).toBe(28);
+  });
+
+  it("keeps every vertex of a freehand path on a pixel corner", () => {
+    const path: [number, number][] = [];
+    for (let i = 0; i <= 200; i++) {
+      const t = (i / 200) * 2 * Math.PI;
+      path.push([16 + 11 * Math.cos(t) + Math.sin(7 * t), 16 + 8 * Math.sin(t) + 0.37]);
+    }
+    drag(runtimeFor(), path);
+    expect(doc.selection.isEmpty).toBe(false);
+    for (const ring of doc.selection.polygons) {
+      expect(ring.every((value) => Number.isInteger(value))).toBe(true);
+    }
+  });
+
   it("ignores the other buttons", () => {
     drag(
       runtimeFor(),

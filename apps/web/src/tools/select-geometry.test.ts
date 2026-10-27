@@ -1,6 +1,7 @@
 import { rect } from "@openpaint/document";
 import { describe, expect, it } from "vitest";
 import {
+  CornerPath,
   combineModeFor,
   combineModeOf,
   dragRect,
@@ -97,5 +98,39 @@ describe("lengthInPixels", () => {
       96,
       0,
     );
+  });
+});
+
+describe("CornerPath (TL-SEL-LASSO-01, pixel corners)", () => {
+  const trace = (samples: readonly [number, number][]) => {
+    const path = new CornerPath();
+    for (const [x, y] of samples) path.add({ x, y });
+    return path.points;
+  };
+
+  it("starts at the corner nearest the press", () => {
+    expect(trace([[3.4, 7.6]])).toEqual([at(3, 8)]);
+  });
+
+  it("draws straight runs at any slope as one edge, between corners", () => {
+    const samples: [number, number][] = [];
+    for (let i = 0; i <= 40; i++) samples.push([i / 4, i / 8]);
+    expect(trace(samples)).toEqual([at(0, 0), at(10, 5)]);
+  });
+
+  it("starts a new edge where the pointer turns, and never repeats a corner", () => {
+    const samples: [number, number][] = [];
+    for (let i = 0; i <= 20; i++) samples.push([i / 2, 0.1]);
+    for (let i = 1; i <= 20; i++) samples.push([10 - 0.1, i / 2]);
+    const points = trace(samples);
+    expect(points).toEqual([at(0, 0), at(10, 0), at(10, 10)]);
+  });
+
+  it("moves by whole pixels", () => {
+    const path = new CornerPath();
+    path.add({ x: 1, y: 1 });
+    path.add({ x: 4, y: 1 });
+    path.translate(2, -1);
+    expect(path.points).toEqual([at(3, 0), at(6, 0)]);
   });
 });

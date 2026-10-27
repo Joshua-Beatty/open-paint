@@ -154,6 +154,119 @@ export function lassoPolygons(points: readonly PixelPoint[], canvas: Size): Sele
   );
 }
 
+/**
+ * How far, in image pixels, the pointer may stray from a straight run between two pixel corners
+ * while the Lasso still draws it as one edge.
+ */
+export const LASSO_STRAIGHT_TOLERANCE = 0.5;
+
+/** The distance from `p` to the segment from `a` to `b`. */
+function segmentDistance(p: PixelPoint, a: PixelPoint, b: PixelPoint): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const t =
+    lengthSquared === 0
+      ? 0
+      : Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+/**
+ * A Lasso path between pixel corners (TL-SEL-LASSO-01; owner request: selections are pixel based).
+ * Each pointer sample goes to its nearest pixel corner. While every sample since the last vertex
+ * stays within `LASSO_STRAIGHT_TOLERANCE` of the straight run from that vertex to the newest
+ * corner, the run only grows; otherwise its end becomes a vertex and a new run starts. So the
+ * outline is straight edges between corners at any slope (1 by 1, 2 by 3, 7 by 1, ...), with no
+ * repeated vertices, and the vertices already placed never move.
+ */
+export class CornerPath {
+  /** The vertices, then the end of the run being drawn. */
+  #points: PixelPoint[] = [];
+  /** The pointer samples since the last vertex, in image pixels. */
+  #samples: PixelPoint[] = [];
+  /** Whether the last point is the end of the run being drawn rather than a vertex. */
+  #open = false;
+
+  /** The path's corners, in order. */
+  get points(): readonly PixelPoint[] {
+    return this.#points;
+  }
+
+  /** Adds a pointer sample at `sample` (image pixels, fractional). */
+  add(sample: PixelPoint): void {
+    const points = this.#points;
+    const last = points.at(-1);
+    if (last === undefined) {
+      points.push(nearestCorner(sample));
+      this.#samples = [sample];
+      return;
+    }
+    const vertex = this.#open ? points.at(-2) : last;
+    if (vertex === undefined) return;
+    this.#samples.push(sample);
+    const end = this.#runEnd(vertex, this.#open ? last : undefined, sample);
+    if (end !== undefined) {
+      if (this.#open) points[points.length - 1] = end;
+      else points.push(end);
+      this.#open = true;
+      return;
+    }
+    if (!this.#open) return;
+    // No straight run from the vertex reaches the pointer: the run's end becomes a vertex, and a
+    // new run starts there.
+    this.#samples = [sample];
+    this.#open = false;
+    const next = nearestCorner(sample);
+    if (next.x !== last.x || next.y !== last.y) {
+      points.push(next);
+      this.#open = true;
+    }
+  }
+
+  /**
+   * The corner the run from `vertex` ends at for the samples so far: the corner nearest `sample`,
+   * else the run's current end, else another corner of the pixel under `sample`, nearest first,
+   * whichever first keeps every sample within the tolerance of the run. Undefined when none does.
+   */
+  #runEnd(
+    vertex: PixelPoint,
+    end: PixelPoint | undefined,
+    sample: PixelPoint,
+  ): PixelPoint | undefined {
+    const x = Math.floor(sample.x);
+    const y = Math.floor(sample.y);
+    const around: PixelPoint[] = [
+      { x, y },
+      { x: x + 1, y },
+      { x, y: y + 1 },
+      { x: x + 1, y: y + 1 },
+    ];
+    const gap = (p: PixelPoint) => Math.hypot(p.x - sample.x, p.y - sample.y);
+    around.sort((p, q) => gap(p) - gap(q));
+    const candidates = [nearestCorner(sample), ...(end === undefined ? [] : [end]), ...around];
+    for (const corner of candidates) {
+      if (corner.x === vertex.x && corner.y === vertex.y) continue;
+      const fits = this.#samples.every(
+        (p) => segmentDistance(p, vertex, corner) <= LASSO_STRAIGHT_TOLERANCE,
+      );
+      if (fits) return corner;
+    }
+    return undefined;
+  }
+
+  /** Moves the whole path by whole pixels (TL-SEL-01 move-origin mode). */
+  translate(dx: number, dy: number): void {
+    this.#points = this.#points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    this.#samples = this.#samples.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+  }
+}
+
+/** The pixel corner nearest to `p`. */
+export function nearestCorner(p: PixelPoint): PixelPoint {
+  return { x: Math.round(p.x) + 0, y: Math.round(p.y) + 0 };
+}
+
 /** A rectangle grown from `anchor` in the direction of the drag, `width` by `height` pixels. */
 function spanRect(
   anchor: PixelPoint,
