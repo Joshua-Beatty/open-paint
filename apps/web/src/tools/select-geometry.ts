@@ -2,6 +2,7 @@ import {
   clipPolygons,
   convertDotsPerUnit,
   ellipsePolygon,
+  pixelPolygons,
   type Rect,
   type Resolution,
   rect,
@@ -126,31 +127,31 @@ export function fixedSizeRect(
   return rect(x, y, w, h);
 }
 
-/** The polygons of a selection shape clipped to the canvas (TL-SEL-01: clipped to the image). */
+/**
+ * The polygons of a selection shape clipped to the canvas (TL-SEL-01: clipped to the image), with
+ * every vertex on a pixel corner (owner request), where a slanted edge meets the canvas edge too.
+ */
 export function shapePolygons(
   shape: "rectangle" | "ellipse",
   area: Rect,
   canvas: Size,
 ): SelectionPolygon[] {
   const outline = shape === "ellipse" ? ellipsePolygon(area) : rectPolygon(area);
-  return clipPolygons(
-    "intersection",
-    [outline],
-    [rectPolygon(rect(0, 0, canvas.width, canvas.height))],
+  return pixelPolygons(
+    clipPolygons("intersection", [outline], [rectPolygon(rect(0, 0, canvas.width, canvas.height))]),
   );
 }
 
 /**
  * The polygon of a freeform lasso path, closed automatically between its last and first points, and
- * clipped to the canvas (TL-SEL-LASSO-01). Empty when the path encloses no area.
+ * clipped to the canvas (TL-SEL-LASSO-01), with every vertex on a pixel corner and straight runs
+ * merged into one edge. Empty when the path encloses no area.
  */
 export function lassoPolygons(points: readonly PixelPoint[], canvas: Size): SelectionPolygon[] {
   if (points.length < 3) return [];
   const ring = points.flatMap((point) => [point.x, point.y]);
-  return clipPolygons(
-    "intersection",
-    [ring],
-    [rectPolygon(rect(0, 0, canvas.width, canvas.height))],
+  return pixelPolygons(
+    clipPolygons("intersection", [ring], [rectPolygon(rect(0, 0, canvas.width, canvas.height))]),
   );
 }
 

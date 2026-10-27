@@ -189,6 +189,25 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
     expect(pixel(30, 52)).toEqual(pixel(60, 60));
   });
 
+  it("rotates the pixels with the exact outline, which the moved pixels are clipped to", () => {
+    const from = { x: 24 + 30 * Math.cos(-0.5), y: 24 + 30 * Math.sin(-0.5) };
+    const to = { x: 24 + 30 * Math.cos(-0.5 + 0.37), y: 24 + 30 * Math.sin(-0.5 + 0.37) };
+    drag(from, to, 2);
+    expect(doc.history.undoName).toBe("history.rotatePixels");
+    expect(doc.selection.area()).toBeCloseTo(1600, 1);
+    expect(doc.selection.polygons.flat().some((value) => !Number.isInteger(value))).toBe(true);
+    // Outside the turned outline nothing red lands; well inside it the block is solid.
+    const mask = doc.selection.mask(rect(0, 0, 64, 64));
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        if ((mask[y * 64 + x] ?? 0) !== 0) continue;
+        const p = pixel(x, y);
+        expect(p.a > 0 && p.r === 255 && p.g === 0).toBe(false);
+      }
+    }
+    expect(pixel(24, 24)).toEqual(RED);
+  });
+
   it("previews a rotation over the layer and records it once the worker's result lands", async () => {
     const reference = selectedBlock();
     const plain = movePixelsToolRuntime({ ...host(), document: () => reference }, handoff);
@@ -882,26 +901,44 @@ describe("Move Selection (TL-MOVE-SEL-01)", () => {
     expect(doc.history.undoName).toBe("history.resizeSelection");
   });
 
-  it("rotates freely, with the turned outline's vertices and the frame's corners on pixel corners", () => {
+  it("rotates freely without changing the outline, and then moves it by whole pixels", () => {
     const from = { x: 24 + 30 * Math.cos(-0.5), y: 24 + 30 * Math.sin(-0.5) };
     const to = { x: 24 + 30 * Math.cos(-0.5 + 0.37), y: 24 + 30 * Math.sin(-0.5 + 0.37) };
     runtime.pointer(event("down", from.x, from.y, 2));
     runtime.pointer(event("move", to.x, to.y, 2));
     runtime.pointer(event("up", to.x, to.y, 2));
     expect(doc.history.undoName).toBe("history.rotateSelection");
+    const sorted = (ring: readonly number[]) => {
+      const points: [number, number][] = [];
+      for (let i = 0; i + 1 < ring.length; i += 2) points.push([ring[i] ?? 0, ring[i + 1] ?? 0]);
+      return points.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    };
     const [ring, ...others] = doc.selection.polygons;
     expect(others).toHaveLength(0);
-    expect(ring).toHaveLength(8);
-    expect(ring?.every((value) => Number.isInteger(value))).toBe(true);
-    for (const corner of transformFrame.state?.corners ?? []) {
-      expect(Number.isInteger(corner.x) && Number.isInteger(corner.y)).toBe(true);
-    }
+    // The outline is the block turned exactly, as the frame shows it: same corners, same area.
+    expect(doc.selection.area()).toBeCloseTo(1600, 1);
+    const corners = (transformFrame.state?.corners ?? []).flatMap((p) => [p.x, p.y]);
+    const turned = sorted(ring ?? []);
+    expect(turned).toHaveLength(4);
+    sorted(corners).forEach(([x, y], i) => {
+      expect(turned[i]?.[0]).toBeCloseTo(x, 2);
+      expect(turned[i]?.[1]).toBeCloseTo(y, 2);
+    });
+    expect(ring?.some((value) => !Number.isInteger(value))).toBe(true);
     // The angle itself is free: the frame turned by the drag's 0.37 radians.
     const [nw, ne] = transformFrame.state?.corners ?? [];
     if (nw === undefined || ne === undefined) throw new Error("no corners");
     expect(Math.atan2(ne.y - nw.y, ne.x - nw.x)).toBeCloseTo(0.37, 1);
-  });
 
+    runtime.pointer(event("down", 16, 30));
+    runtime.pointer(event("move", 22.4, 32.6));
+    runtime.pointer(event("up", 22.4, 32.6));
+    expect(doc.history.undoName).toBe("history.moveSelection");
+    sorted(doc.selection.polygons[0] ?? []).forEach(([x, y], i) => {
+      expect(x - (turned[i]?.[0] ?? 0)).toBeCloseTo(6, 6);
+      expect(y - (turned[i]?.[1] ?? 0)).toBeCloseTo(3, 6);
+    });
+  });
   it("shows the move arrows inside the selection, and the default cursor without one", () => {
     const view = { canPan: false, panning: false };
     runtime.pointer(event("move", BODY_PRESS.x, BODY_PRESS.y));

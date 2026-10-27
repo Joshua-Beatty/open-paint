@@ -3,11 +3,14 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import initWasm from "@openpaint/cpu";
 import { beforeAll, describe, expect, it } from "vitest";
+import { selectionFromJson, selectionJson } from "./checkpoint";
 import { rect } from "./geometry";
 import { Selection } from "./selection";
 import {
   type AffineMatrix,
   composeAffine,
+  onPixelCorners,
+  pixelPolygons,
   rectPolygon,
   type SelectionCombineMode,
   transformPolygon,
@@ -105,11 +108,10 @@ describe("combined areas (exact, Clipper2)", () => {
 });
 
 describe("selection bounds and area", () => {
-  it("snaps fractional vertices to their nearest pixel corners", () => {
+  it("keeps fractional vertices as given, and rounds the bounds outward to whole pixels", () => {
     const fractional = new Selection([rectPolygon({ x: 1.5, y: 0, width: 1.75, height: 2 })]);
-    expect(fractional.polygons).toEqual([[3, 2, 2, 2, 2, 0, 3, 0]]);
-    expect(fractional.bounds()).toEqual(rect(2, 0, 1, 2));
-    expect(fractional.area()).toBe(2);
+    expect(fractional.bounds()).toEqual(rect(1, 0, 3, 2));
+    expect(fractional.area()).toBe(3.5);
   });
 
   it("is empty with no bounds and no area", () => {
@@ -232,50 +234,108 @@ function wellFormedOnCorners(polygons: readonly (readonly number[])[]): boolean 
   return true;
 }
 
+/** A turn by `degrees` about (16.5, 13.5). */
+function turnBy(degrees: number): AffineMatrix {
+  const t = (degrees * Math.PI) / 180;
+  const [cx, cy] = [16.5, 13.5];
+  return {
+    a: Math.cos(t),
+    b: Math.sin(t),
+    c: -Math.sin(t),
+    d: Math.cos(t),
+    e: cx - cx * Math.cos(t) + cy * Math.sin(t),
+    f: cy - cx * Math.sin(t) - cy * Math.cos(t),
+  };
+}
+
+/** The ring's vertices sorted, so two rings can be compared whatever vertex they start at. */
+function sortedVertices(ring: readonly number[]): [number, number][] {
+  const points: [number, number][] = [];
+  for (let i = 0; i + 1 < ring.length; i += 2) points.push([ring[i] ?? 0, ring[i + 1] ?? 0]);
+  return points.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+}
+
 describe("pixel-based selections (owner request)", () => {
-  it("merges straight runs, so a lasso's diagonal becomes one edge", () => {
-    const selection = new Selection([[0, 0, 1, 1, 2, 2, 3, 3, 3, 0, 2, 0, 1, 0]]);
-    expect(selection.polygons).toHaveLength(1);
-    expect(selection.polygons[0]).toHaveLength(6);
-    expect(selection.area()).toBe(4.5);
+  const box = rectPolygon(rect(10, 10, 13, 7));
+
+  it("merges straight runs onto pixel corners, so a lasso's diagonal becomes one edge", () => {
+    const rings = pixelPolygons([[0, 0, 1, 1, 2, 2, 3, 3, 3, 0, 2, 0, 1, 0]]);
+    expect(rings).toHaveLength(1);
+    expect(rings[0]).toHaveLength(6);
+    expect(new Selection(rings).area()).toBe(4.5);
   });
 
-  it("keeps the vertices on pixel corners where two diagonal edges cross", () => {
+  it("combines two outlines on pixel corners onto pixel corners, where diagonal edges cross", () => {
     const a = new Selection([[0, 0, 7, 3, 0, 5]]);
     const crossed = a.combine([[1, 4, 8, 0, 8, 5]], "union");
     expect(wellFormedOnCorners(crossed.polygons)).toBe(true);
     const xor = a.combine([[1, 4, 8, 0, 8, 5]], "xor");
     expect(wellFormedOnCorners(xor.polygons)).toBe(true);
+    const inverted = a.inverted({ width: 12, height: 12 });
+    expect(onPixelCorners(inverted.polygons)).toBe(true);
   });
 
-  it("snaps a rotated selection's vertices to the nearest pixel corners", () => {
-    const square = new Selection([rectPolygon(rect(10, 10, 13, 7))]);
-    for (const degrees of [1, 7.5, 15, 33, 45, 89.9, 90, 135, 180, 271]) {
-      const t = (degrees * Math.PI) / 180;
-      const [cx, cy] = [16.5, 13.5];
-      const turn: AffineMatrix = {
-        a: Math.cos(t),
-        b: Math.sin(t),
-        c: -Math.sin(t),
-        d: Math.cos(t),
-        e: cx - cx * Math.cos(t) + cy * Math.sin(t),
-        f: cy - cx * Math.sin(t) - cy * Math.cos(t),
-      };
-      const turned = square.transform(turn);
-      expect(wellFormedOnCorners(turned.effectivePolygons())).toBe(true);
-      expect(wellFormedOnCorners(turned.commit().polygons)).toBe(true);
-      expect(Math.abs(turned.area() - 91)).toBeLessThan(13 + 7);
+  it("keeps a rotated outline exactly as the rotation turned it", () => {
+    const square = new Selection([box]);
+    for (const degrees of [1, 7.5, 33, 45, 89.9, 135, 271]) {
+      const turned = square.placed(turnBy(degrees));
+      const exact = transformPolygon(box, turnBy(degrees));
+      const [ring, ...others] = turned.polygons;
+      expect(others).toHaveLength(0);
+      const got = sortedVertices(ring ?? []);
+      const want = sortedVertices(exact);
+      expect(got).toHaveLength(4);
+      got.forEach(([x, y], i) => {
+        expect(x).toBeCloseTo(want[i]?.[0] ?? Number.NaN, 2);
+        expect(y).toBeCloseTo(want[i]?.[1] ?? Number.NaN, 2);
+      });
+      expect(turned.area()).toBeCloseTo(91, 1);
     }
   });
 
-  it("scales onto whole pixels", () => {
-    const square = new Selection([[0, 0, 3, 0, 3, 3, 0, 3, 0, 2, 1, 1]]);
-    const scaled = square.transform({ a: 5 / 3, b: 0, c: 0, d: 4 / 3, e: 2, f: 1 });
-    expect(wellFormedOnCorners(scaled.effectivePolygons())).toBe(true);
+  it("lands a quarter turn on pixel corners", () => {
+    const turned = new Selection([box]).placed(turnBy(90));
+    expect(onPixelCorners(turned.polygons)).toBe(true);
+    expect(turned.area()).toBe(91);
+  });
+
+  it("moves a rotated outline by whole pixels, keeping its fractional parts", () => {
+    const turned = new Selection([box]).placed(turnBy(33));
+    const moved = turned.placed({ a: 1, b: 0, c: 0, d: 1, e: 4, f: -3 });
+    const before = sortedVertices(turned.polygons[0] ?? []);
+    const after = sortedVertices(moved.polygons[0] ?? []);
+    expect(after).toHaveLength(4);
+    after.forEach(([x, y], i) => {
+      expect(x - (before[i]?.[0] ?? 0)).toBeCloseTo(4, 9);
+      expect(y - (before[i]?.[1] ?? 0)).toBeCloseTo(-3, 9);
+    });
+    expect(onPixelCorners(moved.polygons)).toBe(false);
+  });
+
+  it("keeps a rotated edge's fractional crossings when combined with another selection", () => {
+    const turned = new Selection([box]).placed(turnBy(33));
+    const cut = turned.combine([rectPolygon(rect(0, 0, 16, 40))], "exclude");
+    const vertices = cut.polygons.flat();
+    expect(vertices.some((value) => !Number.isInteger(value))).toBe(true);
+    // The part left is the rotated box right of x = 16, its cut edge exactly on that line.
+    expect(Math.min(...vertices.filter((_, i) => i % 2 === 0))).toBe(16);
+    expect(cut.area()).toBeGreaterThan(0);
+    expect(cut.area()).toBeLessThan(91);
+  });
+
+  it("scales an outline on pixel corners onto pixel corners", () => {
+    const shape = new Selection([[0, 0, 3, 0, 3, 3, 0, 3, 0, 2, 1, 1]]);
+    const scaled = shape.placed({ a: 5 / 3, b: 0, c: 0, d: 4 / 3, e: 2, f: 1 });
+    expect(wellFormedOnCorners(scaled.polygons)).toBe(true);
     expect(scaled.bounds()).toEqual(rect(2, 1, 5, 4));
   });
-});
 
+  it("never snaps what it is given, so a checkpoint brings a rotated outline back exactly", () => {
+    const turned = new Selection([box]).placed(turnBy(33));
+    const restored = selectionFromJson(JSON.parse(JSON.stringify(selectionJson(turned))));
+    expect(restored.polygons).toEqual(turned.polygons);
+  });
+});
 describe("coversRect (L2)", () => {
   it("is true for a solid, pixel-aligned rectangle around the area", () => {
     const all = Selection.all({ width: 40, height: 30 });

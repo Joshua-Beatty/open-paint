@@ -7,6 +7,8 @@ import {
   clipPolygons,
   composeAffine,
   DEFAULT_SELECTION_QUALITY,
+  normalizePolygons,
+  onPixelCorners,
   pixelPolygons,
   polygonsArea,
   polygonsBounds,
@@ -29,9 +31,11 @@ const COMBINE_OPERATIONS: Record<Exclude<SelectionCombineMode, "replace">, ClipO
  * optional pending transform that applies on commit. Every operation returns a new selection, so
  * history can keep the previous one. An empty polygon set means nothing is selected.
  *
- * Selections are pixel based (owner request): the polygons, and the polygons a pending transform
- * gives, have every vertex on a whole pixel corner (`pixelPolygons`). Geometry with fractional
- * vertices, such as a selection from an older checkpoint, is snapped when it is made.
+ * Selections are pixel based (owner request): the tools make them with every vertex on a whole
+ * pixel corner, combining two such selections keeps them there, and `placed` keeps them there
+ * through moves and resizes. A rotated outline keeps its exact, fractional vertices (owner
+ * request), through later moves, resizes, combines, history and checkpoints: the selection itself
+ * never snaps geometry it is given.
  */
 export class Selection {
   readonly quality: SelectionQuality;
@@ -43,7 +47,7 @@ export class Selection {
     quality: SelectionQuality = DEFAULT_SELECTION_QUALITY,
     pendingTransform?: AffineMatrix,
   ) {
-    this.#polygons = pixelPolygons(polygons);
+    this.#polygons = normalizePolygons(polygons);
     this.quality = quality;
     this.pendingTransform = pendingTransform;
   }
@@ -63,11 +67,23 @@ export class Selection {
     return this.#polygons;
   }
 
-  /** The polygons with the pending transform applied and snapped to pixel corners. */
+  /** The polygons with the pending transform applied and normalized. */
   effectivePolygons(): readonly SelectionPolygon[] {
     if (!this.pendingTransform) return this.#polygons;
     const m = this.pendingTransform;
-    return pixelPolygons(this.#polygons.map((polygon) => transformPolygon(polygon, m)));
+    return normalizePolygons(this.#polygons.map((polygon) => transformPolygon(polygon, m)));
+  }
+
+  /**
+   * The selection moved by `m` and committed, as the move tools place it (owner request). A move,
+   * resize, flip or quarter turn of a selection on pixel corners stays on pixel corners: its
+   * vertices go to the nearest corner. Any other turn, or a selection already off the corners
+   * (a rotated one), keeps its exact outline, so a rotation never changes the shape.
+   */
+  placed(m: AffineMatrix): Selection {
+    const moved = this.transform(m).commit();
+    if (!axisAligned(m) || !onPixelCorners(this.effectivePolygons())) return moved;
+    return new Selection(pixelPolygons(moved.polygons), this.quality);
   }
 
   /** The integer rectangle that bounds the selection, or an empty rectangle when empty. */
@@ -129,10 +145,12 @@ export class Selection {
    */
   combine(incoming: readonly SelectionPolygon[], mode: SelectionCombineMode): Selection {
     if (mode === "replace") return new Selection(incoming, this.quality);
-    return new Selection(
-      clipPolygons(COMBINE_OPERATIONS[mode], this.effectivePolygons(), incoming),
-      this.quality,
-    );
+    const current = this.effectivePolygons();
+    const result = clipPolygons(COMBINE_OPERATIONS[mode], current, incoming);
+    // Two outlines on pixel corners combine onto pixel corners, where their slanted edges cross
+    // too. A rotated outline keeps its exact edges, and so its crossings.
+    const snap = onPixelCorners(current) && onPixelCorners(incoming);
+    return new Selection(snap ? pixelPolygons(result) : result, this.quality);
   }
 
   /**
@@ -146,9 +164,14 @@ export class Selection {
       for (let i = 0; i < mask.length; i++) mask[i] = mask[i] === 0 ? 255 : 0;
       return new Selection(maskRunPolygons(mask, size.width, size.height), this.quality);
     }
-    return new Selection(
-      clipPolygons("difference", [rectPolygon(canvas)], this.effectivePolygons()),
-      this.quality,
-    );
+    const current = this.effectivePolygons();
+    const result = clipPolygons("difference", [rectPolygon(canvas)], current);
+    return new Selection(onPixelCorners(current) ? pixelPolygons(result) : result, this.quality);
   }
+}
+
+/** Whether `m` keeps the axes: no turn, or a quarter turn, possibly with a flip and a scale. */
+function axisAligned(m: AffineMatrix): boolean {
+  const tiny = (value: number) => Math.abs(value) < 1e-9;
+  return (tiny(m.b) && tiny(m.c)) || (tiny(m.a) && tiny(m.d));
 }

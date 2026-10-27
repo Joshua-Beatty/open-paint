@@ -161,7 +161,25 @@ describe("flipObjectCpu (FX-OBJ-FLIP-02, FX-OBJ-FLIP-04)", () => {
   });
 });
 
+/** A 6 x 4 rectangle turned by 0.4 radians about (5, 5). */
+const ROTATED_SQUARE: SelectionPolygon = [2, 3, 8, 3, 8, 7, 2, 7].map((value, i, all) => {
+  const t = 0.4;
+  const x = (i % 2 === 0 ? value : (all[i - 1] ?? 0)) - 5;
+  const y = (i % 2 === 0 ? (all[i + 1] ?? 0) : value) - 5;
+  return i % 2 === 0
+    ? 5 + x * Math.cos(t) - y * Math.sin(t)
+    : 5 + x * Math.sin(t) + y * Math.cos(t);
+});
+
 describe("flipSelection (FX-OBJ-FLIP-03)", () => {
+  it("mirrors a rotated outline exactly, keeping its fractional vertices", () => {
+    const selection = new Selection([ROTATED_SQUARE]);
+    const region = selection.bounds();
+    const flipped = flipSelection(selection, region, false);
+    expect(flipped.area()).toBeCloseTo(selection.area(), 6);
+    expect(flipped.polygons.flat().some((value) => !Number.isInteger(value))).toBe(true);
+  });
+
   const cases: readonly [string, SelectionPolygon, SelectionQuality][] = [
     ["an aliased L", L_SHAPE, "aliased"],
     ["an antialiased L", L_SHAPE, "antialiased"],
@@ -171,6 +189,9 @@ describe("flipSelection (FX-OBJ-FLIP-03)", () => {
       "antialiased",
     ],
     ["an aliased ellipse", ellipsePolygon({ x: 1, y: 2, width: 7, height: 5 }), "aliased"],
+    // A rotated outline keeps its exact, fractional vertices (owner request).
+    ["an antialiased rotated square", ROTATED_SQUARE, "antialiased"],
+    ["an aliased rotated square", ROTATED_SQUARE, "aliased"],
   ];
   for (const [name, polygon, quality] of cases) {
     for (const vertical of [false, true]) {

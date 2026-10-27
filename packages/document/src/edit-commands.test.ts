@@ -201,6 +201,30 @@ describe("Crop to Selection (DOC-IMG-01)", () => {
     expect(pixel(layerAt(doc, 0), 0, 0).a).toBe(255);
   });
 
+  it("crops to a rotated selection, keeping its exact outline moved to the new origin", () => {
+    const doc = Document.createBlank({ width: 40, height: 30 });
+    const t = 0.4;
+    const turned = [6, 5, 26, 5, 26, 17, 6, 17].map((value, i, all) => {
+      const x = (i % 2 === 0 ? value : (all[i - 1] ?? 0)) - 16;
+      const y = (i % 2 === 0 ? (all[i + 1] ?? 0) : value) - 11;
+      return i % 2 === 0
+        ? 16 + x * Math.cos(t) - y * Math.sin(t)
+        : 11 + x * Math.sin(t) + y * Math.cos(t);
+    });
+    doc.combineSelection([turned], "replace");
+    const before = doc.selection;
+    const bounds = before.bounds();
+    expect(doc.cropToSelection()).toBe(true);
+    expect(doc.width).toBe(bounds.width);
+    expect(doc.selection.area()).toBeCloseTo(before.area(), 6);
+    const shifted = before.polygons[0]?.map((v, i) => v - (i % 2 === 0 ? bounds.x : bounds.y));
+    const after = doc.selection.polygons[0] ?? [];
+    expect(after).toHaveLength(8);
+    after.forEach((value, i) => {
+      expect(value).toBeCloseTo(shifted?.[i] ?? Number.NaN, 6);
+    });
+  });
+
   it("crops an ellipse over two layers to its bounds and clears outside it, as one step", async () => {
     const doc = Document.createBlank({ width: 40, height: 30 });
     const top = doc.addLayer();

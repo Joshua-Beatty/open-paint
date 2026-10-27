@@ -281,7 +281,7 @@ function selectionTarget(
       if (!live()) return;
       current = { m, anchor };
       pending = true;
-      result = base.transform(m).commit();
+      result = base.placed(m);
       document.previewSelection(result);
     },
     commit(name, record) {

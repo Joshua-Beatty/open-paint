@@ -166,9 +166,10 @@ export function pixelAnchor(source: Rect, m: AffineMatrix, anchor: FramePoint): 
 }
 
 /**
- * The frame of the move tools, whose selections are pixel based (owner request): each corner is
- * drawn at the pixel corner nearest it (for an unrotated frame, where it already is), each edge
- * handle midway between its corners, so on a pixel edge, and the anchor at `pixelAnchor`.
+ * The frame of the move tools, whose selections are pixel based (owner request). An unrotated (or
+ * quarter-turned) frame has its corners on pixel corners and its edge handles midway between them,
+ * on pixel edges. A rotated frame is drawn exactly where it turned to, since a rotation keeps the
+ * outline exact (owner request). The anchor is at `pixelAnchor`.
  */
 export function pixelFrameGeometry(
   source: Rect,
@@ -176,7 +177,8 @@ export function pixelFrameGeometry(
   anchor: FramePoint,
 ): FrameGeometry {
   const exact = frameGeometry(source, m, anchor);
-  const [nw, ne, se, sw] = exact.corners.map(nearestCorner) as [
+  const place = axisAligned(m) === undefined ? (p: FramePoint) => p : nearestCorner;
+  const [nw, ne, se, sw] = exact.corners.map(place) as [
     FramePoint,
     FramePoint,
     FramePoint,
@@ -510,11 +512,11 @@ export function snapFrameToPixels(
 /**
  * The transform and anchor a gesture of the move tools gives (TL-MOVE-01), whose selections are
  * pixel based (owner request). A move goes by whole pixels. A scale puts the dragged edges on
- * whole pixels, so the frame grows pixel by pixel; a rotated frame keeps whole-pixel side
- * lengths instead. A rotation keeps its free angle (Shift: 15 degree steps) about `pixelAnchor`,
- * and lands its edges on pixels at quarter turns. The anchor goes to the nearest pixel corner, or
- * to the frame's centre when that is nearer. The selection outline snaps its vertices to corners
- * itself.
+ * whole pixels, so the frame grows pixel by pixel; a rotated frame's sides grow in whole-pixel
+ * steps instead, its corners staying where the rotation put them. A rotation keeps its free angle
+ * (Shift: 15 degree steps) about `pixelAnchor`, and lands its edges on pixels at quarter turns.
+ * The anchor goes to the nearest pixel corner, or to the frame's centre when that is nearer.
+ * `Selection.placed` keeps the outline on pixel corners except where it is rotated.
  */
 export function pixelGestureResult(
   source: Rect,

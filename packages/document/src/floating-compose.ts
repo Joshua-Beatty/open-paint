@@ -94,7 +94,7 @@ export class FloatingSource {
     if (drawn) {
       const { x, y } = drawn.origin;
       const covered = rect(x, y, drawn.pixels.width, drawn.pixels.height);
-      const coverage = this.shape.transform(m).mask(covered);
+      const coverage = this.shape.placed(m).mask(covered);
       placeByCoverage(result, drawn.pixels, x - region.x, y - region.y, coverage);
     }
     return result;
@@ -182,7 +182,7 @@ export function composeFloatingRows(
       top - bounds.y,
       rows,
     );
-    const mask = source.shape.transform(m).mask(bounds);
+    const mask = source.shape.placed(m).mask(bounds);
     const from = (top - bounds.y) * bounds.width;
     placeByCoverage(
       result,

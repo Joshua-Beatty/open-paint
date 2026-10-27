@@ -433,7 +433,7 @@ export class FloatingPixels {
   /** The selection the content has at `m`: the outline moved with the content. */
   #selectionAt(m: AffineMatrix): Selection {
     this.#outlineSelection ??= new Selection(this.#outline, this.#quality);
-    return this.#outlineSelection.transform(m).commit();
+    return this.#outlineSelection.placed(m);
   }
 
   #setSelection(selection: Selection): void {
@@ -515,7 +515,7 @@ export class FloatingPixels {
       shape =
         this.#outline.length > 0
           ? (selection ?? this.#selectionAt(m)).effectivePolygons()
-          : this.#source.shape.transform(m).commit().effectivePolygons();
+          : this.#source.shape.placed(m).effectivePolygons();
     }
     return { transform: m, options: this.#options, shape, quality: this.#quality };
   }

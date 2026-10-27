@@ -324,11 +324,12 @@ describe("pixel frames of the move tools (owner request: selections are pixel ba
     expect(m).toEqual(translationAffine(3, -1));
   });
 
-  it("rotates freely, drawing the rotated frame's corners on pixel corners", () => {
+  it("rotates freely, drawing the rotated frame exactly where it turned to", () => {
     const { m, anchor } = turnBy(20);
     expect(Math.atan2(m.b, m.a)).toBeCloseTo((20 * Math.PI) / 180, 9);
     const geometry = pixelFrameGeometry(FRAME, m, anchor);
-    for (const corner of geometry.corners) expect(isWhole(corner)).toBe(true);
+    expect(geometry.corners).toEqual(frameGeometry(FRAME, m, anchor).corners);
+    expect(geometry.corners.some((corner) => !isWhole(corner))).toBe(true);
     // The anchor stays the turn's centre.
     expect(geometry.anchor.x).toBeCloseTo(MIDDLE.x, 9);
     expect(geometry.anchor.y).toBeCloseTo(MIDDLE.y, 9);
@@ -345,6 +346,37 @@ describe("pixel frames of the move tools (owner request: selections are pixel ba
     const geometry = pixelFrameGeometry(FRAME, m, after);
     expect(geometry.anchor).toEqual({ x: 6, y: 8 });
     for (const corner of geometry.corners) expect(isWhole(corner)).toBe(true);
+  });
+
+  it("moves a rotated frame by whole pixels, keeping its corners' fractional parts", () => {
+    const turned = turnBy(20).m;
+    const start = startAt({ x: 8, y: 8 }, MIDDLE, turned);
+    const { m } = pixelGestureResult(
+      FRAME,
+      { kind: "move", start },
+      { x: 10.6, y: 4.4 },
+      NO_MODIFIERS,
+    );
+    const before = frameGeometry(FRAME, turned, MIDDLE).corners;
+    const after = pixelFrameGeometry(FRAME, m, MIDDLE).corners;
+    after.forEach((corner, i) => {
+      expect(corner.x - (before[i]?.x ?? 0)).toBeCloseTo(3, 9);
+      expect(corner.y - (before[i]?.y ?? 0)).toBeCloseTo(-4, 9);
+    });
+  });
+
+  it("resizes a rotated frame in whole-pixel steps of its sides", () => {
+    const turned = turnBy(30).m;
+    const widths = new Set<number>();
+    for (let i = 0; i <= 12; i++) {
+      const p = { x: 16 + i * 0.3, y: 12 + i * 0.17 };
+      const { m } = scaleBy("e", { x: 16, y: 12 }, p, NO_MODIFIERS, turned);
+      const width = FRAME.width * Math.hypot(m.a, m.b);
+      expect(width).toBeCloseTo(Math.round(width), 9);
+      widths.add(Math.round(width));
+    }
+    const sorted = [...widths].sort((a, b) => a - b);
+    for (let i = 1; i < sorted.length; i++) expect((sorted[i] ?? 0) - (sorted[i - 1] ?? 0)).toBe(1);
   });
 
   it("keeps a rotated frame's sides whole pixels long when resized", () => {
