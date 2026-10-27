@@ -140,6 +140,64 @@ export function frameGeometry(source: Rect, m: AffineMatrix, anchor: FramePoint)
   };
 }
 
+/** The pixel corner nearest `p`. */
+function nearestCorner(p: FramePoint): FramePoint {
+  return { x: Math.round(p.x) + 0, y: Math.round(p.y) + 0 };
+}
+
+function midpoint(a: FramePoint, b: FramePoint): FramePoint {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+/** Whether `anchor` (in the source's coordinates) is the source's centre. */
+function atCenter(source: Rect, anchor: FramePoint): boolean {
+  const center = centerOf(source);
+  return Math.abs(anchor.x - center.x) < 1e-9 && Math.abs(anchor.y - center.y) < 1e-9;
+}
+
+/**
+ * The rotation anchor of a pixel frame on the canvas: the frame's exact centre while the anchor is
+ * there (it then lies on a corner, an edge's middle or a pixel's centre, since the frame's sides are
+ * whole pixels), otherwise the pixel corner nearest it. Rotations turn about this point.
+ */
+export function pixelAnchor(source: Rect, m: AffineMatrix, anchor: FramePoint): FramePoint {
+  const at = applyAffine(m, anchor.x, anchor.y);
+  return atCenter(source, anchor) ? at : nearestCorner(at);
+}
+
+/**
+ * The frame of the move tools, whose selections are pixel based (owner request): each corner is
+ * drawn at the pixel corner nearest it (for an unrotated frame, where it already is), each edge
+ * handle midway between its corners, so on a pixel edge, and the anchor at `pixelAnchor`.
+ */
+export function pixelFrameGeometry(
+  source: Rect,
+  m: AffineMatrix,
+  anchor: FramePoint,
+): FrameGeometry {
+  const exact = frameGeometry(source, m, anchor);
+  const [nw, ne, se, sw] = exact.corners.map(nearestCorner) as [
+    FramePoint,
+    FramePoint,
+    FramePoint,
+    FramePoint,
+  ];
+  return {
+    corners: [nw, ne, se, sw],
+    handles: {
+      nw,
+      n: midpoint(nw, ne),
+      ne,
+      e: midpoint(ne, se),
+      se,
+      s: midpoint(se, sw),
+      sw,
+      w: midpoint(sw, nw),
+    },
+    anchor: pixelAnchor(source, m, anchor),
+  };
+}
+
 function distance(a: FramePoint, b: FramePoint): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -167,7 +225,8 @@ function distanceToOutline(p: FramePoint, corners: readonly FramePoint[]): numbe
  * What a press at `p` does (TL-MOVE-01). The anchor, the reset button and the nearest handle come first.
  * A right-button press rotates from anywhere. A left press inside the frame moves it, and one just
  * outside the frame rotates it. Anything else does nothing and returns undefined. `scale` is the
- * view's zoom in CSS pixels per image pixel, since the hit areas are measured on screen.
+ * view's zoom in CSS pixels per image pixel, since the hit areas are measured on screen. With
+ * `pixels`, the handles are where `pixelFrameGeometry` draws them.
  */
 export function hitFrame(
   source: Rect,
@@ -176,8 +235,9 @@ export function hitFrame(
   p: FramePoint,
   button: number,
   scale = 1,
+  pixels = false,
 ): FrameHit | undefined {
-  const geometry = frameGeometry(source, m, anchor);
+  const geometry = (pixels ? pixelFrameGeometry : frameGeometry)(source, m, anchor);
   const radius = FRAME_HIT_RADIUS / scale;
   if (distance(p, geometry.anchor) <= radius) return { kind: "anchor" };
   if (distance(p, resetPoint(geometry.anchor, scale)) <= radius) return { kind: "reset" };
@@ -358,6 +418,176 @@ export function gestureResult(
     case "anchor":
       return { m: start.m, anchor: applyAffine(invertAffine(start.m), p.x, p.y) };
   }
+}
+
+/** How close to zero a matrix entry must be for the frame to count as unrotated. */
+const AXIS_EPSILON = 1e-9;
+
+/** `value` rounded to a whole pixel, halves going down (`low`) or up. */
+function roundEdge(value: number, low: boolean): number {
+  return (low ? -Math.round(-value) : Math.round(value)) + 0;
+}
+
+/**
+ * The two canvas edges `v0` and `v1` of a frame side on whole pixels, at least one pixel apart. A
+ * lower edge rounds its halves down and an upper one up, so a side scaled about its centre stays
+ * centred. Where both would land on the same pixel, the edge that moved from `s0`, `s1` (where
+ * the gesture started) moves one pixel on, the way it was going.
+ */
+function snapSpan(v0: number, v1: number, s0: number, s1: number): readonly [number, number] {
+  let r0 = roundEdge(v0, v0 <= v1);
+  let r1 = roundEdge(v1, v1 < v0);
+  if (r0 === r1) {
+    const direction = v1 >= v0 ? 1 : -1;
+    if (Math.abs(v0 - s0) > Math.abs(v1 - s1)) r0 = r1 - direction;
+    else r1 = r0 + direction;
+  }
+  return [r0, r1];
+}
+
+/** Whether `m` maps the source's axes onto the canvas's axes (no turn, or a quarter turn). */
+function axisAligned(m: AffineMatrix): "straight" | "quarter" | undefined {
+  if (Math.abs(m.b) < AXIS_EPSILON && Math.abs(m.c) < AXIS_EPSILON) return "straight";
+  if (Math.abs(m.a) < AXIS_EPSILON && Math.abs(m.d) < AXIS_EPSILON) return "quarter";
+  return undefined;
+}
+
+/**
+ * `m` with the frame's edges on whole pixels, when the frame is unrotated or turned by quarter
+ * turns: each side at least a pixel long (`start` says which edge of a collapsing side moved).
+ * A rotated frame is returned as it is.
+ */
+export function snapFrameToPixels(
+  source: Rect,
+  m: AffineMatrix,
+  start: AffineMatrix = m,
+): AffineMatrix {
+  const left = source.x;
+  const right = source.x + source.width;
+  const top = source.y;
+  const bottom = source.y + source.height;
+  const kind = axisAligned(m);
+  if (kind === "straight") {
+    const startKind = axisAligned(start) === "straight";
+    const [x0, x1] = snapSpan(
+      m.a * left + m.e,
+      m.a * right + m.e,
+      startKind ? start.a * left + start.e : m.a * left + m.e,
+      startKind ? start.a * right + start.e : m.a * right + m.e,
+    );
+    const [y0, y1] = snapSpan(
+      m.d * top + m.f,
+      m.d * bottom + m.f,
+      startKind ? start.d * top + start.f : m.d * top + m.f,
+      startKind ? start.d * bottom + start.f : m.d * bottom + m.f,
+    );
+    const a = (x1 - x0) / source.width;
+    const d = (y1 - y0) / source.height;
+    return { a, b: 0, c: 0, d, e: x0 - a * left, f: y0 - d * top };
+  }
+  if (kind === "quarter") {
+    // The source's columns run down the canvas's rows: x' = c y + e, y' = b x + f.
+    const startKind = axisAligned(start) === "quarter";
+    const [x0, x1] = snapSpan(
+      m.c * top + m.e,
+      m.c * bottom + m.e,
+      startKind ? start.c * top + start.e : m.c * top + m.e,
+      startKind ? start.c * bottom + start.e : m.c * bottom + m.e,
+    );
+    const [y0, y1] = snapSpan(
+      m.b * left + m.f,
+      m.b * right + m.f,
+      startKind ? start.b * left + start.f : m.b * left + m.f,
+      startKind ? start.b * right + start.f : m.b * right + m.f,
+    );
+    const c = (x1 - x0) / source.height;
+    const b = (y1 - y0) / source.width;
+    return { a: 0, b, c, d: 0, e: x0 - c * top, f: y0 - b * left };
+  }
+  return m;
+}
+
+/**
+ * The transform and anchor a gesture of the move tools gives (TL-MOVE-01), whose selections are
+ * pixel based (owner request). A move goes by whole pixels. A scale puts the dragged edges on
+ * whole pixels, so the frame grows pixel by pixel; a rotated frame keeps whole-pixel side
+ * lengths instead. A rotation keeps its free angle (Shift: 15 degree steps) about `pixelAnchor`,
+ * and lands its edges on pixels at quarter turns. The anchor goes to the nearest pixel corner, or
+ * to the frame's centre when that is nearer. The selection outline snaps its vertices to corners
+ * itself.
+ */
+export function pixelGestureResult(
+  source: Rect,
+  gesture: FrameGesture,
+  p: FramePoint,
+  modifiers: GestureModifiers,
+): GestureResult {
+  const { start } = gesture;
+  switch (gesture.kind) {
+    case "move": {
+      const result = gestureResult(source, gesture, p, modifiers);
+      return { m: snapFrameToPixels(source, result.m), anchor: result.anchor };
+    }
+    case "rotate": {
+      const pivot = pixelAnchor(source, start.m, start.anchor);
+      let turn = turnBetween(start.press, p, pivot);
+      if (modifiers.shift) turn = Math.round(turn / ROTATION_SNAP) * ROTATION_SNAP;
+      const rotation = rotationAboutAffine(pivot.x, pivot.y, turn);
+      const m = composeAffine(rotation, start.m);
+      const anchor = atCenter(source, start.anchor)
+        ? start.anchor
+        : applyAffine(invertAffine(start.m), pivot.x, pivot.y);
+      return { m: snapFrameToPixels(source, m), anchor };
+    }
+    case "scale": {
+      const result = gestureResult(source, gesture, p, modifiers);
+      if (axisAligned(result.m) !== undefined) {
+        return { m: snapFrameToPixels(source, result.m, start.m), anchor: result.anchor };
+      }
+      return { m: wholeSides(source, result.m, gesture.handle, modifiers), anchor: result.anchor };
+    }
+    case "anchor": {
+      const center = applyAffine(start.m, ...centerPair(source));
+      const corner = nearestCorner(p);
+      const toCenter = distance(p, center) < distance(p, corner);
+      return {
+        m: start.m,
+        anchor: toCenter
+          ? centerOf(source)
+          : applyAffine(invertAffine(start.m), corner.x, corner.y),
+      };
+    }
+  }
+}
+
+function centerPair(source: Rect): [number, number] {
+  const center = centerOf(source);
+  return [center.x, center.y];
+}
+
+/**
+ * A rotated frame `m` with whole-pixel side lengths, at least one pixel, scaled about the pivot a
+ * scale with `handle` keeps in place.
+ */
+function wholeSides(
+  source: Rect,
+  m: AffineMatrix,
+  handle: FrameHandle,
+  modifiers: GestureModifiers,
+): AffineMatrix {
+  const { dx, dy } = handleDirection(handle);
+  const center = centerOf(source);
+  const pivot: FramePoint = modifiers.alt
+    ? center
+    : {
+        x: dx < 0 ? source.x + source.width : dx > 0 ? source.x : center.x,
+        y: dy < 0 ? source.y + source.height : dy > 0 ? source.y : center.y,
+      };
+  const width = source.width * Math.hypot(m.a, m.b);
+  const height = source.height * Math.hypot(m.c, m.d);
+  const sx = width > 0 ? Math.max(1, Math.round(width)) / width : 1;
+  const sy = height > 0 ? Math.max(1, Math.round(height)) / height : 1;
+  return composeAffine(m, scalingAboutAffine(pivot.x, pivot.y, sx, sy));
 }
 
 /**

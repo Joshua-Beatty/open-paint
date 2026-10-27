@@ -170,6 +170,25 @@ describe("Move Selected Pixels (TL-MOVE-PIX-01, TL-FRAME-01)", () => {
     expect(doc.selection.bounds()).toEqual(rect(10, 4, 40, 40));
   });
 
+  it("moves and resizes the pixels by whole pixels, the outline landing on pixel edges", () => {
+    drag(BODY_PRESS, { x: BODY_PRESS.x + 6.4, y: BODY_PRESS.y + 2.6 });
+    expect(doc.selection.bounds()).toEqual(rect(10, 7, 40, 40));
+    expect(pixel(10, 7)).toEqual(RED);
+    expect(pixel(9, 7).a).toBe(0);
+    drag({ x: 50, y: 47 }, { x: 56.3, y: 51.6 });
+    expect(doc.history.undoName).toBe("history.resizePixels");
+    expect(doc.selection.bounds()).toEqual(rect(10, 7, 46, 45));
+    for (const ring of doc.selection.polygons) {
+      expect(ring.every((value) => Number.isInteger(value))).toBe(true);
+    }
+    // The scaled block fills whole pixels up to its new edges, and nothing past them.
+    expect(doc.selection.mask(rect(55, 51, 1, 1))[0]).toBe(255);
+    expect(pixel(55, 51).g).toBeLessThan(128);
+    // Past them the white background shows, untouched.
+    expect(pixel(56, 30)).toEqual(pixel(60, 60));
+    expect(pixel(30, 52)).toEqual(pixel(60, 60));
+  });
+
   it("previews a rotation over the layer and records it once the worker's result lands", async () => {
     const reference = selectedBlock();
     const plain = movePixelsToolRuntime({ ...host(), document: () => reference }, handoff);
@@ -829,6 +848,58 @@ describe("Move Selection (TL-MOVE-SEL-01)", () => {
     runtime.pointer(event("down", BODY_PRESS.x, BODY_PRESS.y));
     runtime.pointer(event("up", BODY_PRESS.x, BODY_PRESS.y));
     expect(doc.history.appliedCommands.length).toBe(before);
+  });
+
+  it("resizes in whole-pixel steps at 800 %, with handles and outline on pixel corners", () => {
+    const before = doc.history.appliedCommands.length;
+    const zoomed = (type: ToolPointerEvent["type"], x: number, y: number): ToolPointerEvent => ({
+      ...event(type, x, y),
+      clientX: x * 8,
+      clientY: y * 8,
+      viewScale: 8,
+    });
+    runtime.pointer(zoomed("down", SE_HANDLE.x, SE_HANDLE.y));
+    let last = SE_HANDLE.x;
+    for (let i = 1; i <= 20; i++) {
+      // 3.5 CSS px at 8 CSS px per image pixel.
+      const p = { x: SE_HANDLE.x + 0.01 + (i * 3.5) / 8, y: SE_HANDLE.y + 0.01 + (i * 3.5) / 16 };
+      runtime.pointer(zoomed("move", p.x, p.y));
+      const state = transformFrame.state;
+      if (state === undefined) throw new Error("no frame");
+      for (const handle of Object.values(state.handles)) {
+        expect(Number.isInteger(handle.x * 2) && Number.isInteger(handle.y * 2)).toBe(true);
+      }
+      expect(state.handles.se).toEqual({ x: Math.round(p.x), y: Math.round(p.y) });
+      expect([0, 1]).toContain(state.handles.se.x - last);
+      last = state.handles.se.x;
+      for (const ring of doc.selection.polygons) {
+        expect(ring.every((value) => Number.isInteger(value))).toBe(true);
+      }
+      expect(doc.selection.bounds()).toEqual(rect(4, 4, Math.round(p.x) - 4, Math.round(p.y) - 4));
+    }
+    runtime.pointer(zoomed("up", last, 46));
+    expect(doc.history.appliedCommands.length).toBe(before + 1);
+    expect(doc.history.undoName).toBe("history.resizeSelection");
+  });
+
+  it("rotates freely, with the turned outline's vertices and the frame's corners on pixel corners", () => {
+    const from = { x: 24 + 30 * Math.cos(-0.5), y: 24 + 30 * Math.sin(-0.5) };
+    const to = { x: 24 + 30 * Math.cos(-0.5 + 0.37), y: 24 + 30 * Math.sin(-0.5 + 0.37) };
+    runtime.pointer(event("down", from.x, from.y, 2));
+    runtime.pointer(event("move", to.x, to.y, 2));
+    runtime.pointer(event("up", to.x, to.y, 2));
+    expect(doc.history.undoName).toBe("history.rotateSelection");
+    const [ring, ...others] = doc.selection.polygons;
+    expect(others).toHaveLength(0);
+    expect(ring).toHaveLength(8);
+    expect(ring?.every((value) => Number.isInteger(value))).toBe(true);
+    for (const corner of transformFrame.state?.corners ?? []) {
+      expect(Number.isInteger(corner.x) && Number.isInteger(corner.y)).toBe(true);
+    }
+    // The angle itself is free: the frame turned by the drag's 0.37 radians.
+    const [nw, ne] = transformFrame.state?.corners ?? [];
+    if (nw === undefined || ne === undefined) throw new Error("no corners");
+    expect(Math.atan2(ne.y - nw.y, ne.x - nw.x)).toBeCloseTo(0.37, 1);
   });
 
   it("shows the move arrows inside the selection, and the default cursor without one", () => {

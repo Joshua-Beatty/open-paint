@@ -31,11 +31,11 @@ import {
   type FramePoint,
   type FrameStart,
   frameCursor,
-  frameGeometry,
   gestureCursor,
   gestureFor,
-  gestureResult,
   hitFrame,
+  pixelFrameGeometry,
+  pixelGestureResult,
   type TransformFrameState,
   transformFrame,
 } from "./transform-frame";
@@ -159,13 +159,14 @@ function centerOf(source: Rect): FramePoint {
  * selection's marching ants already show the shape (owner request).
  */
 function frameState(source: Rect, m: AffineMatrix, anchor: FramePoint): TransformFrameState {
-  return { ...frameGeometry(source, m, anchor), outline: false };
+  return { ...pixelFrameGeometry(source, m, anchor), outline: false };
 }
 
 /**
  * The runtime of a frame tool (TL-MOVE-01). A press on the frame starts a move, a scale, a rotation
  * or an anchor drag. Each drag records one history step when it ends, and the target is drawn live
- * while the drag runs. A press whose pointer stays within its click dead zone changes nothing.
+ * while the drag runs. The frame is pixel based (owner request): its handles sit on the pixel grid
+ * and its gestures move and resize by whole pixels (`pixelGestureResult`). A press whose pointer stays within its click dead zone changes nothing.
  * Arrow keys nudge the target, and nudges that follow each other merge. Enter, Esc and a tool switch finish the target with its "Finish" step.
  */
 class FrameRuntime implements SteppedRuntime {
@@ -362,13 +363,13 @@ class FrameRuntime implements SteppedRuntime {
     }
     const scale = viewScaleOf(hover);
     if (target !== undefined) {
-      const hit = hitFrame(target.source, target.transform, target.anchor, p, 0, scale);
+      const hit = hitFrame(target.source, target.transform, target.anchor, p, 0, scale, true);
       return frameCursor(hit, target.source, target.transform, p);
     }
     const source = this.#options.idleSource?.();
     if (source === undefined || isEmptyRect(source)) return undefined;
     const center = { x: source.x + source.width / 2, y: source.y + source.height / 2 };
-    const hit = hitFrame(source, IDENTITY_AFFINE, center, p, 0, scale);
+    const hit = hitFrame(source, IDENTITY_AFFINE, center, p, 0, scale, true);
     return frameCursor(hit, source, IDENTITY_AFFINE, p);
   }
 
@@ -538,7 +539,7 @@ class FrameRuntime implements SteppedRuntime {
     // and pressing it lifts nothing.
     if (this.#current() === undefined && this.#idle !== undefined) {
       const idle = this.#idle;
-      const hit = hitFrame(idle, IDENTITY_AFFINE, centerOf(idle), press, event.button, scale);
+      const hit = hitFrame(idle, IDENTITY_AFFINE, centerOf(idle), press, event.button, scale, true);
       if (hit?.kind === "reset") return;
     }
     if (this.#current() === undefined && this.#options.startsOnDrag?.() === true) {
@@ -546,7 +547,7 @@ class FrameRuntime implements SteppedRuntime {
       const source = this.#options.idleSource?.();
       if (source === undefined || isEmptyRect(source)) return;
       const anchor = centerOf(source);
-      const hit = hitFrame(source, IDENTITY_AFFINE, anchor, press, event.button, scale);
+      const hit = hitFrame(source, IDENTITY_AFFINE, anchor, press, event.button, scale, true);
       const gesture =
         hit === undefined ? undefined : gestureFor(hit, { m: IDENTITY_AFFINE, anchor, press });
       if (gesture === undefined || gesture.kind !== "move") return;
@@ -572,6 +573,7 @@ class FrameRuntime implements SteppedRuntime {
       press,
       event.button,
       scale,
+      true,
     );
     if (hit?.kind === "reset") {
       const center = centerOf(target.source);
@@ -656,7 +658,7 @@ class FrameRuntime implements SteppedRuntime {
     const target = this.#current();
     if (drag === undefined || target === undefined) return;
     const source = target.source;
-    const result = gestureResult(source, drag.gesture, p, {
+    const result = pixelGestureResult(source, drag.gesture, p, {
       shift: event.shiftKey,
       alt: event.altKey,
     });

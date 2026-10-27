@@ -19,8 +19,11 @@ import {
   handleAxis,
   hitFrame,
   MIN_SCALE,
+  pixelFrameGeometry,
+  pixelGestureResult,
   ROTATION_SNAP,
   resetPoint,
+  snapFrameToPixels,
   transformFrame,
 } from "./transform-frame";
 
@@ -235,5 +238,141 @@ describe("transformFrame", () => {
     transformFrame.set(undefined);
     expect(listener).toHaveBeenCalledTimes(2);
     stop();
+  });
+});
+
+describe("pixel frames of the move tools (owner request: selections are pixel based)", () => {
+  const FRAME = rect(3, 4, 13, 9);
+  const MIDDLE = { x: 3 + 13 / 2, y: 4 + 9 / 2 };
+  const scaleBy = (
+    handle: (typeof FRAME_HANDLES)[number],
+    press: { x: number; y: number },
+    p: { x: number; y: number },
+    modifiers = NO_MODIFIERS,
+    m = IDENTITY,
+    anchor = MIDDLE,
+  ) =>
+    pixelGestureResult(
+      FRAME,
+      { kind: "scale", start: startAt(press, anchor, m), handle },
+      p,
+      modifiers,
+    );
+  const isWhole = (p: { x: number; y: number }) => Number.isInteger(p.x) && Number.isInteger(p.y);
+  const turnBy = (degrees: number, anchor = MIDDLE, m = IDENTITY, modifiers = NO_MODIFIERS) => {
+    const pivot = applyAffine(m, anchor.x, anchor.y);
+    const press = { x: pivot.x + 40, y: pivot.y };
+    const t = (degrees * Math.PI) / 180;
+    const p = { x: pivot.x + 40 * Math.cos(t), y: pivot.y + 40 * Math.sin(t) };
+    return pixelGestureResult(
+      FRAME,
+      { kind: "rotate", start: startAt(press, anchor, m) },
+      p,
+      modifiers,
+    );
+  };
+
+  it("resizes in whole-pixel steps, even when the pointer moves less than a pixel at a time", () => {
+    // At 800 % a 3.5 CSS px pointer step is 0.4375 image pixels.
+    const press = { x: 16, y: 13 };
+    const seen: number[] = [];
+    for (let i = 1; i <= 24; i++) {
+      const p = { x: press.x + (i * 3.5) / 8, y: press.y + (i * 3.5) / 8 };
+      const { m, anchor } = scaleBy("se", press, p);
+      const geometry = pixelFrameGeometry(FRAME, m, anchor);
+      for (const corner of geometry.corners) expect(isWhole(corner)).toBe(true);
+      expect(geometry.handles.nw).toEqual({ x: 3, y: 4 });
+      // The dragged corner is at the pixel corner nearest the pointer.
+      expect(geometry.handles.se).toEqual({ x: Math.round(p.x), y: Math.round(p.y) });
+      seen.push(geometry.handles.se.x);
+    }
+    for (let i = 1; i < seen.length; i++) {
+      expect([0, 1]).toContain((seen[i] ?? 0) - (seen[i - 1] ?? 0));
+    }
+  });
+
+  it("keeps edge handles on pixel edges and the centre anchor at the frame's centre", () => {
+    const { handles, anchor } = pixelFrameGeometry(FRAME, IDENTITY, MIDDLE);
+    expect(handles.n).toEqual({ x: 9.5, y: 4 });
+    expect(handles.e).toEqual({ x: 16, y: 8.5 });
+    expect(anchor).toEqual(MIDDLE);
+  });
+
+  it("resizes about the centre with Alt, keeping it, and never below one pixel", () => {
+    const { m } = scaleBy("e", { x: 16, y: 8.5 }, { x: 18.3, y: 8.5 }, { shift: false, alt: true });
+    const geometry = pixelFrameGeometry(FRAME, m, MIDDLE);
+    expect(geometry.handles.w.x).toBe(1);
+    expect(geometry.handles.e.x).toBe(18);
+    const collapsed = scaleBy("e", { x: 16, y: 8.5 }, { x: 3.2, y: 8.5 }).m;
+    const thin = pixelFrameGeometry(FRAME, collapsed, MIDDLE);
+    expect(thin.handles.w.x).toBe(3);
+    expect(thin.handles.e.x).toBe(4);
+    const flipped = scaleBy("e", { x: 16, y: 8.5 }, { x: -2.6, y: 8.5 }).m;
+    const mirror = pixelFrameGeometry(FRAME, flipped, MIDDLE);
+    expect(mirror.handles.w.x).toBe(3);
+    expect(mirror.handles.e.x).toBe(-3);
+  });
+
+  it("moves by whole pixels", () => {
+    const start = startAt({ x: 8, y: 8 });
+    const { m } = pixelGestureResult(
+      FRAME,
+      { kind: "move", start },
+      { x: 10.6, y: 7.4 },
+      NO_MODIFIERS,
+    );
+    expect(m).toEqual(translationAffine(3, -1));
+  });
+
+  it("rotates freely, drawing the rotated frame's corners on pixel corners", () => {
+    const { m, anchor } = turnBy(20);
+    expect(Math.atan2(m.b, m.a)).toBeCloseTo((20 * Math.PI) / 180, 9);
+    const geometry = pixelFrameGeometry(FRAME, m, anchor);
+    for (const corner of geometry.corners) expect(isWhole(corner)).toBe(true);
+    // The anchor stays the turn's centre.
+    expect(geometry.anchor.x).toBeCloseTo(MIDDLE.x, 9);
+    expect(geometry.anchor.y).toBeCloseTo(MIDDLE.y, 9);
+  });
+
+  it("turns about a moved anchor's pixel corner, and lands on pixels at a quarter turn", () => {
+    const anchor = { x: 6.3, y: 7.8 };
+    // Shift snaps the turn to 15 degree steps, so a drag near a quarter turn makes one exactly.
+    const { m, anchor: after } = turnBy(88, anchor, IDENTITY, { shift: true, alt: false });
+    expect(after).toEqual({ x: 6, y: 8 });
+    expect(m.a).toBe(0);
+    expect(m.d).toBe(0);
+    for (const value of [m.b, m.c, m.e, m.f]) expect(Number.isInteger(value)).toBe(true);
+    const geometry = pixelFrameGeometry(FRAME, m, after);
+    expect(geometry.anchor).toEqual({ x: 6, y: 8 });
+    for (const corner of geometry.corners) expect(isWhole(corner)).toBe(true);
+  });
+
+  it("keeps a rotated frame's sides whole pixels long when resized", () => {
+    const turned = turnBy(30).m;
+    const { m } = scaleBy("e", { x: 0, y: 0 }, { x: 20.2, y: 14.1 }, NO_MODIFIERS, turned);
+    const width = FRAME.width * Math.hypot(m.a, m.b);
+    const height = FRAME.height * Math.hypot(m.c, m.d);
+    expect(width).toBeCloseTo(Math.round(width), 9);
+    expect(height).toBeCloseTo(9, 9);
+  });
+
+  it("drags the anchor to the nearest pixel corner, or to the centre when that is nearer", () => {
+    const drag = (p: { x: number; y: number }) =>
+      pixelGestureResult(
+        FRAME,
+        { kind: "anchor", start: startAt({ x: 9.5, y: 8.5 }, MIDDLE) },
+        p,
+        NO_MODIFIERS,
+      ).anchor;
+    expect(drag({ x: 12.3, y: 6.6 })).toEqual({ x: 12, y: 7 });
+    expect(drag({ x: 9.4, y: 8.6 })).toEqual(MIDDLE);
+  });
+
+  it("snaps a frame left between pixels, as an older selection's, onto pixels when next transformed", () => {
+    const m = { a: 1.03, b: 0, c: 0, d: 0.97, e: 0.4, f: -0.2 };
+    const snapped = snapFrameToPixels(FRAME, m);
+    const corners = pixelFrameGeometry(FRAME, snapped, MIDDLE).corners;
+    const exact = frameGeometry(FRAME, snapped, MIDDLE).corners;
+    expect(exact).toEqual(corners);
   });
 });
