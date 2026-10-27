@@ -126,6 +126,17 @@ describe("CornerPath (TL-SEL-LASSO-01, pixel corners)", () => {
     expect(points).toEqual([at(0, 0), at(10, 0), at(10, 10)]);
   });
 
+  it("keeps drawing when the press is far from its corner", () => {
+    const samples: [number, number][] = [[0.49, 0.49]];
+    for (let i = 1; i <= 30; i++) samples.push([0.49 - i * 0.3, 0.49 + i * 0.09]);
+    for (let i = 1; i <= 30; i++) samples.push([-8.51, 3.19 + i * 0.3]);
+    const points = trace(samples);
+    expect(points.length).toBeGreaterThanOrEqual(3);
+    expect(points[0]).toEqual(at(0, 0));
+    const end = points.at(-1) ?? at(0, 0);
+    expect(Math.hypot(end.x + 8.51, end.y - 12.19)).toBeLessThan(1);
+  });
+
   it("moves by whole pixels", () => {
     const path = new CornerPath();
     path.add({ x: 1, y: 1 });

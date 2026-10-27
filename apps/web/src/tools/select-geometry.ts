@@ -199,7 +199,7 @@ export class CornerPath {
     const last = points.at(-1);
     if (last === undefined) {
       points.push(nearestCorner(sample));
-      this.#samples = [sample];
+      this.#samples = [];
       return;
     }
     const vertex = this.#open ? points.at(-2) : last;
@@ -212,13 +212,13 @@ export class CornerPath {
       this.#open = true;
       return;
     }
-    if (!this.#open) return;
-    // No straight run from the vertex reaches the pointer: the run's end becomes a vertex, and a
-    // new run starts there.
-    this.#samples = [sample];
+    // No straight run from the vertex reaches the pointer: the run's end (if any) becomes a
+    // vertex, and a new run starts there towards the corner nearest the pointer.
+    this.#samples = [];
     this.#open = false;
+    const from = points.at(-1) ?? vertex;
     const next = nearestCorner(sample);
-    if (next.x !== last.x || next.y !== last.y) {
+    if (next.x !== from.x || next.y !== from.y) {
       points.push(next);
       this.#open = true;
     }
