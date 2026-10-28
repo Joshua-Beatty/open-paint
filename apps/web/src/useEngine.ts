@@ -16,6 +16,7 @@ import {
 } from "@openpaint/engine";
 import { type RefObject, useEffect, useState } from "react";
 import {
+  AutoScrollDwell,
   AutoScrollPress,
   type AutoScrollSettings,
   autoScrollDelta,
@@ -148,9 +149,10 @@ function devicePoint(canvas: HTMLCanvasElement, clientX: number, clientY: number
  * carries the zoom so tools hit-test their handles on screen. It is set on the canvas style only
  * when it changes. Space and middle-button drags override it (TL-HOTKEY-03).
  *
- * While a drawing tool holds the pointer, the view auto-scrolls near or past the canvas edge, using
- * `autoScrollSettings` (read on every frame). The Pan tool never auto-scrolls. The tool gets the last
- * pointer again after each step, so its stroke follows the view.
+ * While a drawing tool holds the pointer at the canvas edge, the view auto-scrolls if
+ * `autoScrollSettings` (read on every frame) turns it on; it is off by default, and a pointer past
+ * the canvas never scrolls. The Pan tool never auto-scrolls. The tool gets the last pointer again
+ * after each step, so its stroke follows the view.
  *
  * Errors the worker caught or recovered from go to `onEngineError` (stable, like `onWorkerError`).
  * When engine v2 gives up its GPU (`needsCpuRestart`), the canvas and worker are replaced by v1 on
@@ -198,7 +200,13 @@ export function useEngine(
     const pens = new Set<number>();
     let toolDown = false;
     let autoScroll:
-      | { event: PointerEvent; time: number; frame: number; press: AutoScrollPress }
+      | {
+          event: PointerEvent;
+          time: number;
+          frame: number;
+          press: AutoScrollPress;
+          dwell: AutoScrollDwell;
+        }
       | undefined;
     let layout: ViewLayout | undefined;
     const canPan = () =>
@@ -251,20 +259,23 @@ export function useEngine(
       const settings = autoScrollSettings?.() ?? DEFAULT_AUTO_SCROLL;
       // A press that is still a click never scrolls, however long it is held (TL-HOTKEY-03).
       const drawing = scrolling.press.armed && !(tools?.panOnDrag() ?? false);
-      if (engine !== undefined && layout !== undefined && drawing) {
-        const pointer = {
-          x: scrolling.event.clientX - bounds.left,
-          y: scrolling.event.clientY - bounds.top,
-        };
-        const delta = autoScrollDelta(pointer, bounds, settings, seconds);
-        if (delta.dx !== 0 || delta.dy !== 0) {
-          void predictor?.view({
-            type: "pan",
-            dx: delta.dx * canvasScale.value,
-            dy: delta.dy * canvasScale.value,
-          });
-          tools?.pointer("move", scrolling.event, toImage);
-        }
+      const delta =
+        engine !== undefined && layout !== undefined && drawing
+          ? autoScrollDelta(
+              { x: scrolling.event.clientX - bounds.left, y: scrolling.event.clientY - bounds.top },
+              bounds,
+              settings,
+              seconds,
+            )
+          : { dx: 0, dy: 0 };
+      // Only a pointer held at the edge scrolls, not one passing it on the way out (owner request).
+      if (scrolling.dwell.step(delta.dx !== 0 || delta.dy !== 0, time)) {
+        void predictor?.view({
+          type: "pan",
+          dx: delta.dx * canvasScale.value,
+          dy: delta.dy * canvasScale.value,
+        });
+        tools?.pointer("move", scrolling.event, toImage);
       }
       scrolling.frame = requestAnimationFrame(autoScrollTick);
     };
@@ -273,7 +284,13 @@ export function useEngine(
         autoScroll.event = event;
         return;
       }
-      autoScroll = { event, time: performance.now(), frame: 0, press: new AutoScrollPress(event) };
+      autoScroll = {
+        event,
+        time: performance.now(),
+        frame: 0,
+        press: new AutoScrollPress(event),
+        dwell: new AutoScrollDwell(),
+      };
       autoScroll.frame = requestAnimationFrame(autoScrollTick);
     };
     const stopAutoScroll = () => {

@@ -179,6 +179,11 @@ describe("settings key table (SET-STO-03)", () => {
     expect(defaultAt("ui.theme")).toBe("Automatic");
   });
 
+  it("turns auto-scroll while drawing off by default (owner request)", () => {
+    expect(defaultOf(definitionAt("ui.autoScrollWhileDrawing"), context)).toBe(false);
+    expect(defaultOf(definitionAt("workspace.autoScrollSpeed"), context)).toBe(2000);
+  });
+
   it("makes the GPU quality default depend on the performance class", () => {
     const definition = definitionAt("effects.defaultQualityGpu");
     expect(defaultOf(definition, { gpuPerformanceClass: "Good" })).toBe(2);

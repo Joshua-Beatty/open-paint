@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_SCROLL_BAND_CSS_PIXELS,
+  AUTO_SCROLL_DWELL_MS,
+  AutoScrollDwell,
   AutoScrollPress,
   autoScrollDelta,
   DEFAULT_AUTO_SCROLL,
@@ -14,14 +16,27 @@ describe("autoScrollDelta (TL-HOTKEY-03)", () => {
     expect(autoScrollDelta({ x: 200, y: 150 }, view, on, 1)).toEqual({ dx: 0, dy: 0 });
   });
 
-  it("pans the image toward a start edge (a positive movement) at full speed past the edge", () => {
-    expect(autoScrollDelta({ x: -50, y: 150 }, view, on, 0.5)).toEqual({ dx: 1000, dy: 0 });
-    expect(autoScrollDelta({ x: 150, y: -10 }, view, on, 0.5)).toEqual({ dx: 0, dy: 1000 });
+  it("pans the image toward a start edge (a positive movement) at full speed at the edge", () => {
+    expect(autoScrollDelta({ x: 0, y: 150 }, view, on, 0.5)).toEqual({ dx: 1000, dy: 0 });
+    expect(autoScrollDelta({ x: 150, y: 0 }, view, on, 0.5)).toEqual({ dx: 0, dy: 1000 });
   });
 
-  it("pans the image toward an end edge (a negative movement) past the far edge", () => {
-    expect(autoScrollDelta({ x: 450, y: 150 }, view, on, 0.5)).toEqual({ dx: -1000, dy: 0 });
-    expect(autoScrollDelta({ x: 150, y: 400 }, view, on, 0.5)).toEqual({ dx: 0, dy: -1000 });
+  it("pans the image toward an end edge (a negative movement) at the far edge", () => {
+    expect(autoScrollDelta({ x: 400, y: 150 }, view, on, 0.5)).toEqual({ dx: -1000, dy: 0 });
+    expect(autoScrollDelta({ x: 150, y: 300 }, view, on, 0.5)).toEqual({ dx: 0, dy: -1000 });
+  });
+
+  it("never scrolls with the pointer past the edge, over the panels or out of the window", () => {
+    for (const pointer of [
+      { x: -50, y: 150 },
+      { x: 150, y: -10 },
+      { x: 450, y: 150 },
+      { x: 150, y: 400 },
+      { x: 401, y: 0 },
+      { x: 2000, y: 299 },
+    ]) {
+      expect(autoScrollDelta(pointer, view, on, 1)).toEqual({ dx: 0, dy: 0 });
+    }
   });
 
   it("ramps up across the band, from zero at its inner edge to full speed at the edge", () => {
@@ -51,8 +66,31 @@ describe("autoScrollDelta (TL-HOTKEY-03)", () => {
     expect(autoScrollDelta({ x: 10, y: 10 }, tiny, on, 1)).toEqual({ dx: 0, dy: 0 });
   });
 
-  it("uses the factory values of the settings (SET-STO-03)", () => {
-    expect(DEFAULT_AUTO_SCROLL).toEqual({ enabled: true, speed: 2000 });
+  it("is off by default, so painting never moves the view (owner request)", () => {
+    expect(DEFAULT_AUTO_SCROLL).toEqual({ enabled: false, speed: 2000 });
+    expect(autoScrollDelta({ x: 0, y: 0 }, view, DEFAULT_AUTO_SCROLL, 1)).toEqual({
+      dx: 0,
+      dy: 0,
+    });
+  });
+});
+
+describe("AutoScrollDwell", () => {
+  it("scrolls only once the pointer has been held at the edge", () => {
+    const dwell = new AutoScrollDwell();
+    expect(dwell.step(true, 1000)).toBe(false);
+    expect(dwell.step(true, 1000 + AUTO_SCROLL_DWELL_MS - 1)).toBe(false);
+    expect(dwell.step(true, 1000 + AUTO_SCROLL_DWELL_MS)).toBe(true);
+    expect(dwell.step(true, 2000)).toBe(true);
+  });
+
+  it("never scrolls for a pointer passing the edge on its way out, and starts over", () => {
+    const dwell = new AutoScrollDwell();
+    expect(dwell.step(true, 0)).toBe(false);
+    expect(dwell.step(true, 16)).toBe(false);
+    expect(dwell.step(false, 32)).toBe(false);
+    expect(dwell.step(true, AUTO_SCROLL_DWELL_MS + 32)).toBe(false);
+    expect(dwell.step(false, 1000)).toBe(false);
   });
 });
 

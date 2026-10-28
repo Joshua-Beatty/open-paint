@@ -317,7 +317,7 @@ const FIXED_DEFINITIONS: readonly SettingDefinition[] = [
     defaultFor: ({ reducedMotion }) => reducedMotion !== true,
   },
   flag("ui.antialiasedSelectionOutline", true),
-  flag("ui.autoScrollWhileDrawing", true),
+  flag("ui.autoScrollWhileDrawing", false),
   flag("ui.autoSelectNearestVisibleLayer", false),
   flag("ui.overscroll", true),
 ];
