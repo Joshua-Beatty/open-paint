@@ -2877,3 +2877,6 @@ Short entries appended after each change (newest at the bottom). Record what was
 
 ## Pixel-based selections
 - Selections made with Rectangle, Ellipse and Lasso have their outline corners on pixel corners: the lasso snaps each sample to the nearest corner and merges straight runs, so edges run straight between corners at any slope; the ellipse is the convex outline of the corners inside it. Move Selection and Move Selected Pixels keep unrotated frames and handles on the pixel grid and move and resize in whole-pixel steps. Rotation keeps the exact rotated outline; later moves and resizes still step by whole pixels; combines with a rotated outline stay exact. The rotation anchor snaps to a pixel corner or the exact centre when dragged (owner request; deviates from TL-SEL-01 for the lasso, DOC-SEL-01, TL-SEL-ELL-01 and TL-MOVE-01's minimum size).
+
+## No auto-scroll while drawing by default
+- Dragging a stroke or selection past the canvas no longer scrolls the view: auto-scroll while drawing is off by default (owner request; overrides TL-HOTKEY-03 and spec 08's default). When turned on it scrolls only while the pointer is held in the 24 px band along the canvas edge for 200 ms, never while it's over the panels or outside the window.
